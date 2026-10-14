@@ -527,19 +527,21 @@ func (a *app) setup(noConfig bool) error {
 	sessions := herdr.RunningSessions()
 	for _, c := range sessions {
 		name := herdr.SessionKey(c.SocketPath)
-		if err := c.ReloadConfig(); err != nil {
-			notes = append(notes, fmt.Sprintf("Couldn't reload config in session %s: %v", name, err))
-		}
 		st := store.New(name)
 		if err := reconcile.Enable(st); err != nil {
 			return err
 		}
+		// Sync before reloading, so the tab bar status has tasks to show
+		// the first time herdr runs it.
 		live, err := reconcile.Run(c, st, a.opts, time.Now(), nil)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("Couldn't sync session %s: %v", name, err))
-			continue
+		} else {
+			fmt.Printf("herdr-tasks: session %s: %d tabs in %d spaces are tasks now\n", name, len(live.Tabs), len(live.Workspaces))
 		}
-		fmt.Printf("herdr-tasks: session %s: %d tabs in %d spaces are tasks now\n", name, len(live.Tabs), len(live.Workspaces))
+		if err := c.ReloadConfig(); err != nil {
+			notes = append(notes, fmt.Sprintf("Couldn't reload config in session %s: %v", name, err))
+		}
 	}
 	if len(sessions) == 0 {
 		fmt.Println("herdr-tasks: no herdr session is running; tabs get their markers when herdr starts")
