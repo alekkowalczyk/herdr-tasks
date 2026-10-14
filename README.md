@@ -40,23 +40,19 @@ Adding a strip to a tab with several panes briefly moves the other panes out to 
 
 ### herdr --remote
 
-If you attach from another machine with `herdr --remote`, two things come from that machine instead of the server:
+If you attach from another machine with `herdr --remote`, that machine uses its own key bindings by default, and herdr never sends a client's own custom-command bindings to the server. So `ctrl+b t` and `ctrl+b i` only work with the server's bindings. Attach with `--remote-keybindings server`:
 
-- **Key bindings.** herdr never sends a client's own custom-command bindings to the server, so `ctrl+b t` and `ctrl+b i` only work with the server's bindings. Attach with `--remote-keybindings server`:
+```bash
+herdr --remote ssh://you@server --session NAME --remote-keybindings server
+```
 
-  ```bash
-  herdr --remote ssh://you@server --session NAME --remote-keybindings server
-  ```
+The sidebar counts and the tab bar status come from the server's config in the setups tested so far. If they don't show up on your machine, merge the herdr-tasks lines into that machine's config over SSH (run this there; `config --unmerge` takes them out again):
 
-- **The sidebar layout and the tab bar.** Merge the herdr-tasks lines into that machine's config over SSH (run this on that machine):
+```bash
+f=~/.config/herdr/config.toml; mkdir -p ~/.config/herdr; touch "$f"; ssh you@server '~/.local/bin/herdr-tasks config --merge' < "$f" > "$f.new" && cp "$f" "$f.before-herdr-tasks" && mv "$f.new" "$f"
+```
 
-  ```bash
-  f=~/.config/herdr/config.toml; mkdir -p ~/.config/herdr; touch "$f"; ssh you@server '~/.local/bin/herdr-tasks config --merge' < "$f" > "$f.new" && cp "$f" "$f.before-herdr-tasks" && mv "$f.new" "$f"
-  ```
-
-  `config --unmerge` takes the lines out the same way.
-
-Then detach and attach again. Without either, the strips and tab markers still work, and `↵` in a strip opens the overview.
+Without the keys, the strips and tab markers still work, and `↵` in a strip opens the overview.
 
 ### Remove
 
