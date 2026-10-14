@@ -18,6 +18,8 @@ var (
 	cDone   = lipgloss.Color("#6f7884")
 	cRun    = lipgloss.Color("#5ec9e8")
 	cYou    = lipgloss.Color("#ff8d6e")
+	cAsk    = lipgloss.Color("#ff5f6d")
+	cReview = lipgloss.Color("#b9a6ff")
 	cLink   = lipgloss.Color("#9cc4ff")
 	cSelBG  = lipgloss.Color("#232b35")
 	cChipBG = lipgloss.Color("#2b3442")
@@ -28,10 +30,13 @@ var (
 	sLink = lipgloss.NewStyle().Foreground(cLink)
 	sRun  = lipgloss.NewStyle().Foreground(cRun)
 	sYou  = lipgloss.NewStyle().Foreground(cYou)
+	sAsk  = lipgloss.NewStyle().Foreground(cAsk).Bold(true)
 )
 
 func stageColor(s task.Stage) lipgloss.Color {
 	switch s {
+	case task.Review:
+		return cReview
 	case task.Paused:
 		return cPaused
 	case task.Parked:
@@ -44,10 +49,14 @@ func stageColor(s task.Stage) lipgloss.Color {
 
 func groupInfo(g task.Group) (title, hint string, color lipgloss.Color) {
 	switch g {
+	case task.Asking:
+		return "AGENT ASKING", "stopped mid-work, waiting for your answer", cAsk
 	case task.YourTurn:
-		return "YOUR TURN", "agent answered, needs input, or nothing running", cYou
+		return "YOUR TURN", "agent finished, or nothing running", cYou
 	case task.Running:
 		return "AGENT RUNNING", "nothing to do yet", cRun
+	case task.GReview:
+		return "IN REVIEW", "your part is done; waiting on approval, merge, or testing", cReview
 	case task.GPaused:
 		return "PAUSED", "on hold until something happens", cPaused
 	case task.GParked:
@@ -62,7 +71,7 @@ func agentLabel(status string) (string, lipgloss.Color) {
 	case "working":
 		return "working", cRun
 	case "blocked":
-		return "needs input", cYou
+		return "asking", cAsk
 	case "done":
 		return "answered", cYou
 	case "idle":
@@ -104,4 +113,34 @@ func wrap(text string, w int) []string {
 		out = append(out, strings.Split(ansi.Wrap(para, w, ""), "\n")...)
 	}
 	return out
+}
+
+// groupWord is the short name of a group, for the detail panel and the strip.
+func groupWord(g task.Group) string {
+	switch g {
+	case task.Asking:
+		return "agent asking"
+	case task.YourTurn:
+		return "your turn"
+	case task.Running:
+		return "agent running"
+	case task.GReview:
+		return "in review"
+	case task.GPaused:
+		return "paused"
+	case task.GParked:
+		return "parked"
+	}
+	return "done"
+}
+
+// reasonLabel is what a stage's reason means, or "" if it takes none.
+func reasonLabel(s task.Stage) string {
+	switch s {
+	case task.Paused:
+		return "until"
+	case task.Review:
+		return "waiting for"
+	}
+	return ""
 }

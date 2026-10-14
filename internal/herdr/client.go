@@ -286,3 +286,176 @@ func (l *Live) FocusedTab() (Tab, bool) {
 	}
 	return Tab{}, false
 }
+
+type Pane struct {
+	ID          string `json:"pane_id"`
+	TabID       string `json:"tab_id"`
+	WorkspaceID string `json:"workspace_id"`
+	Label       string `json:"label"`
+	Focused     bool   `json:"focused"`
+}
+
+// Panes lists every pane in every workspace.
+func (c *Client) Panes() ([]Pane, error) {
+	var r struct {
+		Panes []Pane `json:"panes"`
+	}
+	err := c.Call("pane.list", nil, &r)
+	return r.Panes, err
+}
+
+// Node is one node of a tab's layout tree: a pane, or a split of two nodes.
+type Node struct {
+	Type      string  `json:"type"`
+	PaneID    string  `json:"pane_id,omitempty"`
+	Direction string  `json:"direction,omitempty"`
+	Ratio     float64 `json:"ratio,omitempty"`
+	First     *Node   `json:"first,omitempty"`
+	Second    *Node   `json:"second,omitempty"`
+}
+
+func (n *Node) IsSplit() bool { return n.Type == "split" }
+
+// Leaves are the panes under n, left to right and top to bottom.
+func (n *Node) Leaves() []string {
+	if n == nil {
+		return nil
+	}
+	if !n.IsSplit() {
+		return []string{n.PaneID}
+	}
+	return append(n.First.Leaves(), n.Second.Leaves()...)
+}
+
+func (c *Client) Layout(tabID string) (*Node, error) {
+	var r struct {
+		Layout struct {
+			Root *Node `json:"root"`
+		} `json:"layout"`
+	}
+	if err := c.Call("layout.export", map[string]any{"tab_id": tabID}, &r); err != nil {
+		return nil, err
+	}
+	if r.Layout.Root == nil {
+		return nil, fmt.Errorf("tab %s has no layout", tabID)
+	}
+	return r.Layout.Root, nil
+}
+
+type Rect struct {
+	X, Y, Width, Height int
+}
+
+// PaneRects returns the tab area and each pane's rectangle for a pane's tab.
+func (c *Client) PaneRects(paneID string) (Rect, map[string]Rect, error) {
+	var r struct {
+		Layout struct {
+			Area  Rect `json:"area"`
+			Panes []struct {
+				PaneID string `json:"pane_id"`
+				Rect   Rect   `json:"rect"`
+			} `json:"panes"`
+		} `json:"layout"`
+	}
+	if err := c.Call("pane.layout", map[string]any{"pane_id": paneID}, &r); err != nil {
+		return Rect{}, nil, err
+	}
+	rects := map[string]Rect{}
+	for _, p := range r.Layout.Panes {
+		rects[p.PaneID] = p.Rect
+	}
+	return r.Layout.Area, rects, nil
+}
+
+// SplitPane splits target and returns the new pane, which starts a shell.
+func (c *Client) SplitPane(target, direction string, ratio float64, env map[string]string) (string, error) {
+	var r struct {
+		Pane struct {
+			ID string `json:"pane_id"`
+		} `json:"pane"`
+	}
+	params := map[string]any{"target_pane_id": target, "direction": direction, "ratio": ratio, "focus": false}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	err := c.Call("pane.split", params, &r)
+	return r.Pane.ID, err
+}
+
+// ParkPane moves a pane out into a tab of its own.
+func (c *Client) ParkPane(paneID, label string) error {
+	return c.Call("pane.move", map[string]any{
+		"pane_id":     paneID,
+		"destination": map[string]any{"type": "new_tab", "label": label},
+		"focus":       false,
+	}, nil)
+}
+
+// MovePane moves a pane next to target in tabID.
+func (c *Client) MovePane(paneID, tabID, target, split string, ratio float64) error {
+	return c.Call("pane.move", map[string]any{
+		"pane_id": paneID,
+		"destination": map[string]any{
+			"type": "tab", "tab_id": tabID, "target_pane_id": target, "split": split, "ratio": ratio,
+		},
+		"focus": false,
+	}, nil)
+}
+
+// SetRootRatio sets the ratio of a tab's top-level split.
+func (c *Client) SetRootRatio(tabID string, ratio float64) error {
+	return c.Call("layout.set_split_ratio", map[string]any{"tab_id": tabID, "path": []bool{}, "ratio": ratio}, nil)
+}
+
+func (c *Client) RenamePane(paneID, label string) error {
+	return c.Call("pane.rename", map[string]any{"pane_id": paneID, "label": label}, nil)
+}
+
+func (c *Client) ClosePane(paneID string) error {
+	return c.Call("pane.close", map[string]any{"pane_id": paneID}, nil)
+}
+
+// SendText types text into a pane, followed by Enter.
+func (c *Client) SendText(paneID, text string) error {
+	return c.Call("pane.send_input", map[string]any{"pane_id": paneID, "text": text, "keys": []string{"enter"}}, nil)
+}
+
+// ForegroundNames lists the names of the processes in a pane's foreground.
+func (c *Client) ForegroundNames(paneID string) ([]string, error) {
+	var r struct {
+		Info struct {
+			Procs []struct {
+				Name string `json:"name"`
+			} `json:"foreground_processes"`
+		} `json:"process_info"`
+	}
+	if err := c.Call("pane.process_info", map[string]any{"pane_id": paneID}, &r); err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, p := range r.Info.Procs {
+		names = append(names, p.Name)
+	}
+	return names, nil
+}
+
+func (c *Client) TabGet(id string) (Tab, error) {
+	var r struct {
+		Tab Tab `json:"tab"`
+	}
+	err := c.Call("tab.get", map[string]any{"tab_id": id}, &r)
+	return r.Tab, err
+}
+
+// ViewportRows is how many rows of text a pane shows.
+func (c *Client) ViewportRows(paneID string) (int, error) {
+	var r struct {
+		Pane struct {
+			Scroll struct {
+				Rows int `json:"viewport_rows"`
+			} `json:"scroll"`
+		} `json:"pane"`
+	}
+	err := c.Call("pane.get", map[string]any{"pane_id": paneID}, &r)
+	return r.Pane.Scroll.Rows, err
+}

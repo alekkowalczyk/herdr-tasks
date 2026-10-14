@@ -18,18 +18,21 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
+	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.1.1"
+const version = "0.2.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
 Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another one.
 
-  herdr-tasks set <active|paused|parked|done> [reason]   set the tab's stage
-  herdr-tasks pause [reason]                              pause the tab, with why
+  herdr-tasks set <stage> [reason]   stage: active, review, paused, parked, done
+                                     (review and paused take what they wait for)
+  herdr-tasks review [waiting for]   your part is done; waiting on approval, merge, or tests
+  herdr-tasks pause [reason]         on hold until something happens
   herdr-tasks note set <text>                             replace your note
   herdr-tasks note add <text> [--as NAME]                 add a line (agents use this)
   herdr-tasks note clear
@@ -45,6 +48,8 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
                                     uninstall the plugin (--purge also deletes notes)
 
   herdr-tasks overview      the overview screen (herdr opens it in a popup)
+  herdr-tasks strip         the strip along the bottom of a tab (runs in its pane)
+  herdr-tasks strip-toggle  show or hide this tab's strip
   herdr-tasks open          open the overview popup
   herdr-tasks status        one line for herdr's tab bar
   herdr-tasks sync          redo markers, tab order, and sidebar counts
@@ -159,7 +164,7 @@ func run(args []string) error {
 	case "status":
 		return a.status()
 	case "sync":
-		_, err := reconcile.Run(a.client, a.store, a.opts, time.Now(), nil)
+		_, err := reconcile.Run(a.host(), a.store, a.opts, time.Now(), nil)
 		return err
 	case "hook":
 		return a.hook()
@@ -172,6 +177,15 @@ func run(args []string) error {
 	case "pause":
 		a.flags.args = append([]string{"paused"}, a.flags.args...)
 		return a.set()
+	case "review":
+		a.flags.args = append([]string{"review"}, a.flags.args...)
+		return a.set()
+	case "strip":
+		return ui.RunStrip(a.client, a.store)
+	case "strip-toggle":
+		return a.stripToggle()
+	case "strip-fit": // resize a strip pane; for troubleshooting
+		return a.host().Fit(a.flags.text())
 	case "note":
 		return a.note()
 	case "link":
@@ -219,7 +233,7 @@ func (a *app) change(fn func(t *task.Task) error) error {
 	if err != nil {
 		return err
 	}
-	_, err = reconcile.Run(a.client, a.store, a.opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
+	_, err = reconcile.Run(a.host(), a.store, a.opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
 		t, ok := s.Tasks[id]
 		if !ok {
 			return fmt.Errorf("no tab %s", id)
@@ -245,15 +259,15 @@ func (a *app) who() string {
 
 func (a *app) set() error {
 	if len(a.flags.args) == 0 {
-		return errors.New("which stage? active, paused, parked, or done")
+		return errors.New("which stage? active, review, paused, parked, or done")
 	}
 	s, ok := task.ParseStage(a.flags.args[0])
 	if !ok {
-		return fmt.Errorf("unknown stage %q; use active, paused, parked, or done", a.flags.args[0])
+		return fmt.Errorf("unknown stage %q; use active, review, paused, parked, or done", a.flags.args[0])
 	}
 	reason := strings.TrimSpace(strings.Join(a.flags.args[1:], " "))
-	if reason != "" && s != task.Paused {
-		return errors.New("only paused tasks take a reason")
+	if reason != "" && !s.TakesReason() {
+		return errors.New("only review and paused take a reason")
 	}
 	return a.change(func(t *task.Task) error {
 		t.SetStage(s, reason, time.Now())
@@ -317,7 +331,7 @@ func (a *app) show() error {
 	if err != nil {
 		return err
 	}
-	live, err := reconcile.Run(a.client, a.store, a.opts, time.Now(), nil)
+	live, err := reconcile.Run(a.host(), a.store, a.opts, time.Now(), nil)
 	if err != nil {
 		return err
 	}
@@ -340,9 +354,15 @@ func (a *app) show() error {
 		fmt.Print(" · your turn")
 	} else if g == task.Running {
 		fmt.Print(" · agent running")
+	} else if g == task.Asking {
+		fmt.Print(" · agent asking")
 	}
 	if t.Reason != "" {
-		fmt.Printf(" · until %s", t.Reason)
+		label := "until"
+		if t.Stage == task.Review {
+			label = "waiting for"
+		}
+		fmt.Printf(" · %s %s", label, t.Reason)
 	}
 	fmt.Println()
 	if t.Note != "" {
@@ -371,7 +391,7 @@ func (a *app) show() error {
 }
 
 func (a *app) list() error {
-	live, err := reconcile.Run(a.client, a.store, a.opts, time.Now(), nil)
+	live, err := reconcile.Run(a.host(), a.store, a.opts, time.Now(), nil)
 	if err != nil {
 		return err
 	}
@@ -429,7 +449,7 @@ func (a *app) status() error {
 		}
 	}
 	var parts []string
-	for _, s := range []task.Stage{task.Active, task.Paused, task.Parked} {
+	for _, s := range []task.Stage{task.Active, task.Review, task.Paused, task.Parked} {
 		if counts[s] > 0 {
 			parts = append(parts, fmt.Sprintf("%s %d", s.Glyph(), counts[s]))
 		}
@@ -438,8 +458,8 @@ func (a *app) status() error {
 	if t, ok := st.Tasks[tab]; ok {
 		extra := ""
 		switch {
-		case t.Stage == task.Paused && t.Reason != "":
-			extra = "‖ " + t.Reason
+		case t.Stage.TakesReason() && t.Reason != "":
+			extra = t.Stage.Glyph() + " " + t.Reason
 		case len(t.Links) > 0:
 			extra = "↗ " + t.Links[0].Display()
 		}
@@ -462,7 +482,10 @@ func (a *app) hook() error {
 			}
 		}
 	}
-	_, err := reconcile.Run(a.client, a.store, a.opts, time.Now(), nil)
+	if ev != nil && ev.Name == "startup" {
+		a.opts.Startup = true
+	}
+	_, err := reconcile.Run(a.host(), a.store, a.opts, time.Now(), nil)
 	return err
 }
 
@@ -536,7 +559,7 @@ func (a *app) setup(noConfig bool) error {
 		}
 		// Sync before reloading, so the tab bar status has tasks to show
 		// the first time herdr runs it.
-		live, err := reconcile.Run(c, st, a.opts, time.Now(), nil)
+		live, err := reconcile.Run(strip.Host{Client: c}, st, a.opts, time.Now(), nil)
 		if err != nil {
 			notes = append(notes, fmt.Sprintf("Couldn't sync session %s: %v", name, err))
 		} else {
@@ -566,7 +589,7 @@ func (a *app) remove(purge bool) error {
 	}
 	for _, c := range sessions {
 		name := herdr.SessionKey(c.SocketPath)
-		if err := reconcile.Clear(c, store.New(name)); err != nil {
+		if err := reconcile.Clear(strip.Host{Client: c}, store.New(name)); err != nil {
 			return fmt.Errorf("session %s: %w", name, err)
 		}
 		fmt.Printf("herdr-tasks: session %s: tab names are back to normal\n", name)
@@ -641,5 +664,32 @@ func configCmd(args []string) error {
 	}
 	out, _, err := setup.Apply("", status)
 	fmt.Print(out)
+	return err
+}
+
+func (a *app) host() strip.Host { return strip.Host{Client: a.client} }
+
+// stripToggle shows or hides the strip of the target tab.
+func (a *app) stripToggle() error {
+	id, err := a.targetTab()
+	if err != nil {
+		return err
+	}
+	host := a.host()
+	_, err = reconcile.Run(host, a.store, a.opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
+		t, ok := s.Tasks[id]
+		if !ok {
+			return fmt.Errorf("no tab %s", id)
+		}
+		if t.StripPane != "" {
+			if err := host.Close(t.StripPane); err != nil {
+				return err
+			}
+			t.StripPane, t.StripOff = "", true
+			return nil
+		}
+		t.StripOff = false // reconciliation adds it
+		return nil
+	})
 	return err
 }

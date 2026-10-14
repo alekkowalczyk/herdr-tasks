@@ -33,10 +33,11 @@ func TestGroupOf(t *testing.T) {
 	}{
 		{Active, "working", Running},
 		{Active, "done", YourTurn},
-		{Active, "blocked", YourTurn},
+		{Active, "blocked", Asking},
 		{Active, "idle", YourTurn},
 		{Active, "unknown", YourTurn},
 		{Paused, "working", GPaused},
+		{Review, "working", GReview},
 		{Parked, "idle", GParked},
 		{Done, "working", GDone},
 	}
@@ -63,6 +64,12 @@ func TestLabels(t *testing.T) {
 	if got := MarkedLabel(Parked, "", 4); got != "○ 4" {
 		t.Errorf("MarkedLabel unnamed = %q", got)
 	}
+	if got := MarkedLabel(Review, "", 2); got != "◐ 2" {
+		t.Errorf("MarkedLabel review = %q", got)
+	}
+	if got := TitleFromLabel("◐ ship it", 1); got != "ship it" {
+		t.Errorf("review marker not stripped: %q", got)
+	}
 	if got := MarkedLabel(Done, "ship it", 1); got != "✓ ship it" {
 		t.Errorf("MarkedLabel = %q", got)
 	}
@@ -81,9 +88,13 @@ func TestSetStage(t *testing.T) {
 	if tk.Reason != "PR #212 review" || !tk.Since.Equal(t1) {
 		t.Fatalf("pausing again without a reason should keep both: %+v", tk)
 	}
+	tk.SetStage(Review, "approval + QA", t1.Add(90*time.Minute))
+	if tk.Reason != "approval + QA" {
+		t.Fatalf("review should take its own reason: %+v", tk)
+	}
 	tk.SetStage(Active, "", t1.Add(2*time.Hour))
 	if tk.Reason != "" {
-		t.Fatalf("leaving Paused should drop the reason: %+v", tk)
+		t.Fatalf("going back to Active should drop the reason: %+v", tk)
 	}
 }
 

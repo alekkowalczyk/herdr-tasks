@@ -15,18 +15,22 @@ type Stage string
 
 const (
 	Active Stage = "active"
+	// Your part is done; waiting on approval, merge, or testing.
+	Review Stage = "review"
 	Paused Stage = "paused"
 	Parked Stage = "parked"
 	Done   Stage = "done"
 )
 
 // Stages in tab-bar order.
-var Stages = []Stage{Active, Paused, Parked, Done}
+var Stages = []Stage{Active, Review, Paused, Parked, Done}
 
 func ParseStage(s string) (Stage, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "active", "a":
 		return Active, true
+	case "review", "in-review", "inreview", "in review", "v":
+		return Review, true
 	case "paused", "pause", "p":
 		return Paused, true
 	case "parked", "park", "z":
@@ -39,6 +43,8 @@ func ParseStage(s string) (Stage, bool) {
 
 func (s Stage) Glyph() string {
 	switch s {
+	case Review:
+		return "◐"
 	case Paused:
 		return "‖"
 	case Parked:
@@ -51,6 +57,8 @@ func (s Stage) Glyph() string {
 
 func (s Stage) Label() string {
 	switch s {
+	case Review:
+		return "In review"
 	case Paused:
 		return "Paused"
 	case Parked:
@@ -156,6 +164,9 @@ type Task struct {
 	Links     []Link    `json:"links,omitempty"`
 	// The tab label this plugin last set, so its own renames aren't mistaken for yours.
 	Applied string `json:"applied,omitempty"`
+	// The pane showing this task's strip, and whether you turned the strip off.
+	StripPane string `json:"strip_pane,omitempty"`
+	StripOff  bool   `json:"strip_off,omitempty"`
 }
 
 func (t *Task) WorkspaceID() string {
@@ -165,18 +176,21 @@ func (t *Task) WorkspaceID() string {
 	return ""
 }
 
-// SetStage moves the task to a stage. The reason only applies to Paused.
+// TakesReason reports whether a stage records what it's waiting on.
+func (s Stage) TakesReason() bool { return s == Paused || s == Review }
+
+// SetStage moves the task to a stage. A reason only applies to Paused and
+// In review; moving between those two keeps it unless a new one is given.
 func (t *Task) SetStage(s Stage, reason string, now time.Time) {
 	if t.Stage != s {
 		t.Stage = s
 		t.Since = now
 	}
-	if s == Paused {
-		if reason != "" {
-			t.Reason = reason
-		}
-	} else {
+	switch {
+	case !s.TakesReason():
 		t.Reason = ""
+	case reason != "":
+		t.Reason = reason
 	}
 }
 
@@ -225,18 +239,24 @@ func (t *Task) Name(position int) string {
 type Group string
 
 const (
+	// The agent stopped mid-work to ask a question or for permission.
+	Asking Group = "asking"
+	// The agent finished, or nothing is running.
 	YourTurn Group = "yourturn"
 	Running  Group = "running"
+	GReview  Group = "review"
 	GPaused  Group = "paused"
 	GParked  Group = "parked"
 	GDone    Group = "done"
 )
 
-var Groups = []Group{YourTurn, Running, GPaused, GParked, GDone}
+var Groups = []Group{Asking, YourTurn, Running, GReview, GPaused, GParked, GDone}
 
 // GroupOf splits active tasks by what their agents are doing.
 func GroupOf(s Stage, agentStatus string) Group {
 	switch s {
+	case Review:
+		return GReview
 	case Paused:
 		return GPaused
 	case Parked:
@@ -244,8 +264,11 @@ func GroupOf(s Stage, agentStatus string) Group {
 	case Done:
 		return GDone
 	}
-	if agentStatus == "working" {
+	switch agentStatus {
+	case "working":
 		return Running
+	case "blocked":
+		return Asking
 	}
 	return YourTurn
 }

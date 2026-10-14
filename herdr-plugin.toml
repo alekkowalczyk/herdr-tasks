@@ -1,6 +1,6 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.1.1"
+version = "0.2.0"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
@@ -8,8 +8,9 @@ platforms = ["linux", "macos"]
 [[build]]
 command = ["go", "build", "-o", "bin/herdr-tasks", "./cmd/herdr-tasks"]
 
-# Puts herdr-tasks on PATH, adds ctrl+b t, the tab bar status, and sidebar
-# rows to herdr's config in a marked block, and syncs running sessions.
+# Puts herdr-tasks on PATH, adds ctrl+b t, ctrl+b i, the tab bar status, and
+# sidebar rows to herdr's config in a marked block, and syncs running
+# sessions (adding a strip to every tab).
 [[build]]
 command = ["sh", "-c", "./bin/herdr-tasks setup"]
 
@@ -20,6 +21,11 @@ command = ["bin/herdr-tasks", "hook"]
 id = "overview"
 title = "Task overview"
 command = ["bin/herdr-tasks", "open"]
+
+[[actions]]
+id = "strip"
+title = "Show or hide the task strip"
+command = ["bin/herdr-tasks", "strip-toggle"]
 
 [[actions]]
 id = "sync"
@@ -40,6 +46,10 @@ command = ["bin/herdr-tasks", "hook"]
 
 [[events]]
 on = "tab.moved"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "pane.closed"
 command = ["bin/herdr-tasks", "hook"]
 
 [[events]]

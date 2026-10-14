@@ -17,6 +17,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
+	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -27,6 +28,8 @@ type Env struct {
 	// The tab to select when the overview opens.
 	CurrentTab string
 }
+
+func (e Env) host() strip.Host { return strip.Host{Client: e.Client} }
 
 func Run(env Env) error {
 	m, err := newModel(env)
@@ -49,7 +52,7 @@ const (
 type inputKind int
 
 const (
-	inputReason inputKind = iota
+	inputReason inputKind = iota // for Paused or In review, see reasonStage
 	inputLink
 	inputRename
 )
@@ -84,6 +87,7 @@ type model struct {
 	mode          mode
 	input         textinput.Model
 	inputKind     inputKind
+	reasonStage   task.Stage
 	note          textarea.Model
 	msg           string
 	help          bool
@@ -106,7 +110,7 @@ type model struct {
 func newModel(env Env) (*model, error) {
 	m := &model{env: env, rowAt: map[int]string{}, linkAt: map[int]int{}, alertY: -1}
 	// Track any tabs created since the last sync before showing them.
-	live, err := reconcile.Run(env.Client, env.Store, env.Opts, time.Now(), nil)
+	live, err := reconcile.Run(env.host(), env.Store, env.Opts, time.Now(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +211,7 @@ func (m *model) change(fn func(t *task.Task), done string) {
 		return
 	}
 	id := r.tab.ID
-	live, err := reconcile.Run(m.env.Client, m.env.Store, m.env.Opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
+	live, err := reconcile.Run(m.env.host(), m.env.Store, m.env.Opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
 		t, ok := s.Tasks[id]
 		if !ok {
 			return fmt.Errorf("that tab is gone")
@@ -327,10 +331,11 @@ func (m *model) finishInput() {
 	name := r.task.Name(r.pos)
 	switch m.inputKind {
 	case inputReason:
+		stage := m.reasonStage
 		m.change(func(t *task.Task) {
-			t.SetStage(task.Paused, "", time.Now())
+			t.SetStage(stage, "", time.Now())
 			t.Reason = v
-		}, fmt.Sprintf("%s → Paused%s", name, map[bool]string{true: " until " + v, false: ""}[v != ""]))
+		}, fmt.Sprintf("%s → %s%s", name, stage.Label(), map[bool]string{true: ", " + reasonLabel(stage) + " " + v, false: ""}[v != ""]))
 	case inputLink:
 		if v == "" {
 			return
@@ -390,7 +395,7 @@ func (m *model) closeSelected() {
 		return
 	}
 	m.move(1)
-	if live, err := reconcile.Run(m.env.Client, m.env.Store, m.env.Opts, time.Now(), nil); err == nil {
+	if live, err := reconcile.Run(m.env.host(), m.env.Store, m.env.Opts, time.Now(), nil); err == nil {
 		m.live = live
 	}
 	m.refresh()
@@ -436,7 +441,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.mode = modeList
 				m.input.Blur()
 				if m.inputKind == inputReason {
-					m.change(func(t *task.Task) { t.SetStage(task.Paused, "", time.Now()) }, "Paused")
+					stage := m.reasonStage
+					m.change(func(t *task.Task) { t.SetStage(stage, "", time.Now()) }, stage.Label())
 				}
 				return m, nil
 			}
@@ -509,7 +515,13 @@ func (m *model) key(k string) tea.Cmd {
 		m.setStage(task.Active)
 	case "p":
 		if r := m.selected(); r != nil {
+			m.reasonStage = task.Paused
 			m.startInput(inputReason, r.task.Reason, "PR review, QA, your own decision…")
+		}
+	case "v":
+		if r := m.selected(); r != nil {
+			m.reasonStage = task.Review
+			m.startInput(inputReason, r.task.Reason, "approval, merge, testing…")
 		}
 	case "z":
 		m.setStage(task.Parked)
@@ -698,14 +710,24 @@ func (m *model) filterLine() string {
 	}
 	add("all", "0 All", len(m.state.Hidden) == 0)
 	for i, w := range m.live.Workspaces {
-		n, you := 0, 0
+		n, asking, you := 0, 0, 0
 		for _, tab := range m.live.TabsIn(w.ID) {
+			t, ok := m.state.Tasks[tab.ID]
+			if !ok {
+				continue
+			}
 			n++
-			if t, ok := m.state.Tasks[tab.ID]; ok && task.GroupOf(t.Stage, tab.AgentStatus) == task.YourTurn {
+			switch task.GroupOf(t.Stage, tab.AgentStatus) {
+			case task.Asking:
+				asking++
+			case task.YourTurn:
 				you++
 			}
 		}
 		text := fmt.Sprintf("%d %s %d", i+1, w.Label, n)
+		if asking > 0 {
+			text += sAsk.Render(fmt.Sprintf(" ?%d", asking))
+		}
 		if you > 0 {
 			text += sYou.Render(fmt.Sprintf(" ●%d", you))
 		}
@@ -723,26 +745,41 @@ func (m *model) listLines(w, h int) []string {
 	var ids []string // tab id per line, "" for headers
 
 	// Work that needs you in hidden spaces.
-	hiddenYou, names := 0, map[string]bool{}
+	asking, waiting, names := 0, 0, map[string]bool{}
 	for _, tab := range m.live.Tabs {
 		ws, _ := m.live.Workspace(tab.WorkspaceID)
-		if t, ok := m.state.Tasks[tab.ID]; ok && m.state.IsHidden(ws.Label) && task.GroupOf(t.Stage, tab.AgentStatus) == task.YourTurn {
-			hiddenYou++
+		t, ok := m.state.Tasks[tab.ID]
+		if !ok || !m.state.IsHidden(ws.Label) {
+			continue
+		}
+		switch task.GroupOf(t.Stage, tab.AgentStatus) {
+		case task.Asking:
+			asking++
+			names[ws.Label] = true
+		case task.YourTurn:
+			waiting++
 			names[ws.Label] = true
 		}
 	}
 	alertLine := -1
-	if hiddenYou > 0 {
+	if asking+waiting > 0 {
 		var ns []string
 		for n := range names {
 			ns = append(ns, n)
 		}
 		sort.Strings(ns)
-		s := "s need"
-		if hiddenYou == 1 {
-			s = " needs"
+		var parts []string
+		if asking > 0 {
+			parts = append(parts, plural(asking, "agent is", "agents are")+" asking")
 		}
-		lines = append(lines, sYou.Render(fmt.Sprintf(" ● %d task%s you in hidden spaces (%s). Click or press 0 to show all.", hiddenYou, s, strings.Join(ns, ", "))))
+		if waiting > 0 {
+			parts = append(parts, plural(waiting, "task is", "tasks are")+" your turn")
+		}
+		style := sYou
+		if asking > 0 {
+			style = sAsk
+		}
+		lines = append(lines, style.Render(fmt.Sprintf(" ● In hidden spaces (%s): %s. Click or press 0 to show all.", strings.Join(ns, ", "), strings.Join(parts, ", "))))
 		ids = append(ids, "")
 		alertLine = 0
 	}
@@ -823,8 +860,8 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 	}
 	info, infoColor := "", lipgloss.TerminalColor(cDim)
 	switch {
-	case r.task.Stage == task.Paused && r.task.Reason != "":
-		info, infoColor = r.task.Reason, cPaused
+	case r.task.Stage.TakesReason() && r.task.Reason != "":
+		info, infoColor = r.task.Reason, stageColor(r.task.Stage)
 	case len(r.task.Links) > 0:
 		info, infoColor = "↗ "+r.task.Links[0].Display(), cLink
 		if n := len(r.task.Links); n > 1 {
@@ -860,13 +897,12 @@ func (m *model) detailLines(w, h int) []string {
 	add(sBold.Render(fit(t.Name(r.pos), w)))
 	add(sDim.Render(fit(r.ws.Label+" · tab "+r.tab.ID, w)))
 	_, _, gc := groupInfo(r.group)
-	words := map[task.Group]string{task.YourTurn: "your turn", task.Running: "agent running", task.GPaused: "paused", task.GParked: "parked", task.GDone: "done"}
 	add(lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph()+" "+t.Stage.Label()) +
-		sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Render(words[r.group]) +
+		sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Render(groupWord(r.group)) +
 		sDim.Render(" · "+task.Age(time.Since(t.Since))))
-	if t.Stage == task.Paused && t.Reason != "" {
-		for _, l := range wrap("until "+t.Reason, w) {
-			add(lipgloss.NewStyle().Foreground(cPaused).Render(l))
+	if t.Stage.TakesReason() && t.Reason != "" {
+		for _, l := range wrap(reasonLabel(t.Stage)+" "+t.Reason, w) {
+			add(lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(l))
 		}
 	}
 	add("")
@@ -925,15 +961,15 @@ func (m *model) footer() string {
 	m.keys = m.keys[:0]
 	switch m.mode {
 	case modeInput:
-		label := map[inputKind]string{inputReason: "Paused until", inputLink: "Add link", inputRename: "Name"}[m.inputKind]
-		color := map[inputKind]lipgloss.Color{inputReason: cPaused, inputLink: cLink, inputRename: cFg}[m.inputKind]
+		label := map[inputKind]string{inputReason: m.reasonStage.Label() + ", " + reasonLabel(m.reasonStage), inputLink: "Add link", inputRename: "Name"}[m.inputKind]
+		color := map[inputKind]lipgloss.Color{inputReason: stageColor(m.reasonStage), inputLink: cLink, inputRename: cFg}[m.inputKind]
 		return fit(" "+lipgloss.NewStyle().Foreground(color).Render(label)+" "+m.input.View()+sDim.Render("  ↵ save · esc cancel"), m.width)
 	case modeNote:
 		return fit(sDim.Render(" Editing the note · ctrl+s save · esc cancel"), m.width)
 	case modeUnlink:
 		return fit(sDim.Render(" Press a link number to remove it, any other key to cancel"), m.width)
 	}
-	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"},
+	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"},
 		{"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
@@ -956,4 +992,11 @@ func (m *model) footer() string {
 		x += w + 1
 	}
 	return b.String()
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
 }

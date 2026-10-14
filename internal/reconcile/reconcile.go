@@ -6,6 +6,7 @@ package reconcile
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -31,9 +32,30 @@ type Herdr interface {
 type Options struct {
 	// Put a stage marker in front of each tab name.
 	Markers bool `toml:"markers"`
-	// Order tabs active → paused → parked → done.
+	// Order tabs active → in review → paused → parked → done.
 	SortTabs bool `toml:"sort_tabs"`
+	// Show each task's stage, note, and links in a strip along the bottom of its tab.
+	Strip bool `toml:"strip"`
+
+	// Set for the run after herdr starts, when strips need restarting.
+	Startup bool `toml:"-"`
 }
+
+// Strips is implemented by hosts that can show strips (see package strip).
+type Strips interface {
+	Panes() ([]herdr.Pane, error)
+	Open(tabID string) (string, error)
+	Close(paneID string) error
+	CloseTab(tabID string) error
+	Relaunch(paneID string) error
+}
+
+// StripLabel and ParkingLabel match package strip; they're repeated here so
+// reconciliation doesn't depend on it.
+const (
+	StripLabel   = "Task"
+	ParkingLabel = "herdr-tasks parking"
+)
 
 func ConfigDir() string {
 	if d := os.Getenv("HERDR_PLUGIN_CONFIG_DIR"); d != "" {
@@ -45,7 +67,7 @@ func ConfigDir() string {
 
 // LoadOptions reads config.toml from the plugin's config directory.
 func LoadOptions() (Options, error) {
-	opt := Options{Markers: true, SortTabs: true}
+	opt := Options{Markers: true, SortTabs: true, Strip: true}
 	path := filepath.Join(ConfigDir(), "config.toml")
 	if _, err := toml.DecodeFile(path, &opt); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return opt, err
@@ -93,6 +115,8 @@ type Mutate func(s *store.State, live *herdr.Live) error
 // like afterwards.
 func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*herdr.Live, error) {
 	var live *herdr.Live
+	// A strip that couldn't be added shouldn't lose the rest of the run.
+	var stripErr error
 	err := st.Update(func(s *store.State) error {
 		var err error
 		if live, err = h.Live(); err != nil {
@@ -110,6 +134,9 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 				return err
 			}
 		}
+		if sh, ok := h.(Strips); ok {
+			stripErr = syncStrips(sh, s, live, opt)
+		}
 		if opt.SortTabs {
 			if err := sortTabs(h, s, live); err != nil {
 				return err
@@ -120,6 +147,9 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 		}
 		return reportTokens(h, s, live)
 	})
+	if err == nil {
+		err = stripErr
+	}
 	return live, err
 }
 
@@ -135,6 +165,14 @@ func Clear(h Herdr, st *store.Store) error {
 		}
 		if err := applyLabels(h, s, live, false); err != nil {
 			return err
+		}
+		if sh, ok := h.(Strips); ok {
+			for _, t := range s.Tasks {
+				if t.StripPane != "" {
+					_ = sh.Close(t.StripPane)
+					t.StripPane = ""
+				}
+			}
 		}
 		for _, w := range live.Workspaces {
 			// No stages clears every token.
@@ -202,6 +240,9 @@ func Track(s *store.State, live *herdr.Live, now time.Time) {
 	}
 
 	for _, tab := range untracked {
+		if task.StripMarker(tab.Label) == ParkingLabel {
+			continue // a pane waiting while a strip is added, not a task
+		}
 		s.Tasks[tab.ID] = &task.Task{
 			TabID:     tab.ID,
 			Workspace: wsLabel[tab.WorkspaceID],
@@ -343,4 +384,73 @@ func reportTokens(h Herdr, s *store.State, live *herdr.Live) error {
 		}
 	}
 	return nil
+}
+
+// syncStrips gives every task a strip unless you turned it off, notices
+// strips you closed, restarts strips after herdr restarts, and closes tabs
+// where only a strip is left.
+func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error {
+	panes, err := sh.Panes()
+	if err != nil {
+		return err
+	}
+	byID := map[string]herdr.Pane{}
+	byTab := map[string][]herdr.Pane{}
+	for _, p := range panes {
+		byID[p.ID] = p
+		byTab[p.TabID] = append(byTab[p.TabID], p)
+	}
+
+	var firstErr error
+	for _, tab := range live.Tabs {
+		t, ok := s.Tasks[tab.ID]
+		if !ok || tab.Label == ParkingLabel {
+			continue
+		}
+		if t.StripPane != "" {
+			if p, ok := byID[t.StripPane]; !ok || p.TabID != tab.ID {
+				// The tab is still here but its strip isn't: you closed it.
+				t.StripPane, t.StripOff = "", true
+			}
+		}
+		if t.StripPane == "" {
+			// Pick up a strip this state doesn't know about yet.
+			for _, p := range byTab[tab.ID] {
+				if p.Label == StripLabel {
+					t.StripPane = p.ID
+				}
+			}
+		}
+
+		switch {
+		case !opt.Strip && t.StripPane != "":
+			if err := sh.Close(t.StripPane); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			t.StripPane = ""
+		case !opt.Strip || t.StripOff:
+		case t.StripPane != "":
+			if len(byTab[tab.ID]) == 1 {
+				// Everything else in the tab closed; don't let the strip keep it open.
+				if err := sh.CloseTab(tab.ID); err != nil && firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
+			if opt.Startup {
+				if err := sh.Relaunch(t.StripPane); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
+		default:
+			id, err := sh.Open(tab.ID)
+			if id != "" {
+				t.StripPane = id
+			}
+			if err != nil && firstErr == nil {
+				firstErr = fmt.Errorf("adding the strip to %s: %w", tab.ID, err)
+			}
+		}
+	}
+	return firstErr
 }

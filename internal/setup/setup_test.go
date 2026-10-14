@@ -38,7 +38,7 @@ func TestApplyGoesInsideYourUISection(t *testing.T) {
 		t.Fatal("sidebar rows missing")
 	}
 	keys := m["keys"].(map[string]any)
-	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 1 {
+	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 2 {
 		t.Fatalf("keys = %v", keys)
 	}
 	if !strings.HasPrefix(out, "[ui]\n"+beginMark) {
@@ -91,6 +91,7 @@ rows = [["workspace"]]
 
 [keys]
 toggle_sidebar = "prefix+t"
+zoom = "prefix+i"
 `
 	out, notes, err := Apply(src, cmd)
 	if err != nil {
@@ -99,8 +100,8 @@ toggle_sidebar = "prefix+t"
 	if out != src {
 		t.Fatalf("config changed though everything was already set:\n%s", out)
 	}
-	if len(notes) != 3 {
-		t.Fatalf("want 3 notes, got %v", notes)
+	if len(notes) != 4 {
+		t.Fatalf("want 4 notes, got %v", notes)
 	}
 }
 

@@ -19,6 +19,7 @@ const (
 	beginMark   = "# >>> herdr-tasks (added by the herdr-tasks plugin; `herdr-tasks remove` takes it out)"
 	endMark     = "# <<< herdr-tasks"
 	OverviewKey = "prefix+t"
+	StripKey    = "prefix+i"
 )
 
 // ConfigPath is herdr's config file.
@@ -129,6 +130,9 @@ func RemoveBlocks(src string) string {
 	return strings.Join(out, "")
 }
 
+// countsRow is the sidebar row with a colored count per stage.
+const countsRow = `[{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_review", fg = "#b9a6ff" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }]`
+
 var uiHeader = regexp.MustCompile(`(?m)^[ \t]*\[ui\][ \t]*(#.*)?$`)
 
 // Apply adds herdr-tasks config to src and returns the new config, plus a
@@ -150,11 +154,15 @@ func Apply(src, statusCommand string) (string, []string, error) {
 		notes = append(notes, fmt.Sprintf("You already set ui.tab_bar_right. Add this entry to it for the task status: { type = \"command\", command = %q, interval_seconds = 3 }", statusCommand+" status"))
 	}
 	if hasSpaces {
-		notes = append(notes, `You already set ui.sidebar.spaces. Add this row to its rows for stage counts: [{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }]`)
+		notes = append(notes, "You already set ui.sidebar.spaces. Add this row to its rows for stage counts: "+countsRow)
 	}
 	keyTaken := usesKey(cfg["keys"], OverviewKey)
 	if keyTaken {
 		notes = append(notes, "ctrl+b t is already bound in your config, so the overview has no key. Bind the plugin action herdr-tasks.overview to a free key.")
+	}
+	stripKeyTaken := usesKey(cfg["keys"], StripKey)
+	if stripKeyTaken {
+		notes = append(notes, "ctrl+b i is already bound in your config, so the strip has no key. Bind the plugin action herdr-tasks.strip to a free key.")
 	}
 
 	out := src
@@ -184,6 +192,16 @@ func Apply(src, statusCommand string) (string, []string, error) {
 			`description = "task overview"`,
 			"")
 	}
+	if !stripKeyTaken {
+		tail = append(tail,
+			"# ctrl+b i shows or hides the task strip at the bottom of the tab",
+			"[[keys.command]]",
+			`key = "`+StripKey+`"`,
+			`type = "plugin_action"`,
+			`command = "herdr-tasks.strip"`,
+			`description = "task strip"`,
+			"")
+	}
 	if !hasSpaces {
 		tail = append(tail,
 			"# stage counts under each space",
@@ -191,7 +209,7 @@ func Apply(src, statusCommand string) (string, []string, error) {
 			"rows = [",
 			`  ["state_icon", "workspace"],`,
 			`  ["branch", "git_status"],`,
-			`  [{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }],`,
+			"  "+countsRow+",",
 			"]",
 			"")
 	}

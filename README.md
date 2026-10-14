@@ -6,7 +6,8 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 
 | Stage | Marker | Use it for |
 |---|---|---|
-| Active | `●` | Work in progress. The overview splits it into **Your turn** (agent answered, needs input, or nothing running) and **Agent running**. |
+| Active | `●` | Work in progress. The overview splits it by what the agent is doing: **Agent asking** (stopped mid-work for your answer or approval, the most urgent), **Your turn** (finished, or nothing running), and **Agent running**. |
+| In review | `◐` | Your part is done; waiting on approval, merge, or testing. Takes what it's waiting for. |
 | Paused | `‖` | On hold until something happens: a PR review, QA, or your own decision. Takes a reason. |
 | Parked | `○` | Started, but no time to follow up. |
 | Done | `✓` | Finished. Close the tab from the overview when you're ready. |
@@ -14,7 +15,8 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 ## What it adds to herdr
 
 - **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
-- **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → paused → parked → done.
+- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, and links. Press `↵` in it to open the overview.
+- **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
 - **Spaces sidebar**: stage counts under each space.
 
@@ -31,8 +33,20 @@ herdr plugin install alekkowalczyk/herdr-tasks
 That clones the repo, builds it, and runs `herdr-tasks setup`, which:
 
 - links `herdr-tasks` into `~/.local/bin`, for the tab bar status and for agents,
-- adds `ctrl+b t`, the tab bar status, and sidebar counts to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
-- reloads the config and turns every tab in every running herdr session into an Active task, so tab names get a `●` in front. Set `markers = false` (below) to keep tab names as they are.
+- adds `ctrl+b t`, `ctrl+b i`, the tab bar status, and sidebar counts to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
+- turns every tab in every running herdr session into an Active task, so tab names get a `●` in front (set `markers = false` below to keep tab names as they are), adds a strip along the bottom of each tab, and reloads the config.
+
+Adding a strip to a tab with several panes briefly moves the other panes out to temporary tabs and puts them back in the same arrangement; their processes keep running. New tabs get their strip as soon as they're created. Updates restart running strips with the new version in place.
+
+### herdr --remote
+
+If you attach from another machine with `herdr --remote`, that machine's own herdr config decides key bindings, the sidebar layout, and the tab bar. Merge the herdr-tasks lines into it over SSH (run this on that machine; `server` is the host you attach to):
+
+```bash
+f=~/.config/herdr/config.toml; mkdir -p ~/.config/herdr; touch "$f"; ssh server '~/.local/bin/herdr-tasks config --merge' < "$f" > "$f.new" && cp "$f" "$f.before-herdr-tasks" && mv "$f.new" "$f"
+```
+
+Then detach and attach again. `config --unmerge` takes the lines out the same way.
 
 To update, run the same install command again (on herdr 0.9.4+ you can use `herdr plugin update herdr-tasks`).
 
@@ -54,7 +68,7 @@ Gives tabs their plain names back, clears the sidebar counts, takes the marked b
 |---|---|---|
 | `↑` `↓` / `j` `k` | click, wheel | select a task |
 | `↵` | double-click | jump to the tab |
-| `a` `p` `z` `d` | | set Active, Paused (asks why), Parked, Done |
+| `a` `v` `p` `z` `d` | | set Active, In review (asks what for), Paused (asks why), Parked, Done |
 | `n` | | edit the note (`ctrl+s` saves, `esc` cancels) |
 | `l` / `L` | `×` next to a link | add a link / remove one |
 | `r` | | rename the task (also renames the tab) |
@@ -64,7 +78,7 @@ Gives tabs their plain names back, clears the sidebar counts, takes the marked b
 | `0` | click "All" | show all spaces |
 | `esc` / `q` / `t` | | close the overview |
 
-If a hidden space has a task where it's your turn, a line at the top of the list says so. The space filter is remembered between opens.
+Space chips count agents asking (`?`) and tasks where it's your turn (`●`). If a hidden space has either, a line at the top of the list says so. The space filter is remembered between opens.
 
 ## Command line
 
@@ -72,6 +86,7 @@ Inside a herdr pane, commands apply to that pane's tab. Use `--tab ID` for anoth
 
 ```bash
 herdr-tasks set parked
+herdr-tasks review "approval + QA"
 herdr-tasks pause "PR #212 review"
 herdr-tasks note set "Old endpoint stays behind a flag until mobile ships."
 herdr-tasks note add "Opened draft PR #431."          # a line with your name, or the agent's
@@ -97,7 +112,8 @@ with `herdr-tasks link add <url>`. Don't change the task's stage.
 
 ```toml
 markers = true    # stage marker in front of tab names
-sort_tabs = true  # order tabs active → paused → parked → done
+sort_tabs = true  # order tabs active → in review → paused → parked → done
+strip = true      # a strip along the bottom of each tab
 ```
 
 Run `herdr-tasks sync` after changing them.
@@ -108,11 +124,11 @@ Run `herdr-tasks sync` after changing them.
 - herdr runs `herdr-tasks hook` on startup and when tabs or spaces are created, closed, renamed, or moved. Each run brings markers, order, and sidebar counts in line. Sidebar counts don't survive a herdr restart, so the startup hook reports them again.
 - Unnamed tabs keep showing their position number after the marker, and the plugin updates that number when tabs move.
 - Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
+- A strip is an ordinary pane labeled `Task` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
 
-## Not in v1 yet
+## Not yet
 
-- A strip at the bottom of each tab showing the note and links (on by default).
 - A Claude Code hook that attaches every PR an agent opens.
 - A notification with the task's note when you switch tabs.
 - `ctrl+click` on a PR or ticket link to attach it to the task.
-- PR review and check status from `gh`, and paused tasks going back to Active when a PR is approved.
+- PR review and check status from `gh`, and tasks moving on when a PR is approved or merged.
