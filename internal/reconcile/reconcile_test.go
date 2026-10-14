@@ -246,3 +246,126 @@ func TestTokens(t *testing.T) {
 		t.Fatal("empty space should clear $tasks")
 	}
 }
+
+// fakeStrips adds panes and strips to fakeHerdr.
+type fakeStrips struct {
+	*fakeHerdr
+	panes []herdr.Pane
+	next  int
+}
+
+func newFakeStrips() *fakeStrips {
+	f := &fakeStrips{fakeHerdr: newFake()}
+	for _, t := range f.tabs {
+		f.add(t.ID, "")
+	}
+	return f
+}
+
+func (f *fakeStrips) add(tabID, label string) string {
+	f.next++
+	id := fmt.Sprintf("%s:p%d", tabID[:2], f.next)
+	f.panes = append(f.panes, herdr.Pane{ID: id, TabID: tabID, Label: label})
+	return id
+}
+
+func (f *fakeStrips) Panes() ([]herdr.Pane, error) { return append([]herdr.Pane(nil), f.panes...), nil }
+func (f *fakeStrips) Open(tabID string) (string, error) {
+	return f.add(tabID, StripLabel), nil
+}
+func (f *fakeStrips) Close(paneID string) error {
+	for i, p := range f.panes {
+		if p.ID == paneID {
+			f.panes = append(f.panes[:i], f.panes[i+1:]...)
+			return nil
+		}
+	}
+	return fmt.Errorf("no pane %s", paneID)
+}
+func (f *fakeStrips) CloseTab(tabID string) error {
+	var keep []herdr.Pane
+	for _, p := range f.panes {
+		if p.TabID != tabID {
+			keep = append(keep, p)
+		}
+	}
+	f.panes = keep
+	for i, t := range f.tabs {
+		if t.ID == tabID {
+			f.tabs = append(f.tabs[:i], f.tabs[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+func (f *fakeStrips) Relaunch(string) error { return nil }
+
+func (f *fakeStrips) strips() map[string]bool {
+	out := map[string]bool{}
+	for _, p := range f.panes {
+		if p.Label == StripLabel {
+			out[p.TabID] = true
+		}
+	}
+	return out
+}
+
+var withStrips = Options{Markers: true, SortTabs: true, Strip: true}
+
+func TestEveryTaskGetsAStripButToolsDont(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	if _, err := Run(f, st, withStrips, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.strips()) != 4 {
+		t.Fatalf("strips = %v", f.strips())
+	}
+	// Marking a tab as a tool takes its strip away and moves it last.
+	Run(f, st, withStrips, time.Now(), setStage("w1:t1", task.Tool))
+	if f.strips()["w1:t1"] {
+		t.Fatal("a tool tab kept its strip")
+	}
+	if got := f.labels("w1"); got[len(got)-1] != "◇ 3" {
+		t.Fatalf("labels = %v", got)
+	}
+	if tok := f.tokens["w1"]; *tok["tasks"] != "● 2" || tok["tasks_tool"] != nil {
+		t.Fatalf("tool counted as work: %v", *tok["tasks"])
+	}
+	// You can still turn a strip on for a tool.
+	Run(f, st, withStrips, time.Now(), func(s *store.State, _ *herdr.Live) error {
+		s.Tasks["w1:t1"].SetStrip(true)
+		return nil
+	})
+	if !f.strips()["w1:t1"] {
+		t.Fatal("strip didn't come back on a tool you turned it on for")
+	}
+}
+
+func TestAStripYouCloseStaysClosed(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	Run(f, st, withStrips, time.Now(), nil)
+	s, _ := st.Load()
+	f.Close(s.Tasks["w2:t1"].StripPane)
+	Run(f, st, withStrips, time.Now(), nil)
+	if f.strips()["w2:t1"] {
+		t.Fatal("strip came back after you closed it")
+	}
+}
+
+func TestATabWithOnlyItsStripLeftCloses(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	Run(f, st, withStrips, time.Now(), nil)
+	var keep []herdr.Pane
+	for _, p := range f.panes {
+		if p.TabID != "w2:t1" || p.Label == StripLabel {
+			keep = append(keep, p)
+		}
+	}
+	f.panes = keep
+	Run(f, st, withStrips, time.Now(), nil)
+	for _, tab := range f.tabs {
+		if tab.ID == "w2:t1" {
+			t.Fatal("tab with only its strip left is still open")
+		}
+	}
+}

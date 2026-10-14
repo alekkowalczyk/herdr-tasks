@@ -353,6 +353,9 @@ func Tokens(stages []task.Stage) map[string]*string {
 	tokens := map[string]*string{}
 	var parts []string
 	for _, st := range task.Stages {
+		if !st.IsTask() {
+			continue // tool tabs aren't work
+		}
 		key := "tasks_" + string(st)
 		if counts[st] == 0 {
 			tokens[key] = nil
@@ -410,7 +413,8 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 		if t.StripPane != "" {
 			if p, ok := byID[t.StripPane]; !ok || p.TabID != tab.ID {
 				// The tab is still here but its strip isn't: you closed it.
-				t.StripPane, t.StripOff = "", true
+				t.StripPane = ""
+				t.SetStrip(false)
 			}
 		}
 		if t.StripPane == "" {
@@ -422,13 +426,15 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 			}
 		}
 
+		want := opt.Strip && t.WantsStrip()
 		switch {
-		case !opt.Strip && t.StripPane != "":
+		case !want && t.StripPane != "":
+			// Strips are off, or the tab became a tool.
 			if err := sh.Close(t.StripPane); err != nil && firstErr == nil {
 				firstErr = err
 			}
 			t.StripPane = ""
-		case !opt.Strip || t.StripOff:
+		case !want:
 		case t.StripPane != "":
 			if len(byTab[tab.ID]) == 1 {
 				// Everything else in the tab closed; don't let the strip keep it open.

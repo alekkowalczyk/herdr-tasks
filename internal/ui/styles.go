@@ -20,6 +20,7 @@ var (
 	cYou    = lipgloss.Color("#ff8d6e")
 	cAsk    = lipgloss.Color("#ff5f6d")
 	cReview = lipgloss.Color("#b9a6ff")
+	cTool   = lipgloss.Color("#8a96a8")
 	cLink   = lipgloss.Color("#9cc4ff")
 	cSelBG  = lipgloss.Color("#232b35")
 	cChipBG = lipgloss.Color("#2b3442")
@@ -35,6 +36,8 @@ var (
 
 func stageColor(s task.Stage) lipgloss.Color {
 	switch s {
+	case task.Tool:
+		return cTool
 	case task.Review:
 		return cReview
 	case task.Paused:
@@ -61,6 +64,8 @@ func groupInfo(g task.Group) (title, hint string, color lipgloss.Color) {
 		return "PAUSED", "on hold until something happens", cPaused
 	case task.GParked:
 		return "PARKED", "", cParked
+	case task.GTool:
+		return "TOOLS", "not tasks: tools and running apps", cTool
 	}
 	return "DONE", "close when ready", cDone
 }
@@ -130,6 +135,8 @@ func groupWord(g task.Group) string {
 		return "paused"
 	case task.GParked:
 		return "parked"
+	case task.GTool:
+		return "tool"
 	}
 	return "done"
 }

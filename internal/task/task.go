@@ -20,10 +20,12 @@ const (
 	Paused Stage = "paused"
 	Parked Stage = "parked"
 	Done   Stage = "done"
+	// Not a task: a tab that stays open for a tool or a running app.
+	Tool Stage = "tool"
 )
 
 // Stages in tab-bar order.
-var Stages = []Stage{Active, Review, Paused, Parked, Done}
+var Stages = []Stage{Active, Review, Paused, Parked, Done, Tool}
 
 func ParseStage(s string) (Stage, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -37,12 +39,16 @@ func ParseStage(s string) (Stage, bool) {
 		return Parked, true
 	case "done", "d":
 		return Done, true
+	case "tool", "o":
+		return Tool, true
 	}
 	return "", false
 }
 
 func (s Stage) Glyph() string {
 	switch s {
+	case Tool:
+		return "◇"
 	case Review:
 		return "◐"
 	case Paused:
@@ -57,6 +63,8 @@ func (s Stage) Glyph() string {
 
 func (s Stage) Label() string {
 	switch s {
+	case Tool:
+		return "Tool"
 	case Review:
 		return "In review"
 	case Paused:
@@ -164,10 +172,28 @@ type Task struct {
 	Links     []Link    `json:"links,omitempty"`
 	// The tab label this plugin last set, so its own renames aren't mistaken for yours.
 	Applied string `json:"applied,omitempty"`
-	// The pane showing this task's strip, and whether you turned the strip off.
+	// The pane showing this task's strip. You can turn a task's strip off,
+	// and turn one on for a tool tab, which has none by default.
 	StripPane string `json:"strip_pane,omitempty"`
 	StripOff  bool   `json:"strip_off,omitempty"`
+	StripOn   bool   `json:"strip_on,omitempty"`
 }
+
+// WantsStrip reports whether the tab should show a strip.
+func (t *Task) WantsStrip() bool {
+	if t.Stage == Tool {
+		return t.StripOn
+	}
+	return !t.StripOff
+}
+
+// SetStrip records that you showed or hid the tab's strip.
+func (t *Task) SetStrip(show bool) {
+	t.StripOn, t.StripOff = show, !show
+}
+
+// IsTask reports whether the tab counts as work, unlike a tool tab.
+func (s Stage) IsTask() bool { return s != Tool }
 
 func (t *Task) WorkspaceID() string {
 	if i := strings.IndexByte(t.TabID, ':'); i > 0 {
@@ -248,13 +274,16 @@ const (
 	GPaused  Group = "paused"
 	GParked  Group = "parked"
 	GDone    Group = "done"
+	GTool    Group = "tool"
 )
 
-var Groups = []Group{Asking, YourTurn, Running, GReview, GPaused, GParked, GDone}
+var Groups = []Group{Asking, YourTurn, Running, GReview, GPaused, GParked, GDone, GTool}
 
 // GroupOf splits active tasks by what their agents are doing.
 func GroupOf(s Stage, agentStatus string) Group {
 	switch s {
+	case Tool:
+		return GTool
 	case Review:
 		return GReview
 	case Paused:

@@ -23,16 +23,17 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.2.1"
+const version = "0.3.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
 Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another one.
 
-  herdr-tasks set <stage> [reason]   stage: active, review, paused, parked, done
+  herdr-tasks set <stage> [reason]   stage: active, review, paused, parked, done, tool
                                      (review and paused take what they wait for)
   herdr-tasks review [waiting for]   your part is done; waiting on approval, merge, or tests
   herdr-tasks pause [reason]         on hold until something happens
+  herdr-tasks tool                   not a task: a tab for a tool or a running app
   herdr-tasks note set <text>                             replace your note
   herdr-tasks note add <text> [--as NAME]                 add a line (agents use this)
   herdr-tasks note clear
@@ -180,6 +181,9 @@ func run(args []string) error {
 	case "review":
 		a.flags.args = append([]string{"review"}, a.flags.args...)
 		return a.set()
+	case "tool":
+		a.flags.args = append([]string{"tool"}, a.flags.args...)
+		return a.set()
 	case "strip":
 		return ui.RunStrip(a.client, a.store)
 	case "strip-toggle":
@@ -259,11 +263,11 @@ func (a *app) who() string {
 
 func (a *app) set() error {
 	if len(a.flags.args) == 0 {
-		return errors.New("which stage? active, review, paused, parked, or done")
+		return errors.New("which stage? active, review, paused, parked, done, or tool")
 	}
 	s, ok := task.ParseStage(a.flags.args[0])
 	if !ok {
-		return fmt.Errorf("unknown stage %q; use active, review, paused, parked, or done", a.flags.args[0])
+		return fmt.Errorf("unknown stage %q; use active, review, paused, parked, done, or tool", a.flags.args[0])
 	}
 	reason := strings.TrimSpace(strings.Join(a.flags.args[1:], " "))
 	if reason != "" && !s.TakesReason() {
@@ -685,10 +689,11 @@ func (a *app) stripToggle() error {
 			if err := host.Close(t.StripPane); err != nil {
 				return err
 			}
-			t.StripPane, t.StripOff = "", true
+			t.StripPane = ""
+			t.SetStrip(false)
 			return nil
 		}
-		t.StripOff = false // reconciliation adds it
+		t.SetStrip(true) // reconciliation adds it
 		return nil
 	})
 	return err

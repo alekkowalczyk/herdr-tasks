@@ -527,6 +527,8 @@ func (m *model) key(k string) tea.Cmd {
 		m.setStage(task.Parked)
 	case "d":
 		m.setStage(task.Done)
+	case "o":
+		m.setStage(task.Tool)
 	case "n":
 		m.startNote()
 	case "l":
@@ -713,7 +715,7 @@ func (m *model) filterLine() string {
 		n, asking, you := 0, 0, 0
 		for _, tab := range m.live.TabsIn(w.ID) {
 			t, ok := m.state.Tasks[tab.ID]
-			if !ok {
+			if !ok || !t.Stage.IsTask() {
 				continue
 			}
 			n++
@@ -853,6 +855,9 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 		return bg.Foreground(fg).Render(fit(text, width))
 	}
 	agent, agentColor := agentLabel(r.tab.AgentStatus)
+	if r.group == task.GTool {
+		agent = "" // a tool tab's agent doesn't need you
+	}
 	name := r.task.Name(r.pos)
 	nameColor := lipgloss.TerminalColor(cFg)
 	if r.task.Title == "" {
@@ -897,9 +902,12 @@ func (m *model) detailLines(w, h int) []string {
 	add(sBold.Render(fit(t.Name(r.pos), w)))
 	add(sDim.Render(fit(r.ws.Label+" · tab "+r.tab.ID, w)))
 	_, _, gc := groupInfo(r.group)
-	add(lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph()+" "+t.Stage.Label()) +
-		sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Render(groupWord(r.group)) +
-		sDim.Render(" · "+task.Age(time.Since(t.Since))))
+	line := lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph() + " " + t.Stage.Label())
+	if t.Stage == task.Active {
+		// Only active tasks split further, by what the agent is doing.
+		line += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Render(groupWord(r.group))
+	}
+	add(line + sDim.Render(" · "+task.Age(time.Since(t.Since))))
 	if t.Stage.TakesReason() && t.Reason != "" {
 		for _, l := range wrap(reasonLabel(t.Stage)+" "+t.Reason, w) {
 			add(lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(l))
@@ -969,7 +977,7 @@ func (m *model) footer() string {
 	case modeUnlink:
 		return fit(sDim.Render(" Press a link number to remove it, any other key to cancel"), m.width)
 	}
-	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"},
+	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},

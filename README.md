@@ -11,12 +11,13 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 | Paused | `‖` | On hold until something happens: a PR review, QA, or your own decision. Takes a reason. |
 | Parked | `○` | Started, but no time to follow up. |
 | Done | `✓` | Finished. Close the tab from the overview when you're ready. |
+| Tool | `◇` | Not a task: a tab that stays open for a tool like lazygit, or a running app. Sorted last, left out of the counts, listed under TOOLS at the bottom of the overview, and has no strip unless you turn one on. |
 
 ## What it adds to herdr
 
 - **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
 - **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, and links. Press `↵` in it to open the overview.
-- **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done.
+- **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
 - **Spaces sidebar**: stage counts under each space.
 
@@ -72,7 +73,7 @@ Gives tabs their plain names back, clears the sidebar counts, takes the marked b
 |---|---|---|
 | `↑` `↓` / `j` `k` | click, wheel | select a task |
 | `↵` | double-click | jump to the tab |
-| `a` `v` `p` `z` `d` | | set Active, In review (asks what for), Paused (asks why), Parked, Done |
+| `a` `v` `p` `z` `d` `o` | | set Active, In review (asks what for), Paused (asks why), Parked, Done, Tool |
 | `n` | | edit the note (`ctrl+s` saves, `esc` cancels) |
 | `l` / `L` | `×` next to a link | add a link / remove one |
 | `r` | | rename the task (also renames the tab) |
@@ -91,6 +92,7 @@ Inside a herdr pane, commands apply to that pane's tab. Use `--tab ID` for anoth
 ```bash
 herdr-tasks set parked
 herdr-tasks review "approval + QA"
+herdr-tasks tool
 herdr-tasks pause "PR #212 review"
 herdr-tasks note set "Old endpoint stays behind a flag until mobile ships."
 herdr-tasks note add "Opened draft PR #431."          # a line with your name, or the agent's
@@ -116,7 +118,7 @@ with `herdr-tasks link add <url>`. Don't change the task's stage.
 
 ```toml
 markers = true    # stage marker in front of tab names
-sort_tabs = true  # order tabs active → in review → paused → parked → done
+sort_tabs = true  # order tabs active → in review → paused → parked → done → tools
 strip = true      # a strip along the bottom of each tab
 ```
 

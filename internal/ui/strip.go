@@ -150,9 +150,11 @@ func (m *stripModel) View() string {
 	_, _, gc := groupInfo(g)
 
 	// First line: stage, what's going on, and what it's waiting for.
-	head := " " + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph()+" "+t.Stage.Label()) +
-		sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Bold(g == task.Asking).Render(groupWord(g)) +
-		sDim.Render(" · "+task.Age(time.Since(t.Since)))
+	head := " " + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph()+" "+t.Stage.Label())
+	if t.Stage == task.Active {
+		head += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Bold(g == task.Asking).Render(groupWord(g))
+	}
+	head += sDim.Render(" · " + task.Age(time.Since(t.Since)))
 	if t.Stage.TakesReason() && t.Reason != "" {
 		head += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(reasonLabel(t.Stage)+" "+t.Reason)
 	}

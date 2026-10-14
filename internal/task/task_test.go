@@ -40,6 +40,7 @@ func TestGroupOf(t *testing.T) {
 		{Review, "working", GReview},
 		{Parked, "idle", GParked},
 		{Done, "working", GDone},
+		{Tool, "blocked", GTool},
 	}
 	for _, c := range cases {
 		if got := GroupOf(c.stage, c.status); got != c.want {
@@ -130,5 +131,31 @@ func TestAge(t *testing.T) {
 		if got := Age(d); got != want {
 			t.Errorf("Age(%v) = %q, want %q", d, got, want)
 		}
+	}
+}
+
+func TestToolTabs(t *testing.T) {
+	if s, ok := ParseStage("tool"); !ok || s != Tool || !Done.IsTask() || Tool.IsTask() {
+		t.Fatal("tool stage")
+	}
+	if Tool.Order() <= Done.Order() {
+		t.Fatal("tools should sort after done")
+	}
+	tk := &Task{Stage: Active}
+	if !tk.WantsStrip() {
+		t.Fatal("tasks show a strip by default")
+	}
+	tk.Stage = Tool
+	if tk.WantsStrip() {
+		t.Fatal("tools have no strip by default")
+	}
+	tk.SetStrip(true)
+	if !tk.WantsStrip() {
+		t.Fatal("you can turn a tool's strip on")
+	}
+	tk.Stage = Active
+	tk.SetStrip(false)
+	if tk.WantsStrip() {
+		t.Fatal("you can turn a task's strip off")
 	}
 }
