@@ -34,7 +34,7 @@ That clones the repo, builds it, and runs `herdr-tasks setup`, which:
 - adds `ctrl+b t`, the tab bar status, and sidebar counts to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
 - reloads the config and turns every tab in every running herdr session into an Active task, so tab names get a `●` in front. Set `markers = false` (below) to keep tab names as they are.
 
-Update with `herdr plugin update herdr-tasks`.
+To update, run the same install command again (on herdr 0.9.4+ you can use `herdr plugin update herdr-tasks`).
 
 ### Remove
 
