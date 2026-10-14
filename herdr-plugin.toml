@@ -1,0 +1,59 @@
+id = "herdr-tasks"
+name = "Tasks"
+version = "0.1.0"
+min_herdr_version = "0.8.0"
+description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
+platforms = ["linux", "macos"]
+
+[[build]]
+command = ["go", "build", "-o", "bin/herdr-tasks", "./cmd/herdr-tasks"]
+
+[[startup]]
+command = ["bin/herdr-tasks", "hook"]
+
+[[actions]]
+id = "overview"
+title = "Task overview"
+command = ["bin/herdr-tasks", "open"]
+
+[[actions]]
+id = "sync"
+title = "Redo task markers and counts"
+command = ["bin/herdr-tasks", "sync"]
+
+[[events]]
+on = "tab.created"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "tab.closed"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "tab.renamed"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "tab.moved"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "workspace.created"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "workspace.closed"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "workspace.renamed"
+command = ["bin/herdr-tasks", "hook"]
+
+[[panes]]
+id = "overview"
+title = "Tasks"
+placement = "popup"
+width = "92%"
+height = "88%"
+# Pane commands are looked up on PATH rather than in the plugin folder.
+command = ["sh", "-c", "exec \"$HERDR_PLUGIN_ROOT/bin/herdr-tasks\" overview"]

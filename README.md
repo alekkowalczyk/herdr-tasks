@@ -1,0 +1,106 @@
+# herdr-tasks
+
+A [herdr](https://herdr.dev) plugin that treats every tab as a task. Each tab gets a stage, a note, and links, and one overview shows every task across all spaces.
+
+You set the stage. Agents never get a status from you: for active tasks, herdr's own agent detection decides whether it's your turn or the agent is still running.
+
+| Stage | Marker | Use it for |
+|---|---|---|
+| Active | `●` | Work in progress. The overview splits it into **Your turn** (agent answered, needs input, or nothing running) and **Agent running**. |
+| Paused | `‖` | On hold until something happens: a PR review, QA, or your own decision. Takes a reason. |
+| Parked | `○` | Started, but no time to follow up. |
+| Done | `✓` | Finished. Close the tab from the overview when you're ready. |
+
+## What it adds to herdr
+
+- **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
+- **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → paused → parked → done.
+- **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
+- **Spaces sidebar**: stage counts under each space.
+
+The Agents list is left alone.
+
+## Install
+
+Needs Go 1.23+ and herdr 0.8.0+.
+
+```bash
+git clone git@github.com:alekkowalczyk/herdr-tasks.git
+cd herdr-tasks
+make link        # builds, puts herdr-tasks in ~/.local/bin, links the plugin, syncs
+herdr-tasks config   # prints the lines to add to ~/.config/herdr/config.toml
+herdr server reload-config
+```
+
+`make link` marks every existing tab as Active right away, so your tab names get a `●` in front. Set `markers = false` (below) if you'd rather keep tab names as they are.
+
+To remove it: `make unlink`. Turn markers off first if you want the plain names back.
+
+## The overview
+
+| Keys | Mouse | Does |
+|---|---|---|
+| `↑` `↓` / `j` `k` | click, wheel | select a task |
+| `↵` | double-click | jump to the tab |
+| `a` `p` `z` `d` | | set Active, Paused (asks why), Parked, Done |
+| `n` | | edit the note (`ctrl+s` saves, `esc` cancels) |
+| `l` / `L` | `×` next to a link | add a link / remove one |
+| `r` | | rename the task (also renames the tab) |
+| `x` | | close the tab (Done tasks only) |
+| `1`–`9` | click a space chip | hide or show that space |
+| `shift`+`1`–`9` | double-click a chip | show only that space |
+| `0` | click "All" | show all spaces |
+| `esc` / `q` / `t` | | close the overview |
+
+If a hidden space has a task where it's your turn, a line at the top of the list says so. The space filter is remembered between opens.
+
+## Command line
+
+Inside a herdr pane, commands apply to that pane's tab. Use `--tab ID` for another one.
+
+```bash
+herdr-tasks set parked
+herdr-tasks pause "PR #212 review"
+herdr-tasks note set "Old endpoint stays behind a flag until mobile ships."
+herdr-tasks note add "Opened draft PR #431."          # a line with your name, or the agent's
+herdr-tasks link add https://github.com/acme/api/pull/431
+herdr-tasks link rm 1
+herdr-tasks show
+herdr-tasks list
+```
+
+### Letting agents add notes and links
+
+An agent runs in a pane of its tab, so it can use the same commands. `note add` and `link add` record who added them (`claude` when run from Claude Code, or `--as NAME`). To have Claude do it, add this to `~/.claude/CLAUDE.md`:
+
+```markdown
+When running inside herdr (HERDR_ENV=1), record decisions on the current task with
+`herdr-tasks note add "<text>"`, and attach every PR, ticket, or doc you create or rely on
+with `herdr-tasks link add <url>`. Don't change the task's stage.
+```
+
+## Settings
+
+`~/.config/herdr/plugins/config/herdr-tasks/config.toml`:
+
+```toml
+markers = true    # stage marker in front of tab names
+sort_tabs = true  # order tabs active → paused → parked → done
+```
+
+Run `herdr-tasks sync` after changing them.
+
+## How it works
+
+- State lives in `~/.local/state/herdr/plugins/herdr-tasks/<session>.json`, one file per herdr session, keyed by tab ID. herdr keeps tab IDs across restarts. If a tab still gets a new ID, a named task follows it by space and name.
+- herdr runs `herdr-tasks hook` on startup and when tabs or spaces are created, closed, renamed, or moved. Each run brings markers, order, and sidebar counts in line. Sidebar counts don't survive a herdr restart, so the startup hook reports them again.
+- Unnamed tabs keep showing their position number after the marker, and the plugin updates that number when tabs move.
+- Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
+
+## Not in v1 yet
+
+- A strip at the bottom of each tab showing the note and links (on by default).
+- A Claude Code hook that attaches every PR an agent opens.
+- A notification with the task's note when you switch tabs.
+- `ctrl+click` on a PR or ticket link to attach it to the task.
+- PR review and check status from `gh`, and paused tasks going back to Active when a PR is approved.
