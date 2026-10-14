@@ -21,9 +21,11 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 - **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, and links. Press `↵` in it to open the overview.
 - **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
-- **Spaces sidebar**: stage counts under each space.
+- **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then running and in review. Paused, parked, done, and tool tabs stay out of the list; a dim line counts the hidden ones. `ctrl+b a` switches to plain stage counts and back.
 
 The Agents list is left alone.
+
+<img src="docs/screenshots/sidebar-tasks.png" width="280" alt="The sidebar listing each space's tasks: an agent asking in red, your-turn tasks in coral, running tasks dimmed, and counts of paused, parked, and done tasks">
 
 ![Claude Code asking for permission in one pane. The strip at the bottom says "agent asking" and shows the task's note, Claude's entry, and links](docs/screenshots/agent-asking.png)
 
@@ -42,7 +44,7 @@ herdr plugin install alekkowalczyk/herdr-tasks
 That clones the repo, builds it, and runs `herdr-tasks setup`, which:
 
 - links `herdr-tasks` into `~/.local/bin`, for the tab bar status and for agents,
-- adds `ctrl+b t`, `ctrl+b i`, the tab bar status, and sidebar counts to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
+- adds `ctrl+b t`, `ctrl+b i`, `ctrl+b a`, the tab bar status, and the sidebar rows to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
 - turns every tab in every running herdr session into an Active task, so tab names get a `●` in front (set `markers = false` below to keep tab names as they are), adds a strip along the bottom of each tab, and reloads the config.
 
 Adding a strip to a tab with several panes briefly moves the other panes out to temporary tabs and puts them back in the same arrangement; their processes keep running. New tabs get their strip as soon as they're created. Updates restart running strips with the new version in place.
@@ -137,6 +139,7 @@ Run `herdr-tasks sync` after changing them.
 - State lives in `~/.local/state/herdr/plugins/herdr-tasks/<session>.json`, one file per herdr session, keyed by tab ID. herdr keeps tab IDs across restarts. If a tab still gets a new ID, a named task follows it by space and name.
 - herdr runs `herdr-tasks hook` on startup and when tabs or spaces are created, closed, renamed, or moved. Each run brings markers, order, and sidebar counts in line. Sidebar counts don't survive a herdr restart, so the startup hook reports them again.
 - Unnamed tabs keep showing their position number after the marker, and the plugin updates that number when tabs move.
+- The sidebar list is up to 7 rows per space, sent as workspace metadata tokens (`$t1`…`$t7`, with `_ask` and `_you` variants so they can be colored). A hook on agent status changes keeps it current.
 - Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
 - A strip is an ordinary pane labeled `Task` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
 

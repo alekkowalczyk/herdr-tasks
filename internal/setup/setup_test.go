@@ -38,7 +38,7 @@ func TestApplyGoesInsideYourUISection(t *testing.T) {
 		t.Fatal("sidebar rows missing")
 	}
 	keys := m["keys"].(map[string]any)
-	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 2 {
+	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 3 {
 		t.Fatalf("keys = %v", keys)
 	}
 	if !strings.HasPrefix(out, "[ui]\n"+beginMark) {
@@ -92,6 +92,7 @@ rows = [["workspace"]]
 [keys]
 toggle_sidebar = "prefix+t"
 zoom = "prefix+i"
+new_workspace = "prefix+a"
 `
 	out, notes, err := Apply(src, cmd)
 	if err != nil {
@@ -100,8 +101,8 @@ zoom = "prefix+i"
 	if out != src {
 		t.Fatalf("config changed though everything was already set:\n%s", out)
 	}
-	if len(notes) != 4 {
-		t.Fatalf("want 4 notes, got %v", notes)
+	if len(notes) != 5 {
+		t.Fatalf("want 5 notes, got %v", notes)
 	}
 }
 
@@ -149,5 +150,22 @@ func TestInstallBinaryLeavesOtherFilesAlone(t *testing.T) {
 	RemoveBinary(state)
 	if b, _ := os.ReadFile(dst); string(b) != "theirs" {
 		t.Fatal("removed a foreign file")
+	}
+}
+
+func TestSidebarRowsFitHerdrsLimits(t *testing.T) {
+	out, _, err := Apply("", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := decode(t, out)
+	rows := m["ui"].(map[string]any)["sidebar"].(map[string]any)["spaces"].(map[string]any)["rows"].([]any)
+	if len(rows) > 16 {
+		t.Fatalf("%d rows; herdr allows 16", len(rows))
+	}
+	for _, r := range rows {
+		if len(r.([]any)) > 16 {
+			t.Fatalf("row with %d tokens; herdr allows 16", len(r.([]any)))
+		}
 	}
 }

@@ -175,8 +175,12 @@ func Clear(h Herdr, st *store.Store) error {
 			}
 		}
 		for _, w := range live.Workspaces {
-			// No stages clears every token.
-			if err := h.ReportWorkspaceTokens(w.ID, Tokens(nil)); err != nil {
+			// No stages and no rows clears every token.
+			tokens := Tokens(nil)
+			for k, v := range ListTokens(s, live, nil, false) {
+				tokens[k] = v
+			}
+			if err := reportInChunks(h, w.ID, tokens); err != nil {
 				return err
 			}
 		}
@@ -379,14 +383,123 @@ func Tokens(stages []task.Stage) map[string]*string {
 func reportTokens(h Herdr, s *store.State, live *herdr.Live) error {
 	for _, w := range live.Workspaces {
 		var stages []task.Stage
+		var tabs []herdr.Tab
 		for _, tab := range live.TabsIn(w.ID) {
 			stages = append(stages, stageOf(s, tab.ID))
+			tabs = append(tabs, tab)
 		}
-		if err := h.ReportWorkspaceTokens(w.ID, Tokens(stages)); err != nil {
+		tokens := Tokens(stages)
+		for k, v := range ListTokens(s, live, tabs, !s.SidebarCounts) {
+			tokens[k] = v
+		}
+		if !s.SidebarCounts {
+			// The list shows active and in-review tasks; the counts line
+			// keeps only what the list hides.
+			for _, st := range []task.Stage{task.Active, task.Review} {
+				tokens["tasks_"+string(st)] = nil
+			}
+		}
+		if err := reportInChunks(h, w.ID, tokens); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// reportInChunks sends tokens in reports of at most 16, herdr's limit.
+func reportInChunks(h Herdr, workspaceID string, tokens map[string]*string) error {
+	keys := make([]string, 0, len(tokens))
+	for k := range tokens {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for len(keys) > 0 {
+		n := min(16, len(keys))
+		chunk := map[string]*string{}
+		for _, k := range keys[:n] {
+			chunk[k] = tokens[k]
+		}
+		if err := h.ReportWorkspaceTokens(workspaceID, chunk); err != nil {
+			return err
+		}
+		keys = keys[n:]
+	}
+	return nil
+}
+
+// ListRows is how many task rows a space shows in the sidebar.
+const ListRows = 7
+
+// listHidden are the stages the sidebar list leaves out.
+var listHidden = map[task.Group]bool{task.GPaused: true, task.GParked: true, task.GDone: true, task.GTool: true}
+
+// ListTokens are the sidebar rows listing a space's tasks, most urgent first:
+// $tN_ask for an agent asking, $tN_you when it's your turn, and $tN for the
+// rest, so each can get its own color. Paused, parked, done, and tool tabs
+// are left out. With show false every row is cleared.
+func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) map[string]*string {
+	type row struct {
+		g    task.Group
+		text string
+	}
+	var rows []row
+	if show {
+		for _, tab := range tabs {
+			t, ok := s.Tasks[tab.ID]
+			if !ok {
+				continue
+			}
+			g := task.GroupOf(t.Stage, tab.AgentStatus)
+			if listHidden[g] {
+				continue
+			}
+			glyph := t.Stage.Glyph()
+			if g == task.Asking {
+				glyph = "?"
+			}
+			rows = append(rows, row{g, glyph + " " + t.Name(live.Position(tab.ID))})
+		}
+		order := map[task.Group]int{}
+		for i, g := range task.Groups {
+			order[g] = i
+		}
+		sort.SliceStable(rows, func(i, j int) bool { return order[rows[i].g] < order[rows[j].g] })
+		if len(rows) > ListRows {
+			more := fmt.Sprintf("+%d more", len(rows)-ListRows+1)
+			rows = append(rows[:ListRows-1], row{task.GDone, more})
+		}
+	}
+	tokens := map[string]*string{}
+	for i := 1; i <= ListRows; i++ {
+		base := "t" + strconv.Itoa(i)
+		tokens[base+"_ask"], tokens[base+"_you"], tokens[base] = nil, nil, nil
+		if i > len(rows) {
+			continue
+		}
+		v := rows[i-1].text
+		switch rows[i-1].g {
+		case task.Asking:
+			tokens[base+"_ask"] = &v
+		case task.YourTurn:
+			tokens[base+"_you"] = &v
+		default:
+			tokens[base] = &v
+		}
+	}
+	return tokens
+}
+
+// RefreshTokens updates the sidebar only, for when an agent's state changes.
+func RefreshTokens(h Herdr, st *store.Store) error {
+	s, err := st.Load()
+	if err != nil || s.Removed {
+		return err
+	}
+	live, err := h.Live()
+	if err != nil {
+		return err
+	}
+	return reportTokens(h, s, live)
 }
 
 // syncStrips gives every task a strip unless you turned it off, notices

@@ -22,6 +22,8 @@ type State struct {
 	Hidden []string `json:"hidden_spaces,omitempty"`
 	// Set by `herdr-tasks remove`, so hooks still in flight leave tabs alone.
 	Removed bool `json:"removed,omitempty"`
+	// Show stage counts under each space instead of its task list.
+	SidebarCounts bool `json:"sidebar_counts,omitempty"`
 }
 
 func (s *State) IsHidden(workspaceLabel string) bool {

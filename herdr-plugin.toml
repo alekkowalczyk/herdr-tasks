@@ -1,6 +1,6 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.3.0"
+version = "0.4.0"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
@@ -28,6 +28,11 @@ title = "Show or hide the task strip"
 command = ["bin/herdr-tasks", "strip-toggle"]
 
 [[actions]]
+id = "sidebar"
+title = "Sidebar: tasks or counts"
+command = ["bin/herdr-tasks", "sidebar-toggle"]
+
+[[actions]]
 id = "sync"
 title = "Redo task markers and counts"
 command = ["bin/herdr-tasks", "sync"]
@@ -46,6 +51,10 @@ command = ["bin/herdr-tasks", "hook"]
 
 [[events]]
 on = "tab.moved"
+command = ["bin/herdr-tasks", "hook"]
+
+[[events]]
+on = "pane.agent_status_changed"
 command = ["bin/herdr-tasks", "hook"]
 
 [[events]]

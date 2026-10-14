@@ -87,8 +87,17 @@ func (f *fakeHerdr) MoveTab(id string, from, to int) ([]herdr.Tab, error) {
 	return in, nil
 }
 
+// ReportWorkspaceTokens patches tokens like herdr: nil clears a key.
 func (f *fakeHerdr) ReportWorkspaceTokens(ws string, tokens map[string]*string) error {
-	f.tokens[ws] = tokens
+	if len(tokens) > 16 {
+		return fmt.Errorf("%d tokens in one report", len(tokens))
+	}
+	if f.tokens[ws] == nil {
+		f.tokens[ws] = map[string]*string{}
+	}
+	for k, v := range tokens {
+		f.tokens[ws][k] = v
+	}
 	return nil
 }
 
@@ -367,5 +376,59 @@ func TestATabWithOnlyItsStripLeftCloses(t *testing.T) {
 		if tab.ID == "w2:t1" {
 			t.Fatal("tab with only its strip left is still open")
 		}
+	}
+}
+
+func val(m map[string]*string, k string) string {
+	if v := m[k]; v != nil {
+		return *v
+	}
+	return ""
+}
+
+func TestSidebarListsTasksMostUrgentFirst(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	f.tabs = append(f.tabs,
+		herdr.Tab{ID: "w1:t4", WorkspaceID: "w1", Label: "refund webhooks", AgentStatus: "working"},
+		herdr.Tab{ID: "w1:t5", WorkspaceID: "w1", Label: "date picker", AgentStatus: "blocked"},
+		herdr.Tab{ID: "w1:t6", WorkspaceID: "w1", Label: "release notes", AgentStatus: "done"},
+		herdr.Tab{ID: "w1:t7", WorkspaceID: "w1", Label: "lazygit"},
+	)
+	Run(f, st, on, time.Now(), func(s *store.State, _ *herdr.Live) error {
+		now := time.Now()
+		s.Tasks["w1:t1"].SetStage(task.Parked, "", now)
+		s.Tasks["w1:t2"].SetStage(task.Paused, "PR review", now)
+		s.Tasks["w1:t3"].SetStage(task.Review, "QA", now)
+		s.Tasks["w1:t7"].SetStage(task.Tool, "", now)
+		return nil
+	})
+	f.tabs = append(f.tabs, herdr.Tab{ID: "w1:t8", WorkspaceID: "w1", Label: "backups"})
+	Run(f, st, on, time.Now(), setStage("w1:t8", task.Done))
+	tok := f.tokens["w1"]
+	got := []string{val(tok, "t1_ask"), val(tok, "t2_you"), val(tok, "t3"), val(tok, "t4")}
+	want := []string{"? date picker", "● release notes", "● refund webhooks", "◐ tab 4"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("rows = %q, want %q", got, want)
+	}
+	if val(tok, "t5") != "" || val(tok, "tasks_paused") != "‖ 1" || val(tok, "tasks_parked") != "○ 1" || val(tok, "tasks_done") != "✓ 1" || val(tok, "tasks_active") != "" {
+		t.Fatalf("hidden stages should only show as counts: %v", tok)
+	}
+
+	// Switching to counts clears the rows and brings back every count.
+	Run(f, st, on, time.Now(), func(s *store.State, _ *herdr.Live) error { s.SidebarCounts = true; return nil })
+	tok = f.tokens["w1"]
+	if val(tok, "t1_ask") != "" || val(tok, "tasks_active") != "● 3" || val(tok, "tasks_review") != "◐ 1" {
+		t.Fatalf("counts mode: %v / %v", val(tok, "t1_ask"), val(tok, "tasks_active"))
+	}
+}
+
+func TestSidebarListOverflow(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	for i := 4; i <= 12; i++ {
+		f.tabs = append(f.tabs, herdr.Tab{ID: fmt.Sprintf("w1:t%d", i), WorkspaceID: "w1", Label: fmt.Sprintf("task %d", i)})
+	}
+	Run(f, st, on, time.Now(), nil)
+	if got := val(f.tokens["w1"], "t7"); got != "+6 more" {
+		t.Fatalf("last row = %q", got)
 	}
 }

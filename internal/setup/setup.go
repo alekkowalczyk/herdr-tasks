@@ -20,6 +20,7 @@ const (
 	endMark     = "# <<< herdr-tasks"
 	OverviewKey = "prefix+t"
 	StripKey    = "prefix+i"
+	SidebarKey  = "prefix+a"
 )
 
 // ConfigPath is herdr's config file.
@@ -130,8 +131,19 @@ func RemoveBlocks(src string) string {
 	return strings.Join(out, "")
 }
 
-// countsRow is the sidebar row with a colored count per stage.
-const countsRow = `[{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_review", fg = "#b9a6ff" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }]`
+// countsRow is the sidebar row with a colored count per stage. With the task
+// list on, it only counts the stages the list leaves out.
+const countsRow = `[{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_review", fg = "#b9a6ff" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }, { token = "$tasks_done", fg = "#6f7884" }]`
+
+// listRows are the sidebar rows listing a space's tasks: one token per kind
+// of row, so asking and your-turn tasks stand out. See reconcile.ListTokens.
+func listRows() []string {
+	var rows []string
+	for i := 1; i <= 7; i++ {
+		rows = append(rows, fmt.Sprintf(`  [{ token = "$t%[1]d_ask", fg = "#ff5f6d", bold = true }, { token = "$t%[1]d_you", fg = "#ff8d6e" }, "$t%[1]d"],`, i))
+	}
+	return rows
+}
 
 var uiHeader = regexp.MustCompile(`(?m)^[ \t]*\[ui\][ \t]*(#.*)?$`)
 
@@ -164,6 +176,10 @@ func Apply(src, statusCommand string) (string, []string, error) {
 	if stripKeyTaken {
 		notes = append(notes, "ctrl+b i is already bound in your config, so the strip has no key. Bind the plugin action herdr-tasks.strip to a free key.")
 	}
+	sidebarKeyTaken := usesKey(cfg["keys"], SidebarKey)
+	if sidebarKeyTaken {
+		notes = append(notes, "ctrl+b a is already bound in your config, so switching the sidebar between tasks and counts has no key. Bind the plugin action herdr-tasks.sidebar to a free key.")
+	}
 
 	out := src
 	var tail []string
@@ -192,6 +208,16 @@ func Apply(src, statusCommand string) (string, []string, error) {
 			`description = "task overview"`,
 			"")
 	}
+	if !sidebarKeyTaken {
+		tail = append(tail,
+			"# ctrl+b a switches the sidebar between each space's tasks and stage counts",
+			"[[keys.command]]",
+			`key = "`+SidebarKey+`"`,
+			`type = "plugin_action"`,
+			`command = "herdr-tasks.sidebar"`,
+			`description = "sidebar tasks or counts"`,
+			"")
+	}
 	if !stripKeyTaken {
 		tail = append(tail,
 			"# ctrl+b i shows or hides the task strip at the bottom of the tab",
@@ -204,14 +230,13 @@ func Apply(src, statusCommand string) (string, []string, error) {
 	}
 	if !hasSpaces {
 		tail = append(tail,
-			"# stage counts under each space",
+			"# each space's tasks, most urgent first, then counts of the rest",
 			"[ui.sidebar.spaces]",
 			"rows = [",
 			`  ["state_icon", "workspace"],`,
-			`  ["branch", "git_status"],`,
-			"  "+countsRow+",",
-			"]",
-			"")
+			`  ["branch", "git_status"],`)
+		tail = append(tail, listRows()...)
+		tail = append(tail, "  "+countsRow+",", "]", "")
 	}
 	if len(tail) > 0 {
 		if out != "" && !strings.HasSuffix(out, "\n") {

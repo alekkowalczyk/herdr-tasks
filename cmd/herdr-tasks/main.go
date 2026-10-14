@@ -23,7 +23,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.3.0"
+const version = "0.4.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -51,6 +51,7 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks overview      the overview screen (herdr opens it in a popup)
   herdr-tasks strip         the strip along the bottom of a tab (runs in its pane)
   herdr-tasks strip-toggle  show or hide this tab's strip
+  herdr-tasks sidebar-toggle  switch the sidebar between each space's tasks and stage counts
   herdr-tasks open          open the overview popup
   herdr-tasks status        one line for herdr's tab bar
   herdr-tasks sync          redo markers, tab order, and sidebar counts
@@ -188,6 +189,8 @@ func run(args []string) error {
 		return ui.RunStrip(a.client, a.store)
 	case "strip-toggle":
 		return a.stripToggle()
+	case "sidebar-toggle":
+		return a.sidebarToggle()
 	case "strip-fit": // resize a strip pane; for troubleshooting
 		return a.host().Fit(a.flags.text())
 	case "note":
@@ -489,6 +492,10 @@ func (a *app) hook() error {
 			}
 		}
 	}
+	if ev != nil && ev.Name == "pane.agent_status_changed" {
+		// Only the sidebar list depends on what agents are doing.
+		return reconcile.RefreshTokens(a.host(), a.store)
+	}
 	if ev != nil && ev.Name == "startup" {
 		a.opts.Startup = true
 	}
@@ -700,4 +707,25 @@ func (a *app) stripToggle() error {
 		return nil
 	})
 	return err
+}
+
+// sidebarToggle switches the sidebar between each space's tasks and stage
+// counts, in every running herdr session.
+func (a *app) sidebarToggle() error {
+	s, err := a.store.Load()
+	if err != nil {
+		return err
+	}
+	counts := !s.SidebarCounts
+	for _, c := range herdr.RunningSessions() {
+		st := store.New(herdr.SessionKey(c.SocketPath))
+		_, err := reconcile.Run(strip.Host{Client: c}, st, a.opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
+			s.SidebarCounts = counts
+			return nil
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "herdr-tasks: session %s: %v\n", herdr.SessionKey(c.SocketPath), err)
+		}
+	}
+	return nil
 }
