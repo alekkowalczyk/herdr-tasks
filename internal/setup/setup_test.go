@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -105,5 +107,46 @@ toggle_sidebar = "prefix+t"
 func TestApplyRefusesABrokenConfig(t *testing.T) {
 	if _, _, err := Apply("[ui\nbroken", cmd); err == nil {
 		t.Fatal("a config that doesn't parse should be left alone")
+	}
+}
+
+func TestInstallBinaryLeavesOtherFilesAlone(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, "state")
+	exe := filepath.Join(home, "build", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(exe), 0o755)
+	os.WriteFile(exe, []byte("v1"), 0o755)
+
+	dst := filepath.Join(home, ".local", "bin", "herdr-tasks")
+	if cmd, _, err := InstallBinary(exe, state); err != nil || cmd != "$HOME/.local/bin/herdr-tasks" {
+		t.Fatalf("install: %q %v", cmd, err)
+	}
+	// The build folder goes away; the installed copy must still work.
+	os.RemoveAll(filepath.Dir(exe))
+	if b, _ := os.ReadFile(dst); string(b) != "v1" {
+		t.Fatalf("installed copy = %q", b)
+	}
+	os.MkdirAll(filepath.Dir(exe), 0o755)
+	os.WriteFile(exe, []byte("v2"), 0o755)
+	InstallBinary(exe, state)
+	if b, _ := os.ReadFile(dst); string(b) != "v2" {
+		t.Fatalf("update didn't replace our copy: %q", b)
+	}
+	if err := RemoveBinary(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatal("remove left our copy behind")
+	}
+
+	// Someone else's herdr-tasks is never touched.
+	os.WriteFile(dst, []byte("theirs"), 0o755)
+	if cmd, notes, _ := InstallBinary(exe, state); cmd != exe || len(notes) != 1 {
+		t.Fatalf("overwrote a foreign file? cmd %q notes %v", cmd, notes)
+	}
+	RemoveBinary(state)
+	if b, _ := os.ReadFile(dst); string(b) != "theirs" {
+		t.Fatal("removed a foreign file")
 	}
 }

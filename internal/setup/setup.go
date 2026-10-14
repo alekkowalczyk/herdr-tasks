@@ -36,23 +36,36 @@ func BinDir() string {
 	return filepath.Join(home, ".local", "bin")
 }
 
-// LinkBinary points ~/.local/bin/herdr-tasks at exe. It returns the command
-// herdr should run for the tab bar status, plus anything worth telling you.
-func LinkBinary(exe string) (command string, notes []string, err error) {
+// InstallBinary copies exe to ~/.local/bin/herdr-tasks. It copies rather
+// than links because herdr builds plugins in a temporary folder and moves
+// them afterwards. A marker file in stateDir records that the copy is ours,
+// so an unrelated herdr-tasks file is never overwritten or removed. It
+// returns the command herdr should run for the tab bar status, plus
+// anything worth telling you.
+func InstallBinary(exe, stateDir string) (command string, notes []string, err error) {
 	dir := BinDir()
+	dst := filepath.Join(dir, "herdr-tasks")
+	if !ours(dst, stateDir) {
+		return exe, []string{dst + " already exists and wasn't installed by herdr-tasks, so it was left alone."}, nil
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, err
 	}
-	link := filepath.Join(dir, "herdr-tasks")
-	if fi, err := os.Lstat(link); err == nil {
-		if fi.Mode()&os.ModeSymlink == 0 {
-			return exe, []string{link + " already exists and isn't a link, so it was left alone."}, nil
-		}
-		if err := os.Remove(link); err != nil {
-			return "", nil, err
-		}
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		return "", nil, err
 	}
-	if err := os.Symlink(exe, link); err != nil {
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		return "", nil, err
+	}
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return "", nil, err
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "installed-binary"), []byte(dst+"\n"), 0o644); err != nil {
 		return "", nil, err
 	}
 	if !onPath(dir) {
@@ -61,20 +74,28 @@ func LinkBinary(exe string) (command string, notes []string, err error) {
 	return "$HOME/.local/bin/herdr-tasks", notes, nil
 }
 
-// UnlinkBinary removes ~/.local/bin/herdr-tasks if it's a link to a herdr-tasks binary.
-func UnlinkBinary() error {
-	link := filepath.Join(BinDir(), "herdr-tasks")
-	target, err := os.Readlink(link)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return nil // not a link: not ours
-	}
-	if filepath.Base(target) != "herdr-tasks" {
+// RemoveBinary deletes ~/.local/bin/herdr-tasks if herdr-tasks installed it.
+func RemoveBinary(stateDir string) error {
+	dst := filepath.Join(BinDir(), "herdr-tasks")
+	if _, err := os.Lstat(dst); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	return os.Remove(link)
+	if !ours(dst, stateDir) {
+		return nil
+	}
+	_ = os.Remove(filepath.Join(stateDir, "installed-binary"))
+	return os.Remove(dst)
+}
+
+// ours reports whether dst is missing, a link (from older versions), or a
+// copy herdr-tasks installed.
+func ours(dst, stateDir string) bool {
+	fi, err := os.Lstat(dst)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && fi.Mode()&os.ModeSymlink != 0) {
+		return true
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, "installed-binary"))
+	return err == nil && strings.TrimSpace(string(b)) == dst
 }
 
 func onPath(dir string) bool {

@@ -491,11 +491,13 @@ func (a *app) setup(noConfig bool) error {
 	if exe, err = filepath.EvalSymlinks(exe); err != nil {
 		return err
 	}
-	command, notes, err := setup.LinkBinary(exe)
+	command, notes, err := setup.InstallBinary(exe, store.Dir())
 	if err != nil {
-		return fmt.Errorf("linking herdr-tasks into %s: %w", setup.BinDir(), err)
+		return fmt.Errorf("installing herdr-tasks into %s: %w", setup.BinDir(), err)
 	}
-	fmt.Printf("herdr-tasks: %s/herdr-tasks → %s\n", setup.BinDir(), exe)
+	if command != exe {
+		fmt.Printf("herdr-tasks: installed %s/herdr-tasks\n", setup.BinDir())
+	}
 
 	if !noConfig {
 		path := setup.ConfigPath()
@@ -590,7 +592,7 @@ func (a *app) remove(purge bool) error {
 		}
 	}
 	fmt.Println("herdr-tasks: plugin uninstalled")
-	if err := setup.UnlinkBinary(); err != nil {
+	if err := setup.RemoveBinary(store.Dir()); err != nil {
 		fmt.Printf("herdr-tasks: note: couldn't remove %s/herdr-tasks: %v\n", setup.BinDir(), err)
 	}
 	if purge {
