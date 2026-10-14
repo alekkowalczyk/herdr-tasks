@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -36,6 +37,27 @@ func SessionKey(socketPath string) string {
 		return filepath.Base(dir)
 	}
 	return "default"
+}
+
+// RunningSessions returns a client for every herdr session of this user
+// whose server answers, including the default session.
+func RunningSessions() []*Client {
+	home, _ := os.UserHomeDir()
+	base := filepath.Join(home, ".config", "herdr")
+	paths := []string{filepath.Join(base, "herdr.sock")}
+	named, _ := filepath.Glob(filepath.Join(base, "sessions", "*", "herdr.sock"))
+	paths = append(paths, named...)
+	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" && !slices.Contains(paths, p) {
+		paths = append(paths, p)
+	}
+	var out []*Client
+	for _, p := range paths {
+		c := &Client{SocketPath: p}
+		if _, err := c.Workspaces(); err == nil {
+			out = append(out, c)
+		}
+	}
+	return out
 }
 
 // Error is an error response from the herdr server.
@@ -171,6 +193,12 @@ func (c *Client) ReportWorkspaceTokens(workspaceID string, tokens map[string]*st
 		"source":       Source,
 		"tokens":       tokens,
 	}, nil)
+}
+
+func (c *Client) ReloadConfig() error { return c.Call("server.reload_config", nil, nil) }
+
+func (c *Client) DisablePlugin(id string) error {
+	return c.Call("plugin.disable", map[string]any{"plugin_id": id}, nil)
 }
 
 func (c *Client) OpenPluginPane(pluginID, entrypoint string) error {

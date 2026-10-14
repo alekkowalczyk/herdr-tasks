@@ -22,19 +22,31 @@ The Agents list is left alone.
 
 ## Install
 
-Needs Go 1.23+ and herdr 0.8.0+.
+Needs herdr 0.8.0+ and Go 1.23+ on the machine where herdr runs.
 
 ```bash
-git clone git@github.com:alekkowalczyk/herdr-tasks.git
-cd herdr-tasks
-make link        # builds, puts herdr-tasks in ~/.local/bin, links the plugin, syncs
-herdr-tasks config   # prints the lines to add to ~/.config/herdr/config.toml
-herdr server reload-config
+herdr plugin install alekkowalczyk/herdr-tasks
 ```
 
-`make link` marks every existing tab as Active right away, so your tab names get a `●` in front. Set `markers = false` (below) if you'd rather keep tab names as they are.
+That clones the repo, builds it, and runs `herdr-tasks setup`, which:
 
-To remove it: `make unlink`. Turn markers off first if you want the plain names back.
+- links `herdr-tasks` into `~/.local/bin`, for the tab bar status and for agents,
+- adds `ctrl+b t`, the tab bar status, and sidebar counts to `~/.config/herdr/config.toml`, inside a marked `# >>> herdr-tasks` block. The tab bar line goes into your existing `[ui]` section. Your previous config is saved once as `config.toml.before-herdr-tasks`. Anything you already configure yourself (your own `tab_bar_right`, sidebar rows, or a binding on `ctrl+b t`) is left alone, and setup tells you what to add by hand,
+- reloads the config and turns every tab in every running herdr session into an Active task, so tab names get a `●` in front. Set `markers = false` (below) to keep tab names as they are.
+
+Update with `herdr plugin update herdr-tasks`.
+
+### Remove
+
+```bash
+herdr-tasks remove
+```
+
+Gives tabs their plain names back, clears the sidebar counts, takes the marked block out of your config, and uninstalls the plugin. Notes and links stay in `~/.local/state/herdr/plugins/herdr-tasks` unless you add `--purge`.
+
+### Working on the plugin
+
+`make link` builds this checkout, runs setup, and links it into herdr instead of a GitHub install. `make unlink` removes it.
 
 ## The overview
 

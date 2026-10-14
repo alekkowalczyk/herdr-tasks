@@ -20,6 +20,8 @@ type State struct {
 	Tasks   map[string]*task.Task `json:"tasks"`
 	// Space labels hidden in the overview.
 	Hidden []string `json:"hidden_spaces,omitempty"`
+	// Set by `herdr-tasks remove`, so hooks still in flight leave tabs alone.
+	Removed bool `json:"removed,omitempty"`
 }
 
 func (s *State) IsHidden(workspaceLabel string) bool {

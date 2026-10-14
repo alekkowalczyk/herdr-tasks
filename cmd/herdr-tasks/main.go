@@ -7,17 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -34,12 +38,17 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks list [--json]                               every task
   herdr-tasks rename <name>                               name the task (empty: tab number)
 
+  herdr-tasks setup [--no-config]   put herdr-tasks on PATH, add herdr config, sync
+                                    (herdr plugin install runs this for you)
+  herdr-tasks remove [--purge]      undo setup, give tabs their names back, and
+                                    uninstall the plugin (--purge also deletes notes)
+
   herdr-tasks overview      the overview screen (herdr opens it in a popup)
   herdr-tasks open          open the overview popup
   herdr-tasks status        one line for herdr's tab bar
   herdr-tasks sync          redo markers, tab order, and sidebar counts
   herdr-tasks hook          run by herdr on startup and tab events
-  herdr-tasks config        print the herdr config.toml lines to add
+  herdr-tasks config        print the herdr config lines setup adds
   herdr-tasks version
 `
 
@@ -127,8 +136,9 @@ func run(args []string) error {
 		fmt.Println("herdr-tasks", version)
 		return nil
 	case "config":
-		fmt.Print(configSnippet)
-		return nil
+		out, _, err := setup.Apply("", "herdr-tasks")
+		fmt.Print(out)
+		return err
 	}
 	a, err := newApp(rest)
 	if err != nil {
@@ -150,6 +160,10 @@ func run(args []string) error {
 		return err
 	case "hook":
 		return a.hook()
+	case "setup":
+		return a.setup(slices.Contains(rest, "--no-config"))
+	case "remove", "uninstall":
+		return a.remove(slices.Contains(rest, "--purge"))
 	case "set", "stage":
 		return a.set()
 	case "pause":
@@ -466,27 +480,126 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
-const configSnippet = `# Add to ~/.config/herdr/config.toml, then run: herdr server reload-config
+// setup does what a plugin manifest can't: puts herdr-tasks on PATH, adds the
+// key binding, tab bar status, and sidebar rows to herdr's config, and syncs
+// every running herdr session. herdr's plugin install runs it after building.
+func (a *app) setup(noConfig bool) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if exe, err = filepath.EvalSymlinks(exe); err != nil {
+		return err
+	}
+	command, notes, err := setup.LinkBinary(exe)
+	if err != nil {
+		return fmt.Errorf("linking herdr-tasks into %s: %w", setup.BinDir(), err)
+	}
+	fmt.Printf("herdr-tasks: %s/herdr-tasks → %s\n", setup.BinDir(), exe)
 
-# ctrl+b t opens the task overview
-[[keys.command]]
-key = "prefix+t"
-type = "plugin_action"
-command = "herdr-tasks.overview"
-description = "task overview"
+	if !noConfig {
+		path := setup.ConfigPath()
+		before, err := setup.ReadConfig(path)
+		if err != nil {
+			return err
+		}
+		after, more, err := setup.Apply(before, command)
+		notes = append(notes, more...)
+		switch {
+		case err != nil:
+			notes = append(notes, err.Error()+". Run `herdr-tasks config` to see the lines to add yourself.")
+		case after == before:
+			fmt.Printf("herdr-tasks: %s already has the herdr-tasks lines\n", path)
+		default:
+			backup, err := setup.WriteConfig(path, before, after)
+			if err != nil {
+				return fmt.Errorf("updating %s: %w", path, err)
+			}
+			fmt.Printf("herdr-tasks: added ctrl+b t, the tab bar status, and sidebar counts to %s\n", path)
+			if backup != "" {
+				fmt.Printf("herdr-tasks: your previous config is saved as %s\n", backup)
+			}
+		}
+	}
 
-# Right side of the tab bar: this space's stage counts, and the current
-# task's pause reason or first link. Merge into your existing [ui] section.
-[ui]
-tab_bar_right = [
-  { type = "command", command = "herdr-tasks status", interval_seconds = 3 },
-]
+	sessions := herdr.RunningSessions()
+	for _, c := range sessions {
+		name := herdr.SessionKey(c.SocketPath)
+		if err := c.ReloadConfig(); err != nil {
+			notes = append(notes, fmt.Sprintf("Couldn't reload config in session %s: %v", name, err))
+		}
+		st := store.New(name)
+		if err := reconcile.Enable(st); err != nil {
+			return err
+		}
+		live, err := reconcile.Run(c, st, a.opts, time.Now(), nil)
+		if err != nil {
+			notes = append(notes, fmt.Sprintf("Couldn't sync session %s: %v", name, err))
+			continue
+		}
+		fmt.Printf("herdr-tasks: session %s: %d tabs in %d spaces are tasks now\n", name, len(live.Tabs), len(live.Workspaces))
+	}
+	if len(sessions) == 0 {
+		fmt.Println("herdr-tasks: no herdr session is running; tabs get their markers when herdr starts")
+	}
+	for _, n := range notes {
+		fmt.Println("herdr-tasks: note: " + n)
+	}
+	fmt.Println("herdr-tasks: ready. Press ctrl+b t in herdr for the task overview.")
+	return nil
+}
 
-# Stage counts under each space in the sidebar.
-[ui.sidebar.spaces]
-rows = [
-  ["state_icon", "workspace"],
-  ["branch", "git_status"],
-  [{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }],
-]
-`
+// remove undoes setup in every running session, then uninstalls the plugin.
+// Notes and links stay on disk unless purge is set.
+func (a *app) remove(purge bool) error {
+	sessions := herdr.RunningSessions()
+	// Stop hooks first, so they don't put markers back.
+	for _, c := range sessions {
+		_ = c.DisablePlugin(store.PluginID)
+	}
+	for _, c := range sessions {
+		name := herdr.SessionKey(c.SocketPath)
+		if err := reconcile.Clear(c, store.New(name)); err != nil {
+			return fmt.Errorf("session %s: %w", name, err)
+		}
+		fmt.Printf("herdr-tasks: session %s: tab names are back to normal\n", name)
+	}
+
+	path := setup.ConfigPath()
+	before, err := setup.ReadConfig(path)
+	if err != nil {
+		return err
+	}
+	if after := setup.RemoveBlocks(before); after != before {
+		if err := os.WriteFile(path, []byte(after), 0o644); err != nil {
+			return fmt.Errorf("updating %s: %w", path, err)
+		}
+		fmt.Printf("herdr-tasks: took the herdr-tasks lines out of %s\n", path)
+	}
+	for _, c := range sessions {
+		_ = c.ReloadConfig()
+	}
+
+	herdrBin := os.Getenv("HERDR_BIN_PATH")
+	if herdrBin == "" {
+		herdrBin = "herdr"
+	}
+	if out, err := exec.Command(herdrBin, "plugin", "uninstall", store.PluginID, "--yes").CombinedOutput(); err != nil {
+		if out2, err2 := exec.Command(herdrBin, "plugin", "unlink", store.PluginID).CombinedOutput(); err2 != nil {
+			fmt.Printf("herdr-tasks: note: couldn't unregister the plugin: %s %s\n", strings.TrimSpace(string(out)), strings.TrimSpace(string(out2)))
+		}
+	}
+	fmt.Println("herdr-tasks: plugin uninstalled")
+	if err := setup.UnlinkBinary(); err != nil {
+		fmt.Printf("herdr-tasks: note: couldn't remove %s/herdr-tasks: %v\n", setup.BinDir(), err)
+	}
+	if purge {
+		if err := os.RemoveAll(store.Dir()); err != nil {
+			return err
+		}
+		fmt.Println("herdr-tasks: deleted saved notes and links")
+	} else {
+		fmt.Printf("herdr-tasks: notes and links are kept in %s\n", store.Dir())
+	}
+	return nil
+}

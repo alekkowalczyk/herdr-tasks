@@ -98,6 +98,12 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 		if live, err = h.Live(); err != nil {
 			return err
 		}
+		if s.Removed {
+			if mutate != nil {
+				return errors.New("herdr-tasks was removed; run `herdr-tasks setup` to turn it back on")
+			}
+			return nil
+		}
 		Track(s, live, now)
 		if mutate != nil {
 			if err := mutate(s, live); err != nil {
@@ -115,6 +121,37 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 		return reportTokens(h, s, live)
 	})
 	return live, err
+}
+
+// Clear undoes what the plugin shows in herdr: tab names get their plain
+// names back and sidebar counts go away. Tasks stay on disk. Until Enable,
+// later runs (such as hooks still in flight) change nothing.
+func Clear(h Herdr, st *store.Store) error {
+	return st.Update(func(s *store.State) error {
+		s.Removed = true
+		live, err := h.Live()
+		if err != nil {
+			return err
+		}
+		if err := applyLabels(h, s, live, false); err != nil {
+			return err
+		}
+		for _, w := range live.Workspaces {
+			// No stages clears every token.
+			if err := h.ReportWorkspaceTokens(w.ID, Tokens(nil)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// Enable turns the plugin back on after Clear.
+func Enable(st *store.Store) error {
+	return st.Update(func(s *store.State) error {
+		s.Removed = false
+		return nil
+	})
 }
 
 // Track adds new tabs as active tasks, notices tabs you renamed, and drops
