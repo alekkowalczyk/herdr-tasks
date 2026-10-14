@@ -37,7 +37,7 @@ The screenshots show real Claude Code sessions in throwaway demo repos.
 
 ## Install
 
-Needs herdr 0.8.0+ and Go 1.23+ on the machine where herdr runs.
+Needs herdr 0.8.0+ on Linux or macOS. If Go 1.23+ is installed, the plugin is built from source; otherwise the matching release binary is downloaded and checked against the release's checksums.
 
 ```bash
 herdr plugin install alekkowalczyk/herdr-tasks

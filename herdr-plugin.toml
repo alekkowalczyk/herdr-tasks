@@ -1,12 +1,13 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.5.1"
+version = "0.5.2"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
 
+# Builds with Go if it's installed, otherwise downloads the release binary.
 [[build]]
-command = ["go", "build", "-o", "bin/herdr-tasks", "./cmd/herdr-tasks"]
+command = ["sh", "scripts/build.sh"]
 
 # Puts herdr-tasks on PATH, adds ctrl+b t, ctrl+b i, the tab bar status, and
 # sidebar rows to herdr's config in a marked block, and syncs running
