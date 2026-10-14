@@ -32,7 +32,9 @@ const noteRows = 14
 // version in the same pane.
 func RunStrip(c *herdr.Client, st *store.Store, opts reconcile.Options) error {
 	bin := installedBinary()
-	m := &stripModel{c: c, st: st, opts: opts, pane: os.Getenv("HERDR_PANE_ID"), bin: bin, binID: fileID(bin), rows: strip.Rows}
+	pane := os.Getenv("HERDR_PANE_ID")
+	opts.Self = pane // saving a change never closes this strip; it exits itself
+	m := &stripModel{c: c, st: st, opts: opts, pane: pane, bin: bin, binID: fileID(bin), rows: strip.Rows}
 	m.input = textinput.New()
 	m.input.Prompt = ""
 	m.note = textarea.New()
@@ -43,7 +45,7 @@ func RunStrip(c *herdr.Client, st *store.Store, opts reconcile.Options) error {
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		return err
 	}
-	if m.restart {
+	if m.restart && !m.closing {
 		return syscall.Exec(bin, []string{bin, "strip"}, os.Environ())
 	}
 	return nil
@@ -78,6 +80,7 @@ type stripModel struct {
 	bin     string
 	binID   uint64
 	restart bool
+	closing bool // the tab no longer wants a strip; exiting closes the pane
 
 	tab herdr.Tab
 	pos int
@@ -157,6 +160,21 @@ func (m *stripModel) change(fn func(t *task.Task), done string) tea.Cmd {
 	}
 	m.msg = done
 	m.backToWork()
+	// A change can mean this tab no longer wants a strip, as when it becomes
+	// a tool. Saving left this strip open, so it closes itself now.
+	if s, err := m.st.Load(); err == nil {
+		if t, ok := s.Tasks[id]; ok && (!m.opts.Strip || !t.WantsStrip()) {
+			// Forget this strip first, so its going away isn't read as you hiding it.
+			_ = m.st.Update(func(s *store.State) error {
+				if t, ok := s.Tasks[id]; ok && t.StripPane == m.pane {
+					t.StripPane = ""
+				}
+				return nil
+			})
+			m.closing = true
+			return tea.Quit
+		}
+	}
 	return m.load
 }
 

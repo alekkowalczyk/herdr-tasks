@@ -187,9 +187,15 @@ func (t *Task) WantsStrip() bool {
 	return !t.StripOff
 }
 
-// SetStrip records that you showed or hid the tab's strip.
+// SetStrip records that you showed or hid the tab's strip. It only affects
+// the tab as it is now: hiding a task's strip doesn't hide a strip you gave
+// it as a tool, and showing one on a tool doesn't carry over to the task.
 func (t *Task) SetStrip(show bool) {
-	t.StripOn, t.StripOff = show, !show
+	if t.Stage == Tool {
+		t.StripOn = show
+	} else {
+		t.StripOff = !show
+	}
 }
 
 // IsTask reports whether the tab counts as work, unlike a tool tab.

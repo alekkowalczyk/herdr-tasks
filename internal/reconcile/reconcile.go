@@ -39,6 +39,9 @@ type Options struct {
 
 	// Set for the run after herdr starts, when strips need restarting.
 	Startup bool `toml:"-"`
+	// The strip pane running this, if any. It's never closed from here: the
+	// strip saves first and then exits on its own.
+	Self string `toml:"-"`
 }
 
 // Strips is implemented by hosts that can show strips (see package strip).
@@ -129,12 +132,19 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 			return nil
 		}
 		Track(s, live, now)
+		sh, strips := h.(Strips)
+		if strips {
+			// Before your change, which can change which tabs want a strip.
+			if panes, err := sh.Panes(); err == nil {
+				noticeGoneStrips(s, live, panes)
+			}
+		}
 		if mutate != nil {
 			if err := mutate(s, live); err != nil {
 				return err
 			}
 		}
-		if sh, ok := h.(Strips); ok {
+		if strips {
 			stripErr = syncStrips(sh, s, live, opt)
 		}
 		if opt.SortTabs {
@@ -502,6 +512,26 @@ func RefreshTokens(h Herdr, st *store.Store) error {
 	return reportTokens(h, s, live)
 }
 
+// noticeGoneStrips handles strips that went away since the last run. If the
+// tab still wanted one, you closed it, which hides the strip for that tab.
+// Otherwise it closed itself, say after the tab became a tool.
+func noticeGoneStrips(s *store.State, live *herdr.Live, panes []herdr.Pane) {
+	tabOf := map[string]string{}
+	for _, p := range panes {
+		tabOf[p.ID] = p.TabID
+	}
+	for _, tab := range live.Tabs {
+		t, ok := s.Tasks[tab.ID]
+		if !ok || t.StripPane == "" || tabOf[t.StripPane] == tab.ID {
+			continue
+		}
+		t.StripPane = ""
+		if t.WantsStrip() {
+			t.SetStrip(false)
+		}
+	}
+}
+
 // syncStrips gives every task a strip unless you turned it off, notices
 // strips you closed, restarts strips after herdr restarts, and closes tabs
 // where only a strip is left.
@@ -523,12 +553,8 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 		if !ok || tab.Label == ParkingLabel {
 			continue
 		}
-		if t.StripPane != "" {
-			if p, ok := byID[t.StripPane]; !ok || p.TabID != tab.ID {
-				// The tab is still here but its strip isn't: you closed it.
-				t.StripPane = ""
-				t.SetStrip(false)
-			}
+		if p, ok := byID[t.StripPane]; t.StripPane != "" && (!ok || p.TabID != tab.ID) {
+			t.StripPane = "" // closed during this run, as by a toggle
 		}
 		if t.StripPane == "" {
 			// Pick up a strip this state doesn't know about yet.
@@ -541,6 +567,8 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 
 		want := opt.Strip && t.WantsStrip()
 		switch {
+		case !want && t.StripPane == opt.Self:
+			// This strip is saving a change that hides it; it exits by itself.
 		case !want && t.StripPane != "":
 			// Strips are off, or the tab became a tool.
 			if err := sh.Close(t.StripPane); err != nil && firstErr == nil {

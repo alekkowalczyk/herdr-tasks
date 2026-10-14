@@ -432,3 +432,36 @@ func TestSidebarListOverflow(t *testing.T) {
 		t.Fatalf("last row = %q", got)
 	}
 }
+
+func TestAStripThatMakesItsTabAToolSavesFirst(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	Run(f, st, withStrips, time.Now(), nil)
+	s, _ := st.Load()
+	self := s.Tasks["w2:t1"].StripPane
+
+	// The strip saves "tool" for its own tab: the save must not close it.
+	opt := withStrips
+	opt.Self = self
+	if _, err := Run(f, st, opt, time.Now(), setStage("w2:t1", task.Tool)); err != nil {
+		t.Fatal(err)
+	}
+	if !f.strips()["w2:t1"] {
+		t.Fatal("the saving strip was closed under itself")
+	}
+	if s, _ := st.Load(); s.Tasks["w2:t1"].Stage != task.Tool {
+		t.Fatal("stage not saved")
+	}
+
+	// Then it exits; that isn't you hiding it.
+	f.Close(self)
+	Run(f, st, withStrips, time.Now(), nil)
+	if s, _ := st.Load(); s.Tasks["w2:t1"].StripOff || s.Tasks["w2:t1"].StripPane != "" {
+		t.Fatalf("a strip closing for a tool counted as hidden: %+v", s.Tasks["w2:t1"])
+	}
+
+	// Back to active, the strip returns.
+	Run(f, st, withStrips, time.Now(), setStage("w2:t1", task.Active))
+	if !f.strips()["w2:t1"] {
+		t.Fatal("strip didn't come back when the tool became a task again")
+	}
+}
