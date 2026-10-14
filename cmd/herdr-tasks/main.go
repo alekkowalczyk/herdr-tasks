@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,6 +50,10 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks sync          redo markers, tab order, and sidebar counts
   herdr-tasks hook          run by herdr on startup and tab events
   herdr-tasks config        print the herdr config lines setup adds
+  herdr-tasks config --merge     read a herdr config on stdin, print it with the
+                                 herdr-tasks lines added (for a config on another
+                                 machine, such as the one herdr --remote uses)
+  herdr-tasks config --unmerge   the same, with the herdr-tasks lines taken out
   herdr-tasks version
 `
 
@@ -136,9 +141,7 @@ func run(args []string) error {
 		fmt.Println("herdr-tasks", version)
 		return nil
 	case "config":
-		out, _, err := setup.Apply("", "herdr-tasks")
-		fmt.Print(out)
-		return err
+		return configCmd(rest)
 	}
 	a, err := newApp(rest)
 	if err != nil {
@@ -606,4 +609,37 @@ func (a *app) remove(purge bool) error {
 		fmt.Printf("herdr-tasks: notes and links are kept in %s\n", store.Dir())
 	}
 	return nil
+}
+
+// configCmd prints herdr config lines. With --merge or --unmerge it edits a
+// config read from stdin, so a herdr --remote client on another machine can
+// get the same lines: its key bindings, sidebar layout, and tab bar come from
+// its own config.
+func configCmd(args []string) error {
+	// The tab bar status command runs on the machine where herdr runs, so
+	// it can always use this machine's path.
+	const status = "$HOME/.local/bin/herdr-tasks"
+	switch {
+	case slices.Contains(args, "--merge"), slices.Contains(args, "--unmerge"):
+		in, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return err
+		}
+		if slices.Contains(args, "--unmerge") {
+			fmt.Print(setup.RemoveBlocks(string(in)))
+			return nil
+		}
+		out, notes, err := setup.Apply(string(in), status)
+		if err != nil {
+			return err
+		}
+		for _, n := range notes {
+			fmt.Fprintln(os.Stderr, "herdr-tasks: note: "+n)
+		}
+		fmt.Print(out)
+		return nil
+	}
+	out, _, err := setup.Apply("", status)
+	fmt.Print(out)
+	return err
 }
