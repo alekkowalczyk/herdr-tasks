@@ -18,7 +18,7 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 ## What it adds to herdr
 
 - **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
-- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, and links. Press `↵` in it to open the overview.
+- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add or remove a link (`l`, `L`), or rename the task (`r`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
 - **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
 - **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then running and in review. Paused, parked, done, and tool tabs stay out of the list; a dim line counts the hidden ones. `ctrl+b a` switches to plain stage counts and back.
@@ -30,6 +30,8 @@ The Agents list is left alone.
 ![Claude Code asking for permission in one pane. The strip at the bottom says "agent asking" and shows the task's note, Claude's entry, and links](docs/screenshots/agent-asking.png)
 
 ![Claude Code running a long test script. The strip says "agent running"; the sidebar counts each space's stages](docs/screenshots/agent-running.png)
+
+![The strip along the bottom of a tab: stage and agent state, note, Claude's entry, links, and a row of buttons](docs/screenshots/strip.png)
 
 The screenshots show real Claude Code sessions in throwaway demo repos.
 

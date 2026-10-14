@@ -23,7 +23,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.4.0"
+const version = "0.5.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -186,7 +186,7 @@ func run(args []string) error {
 		a.flags.args = append([]string{"tool"}, a.flags.args...)
 		return a.set()
 	case "strip":
-		return ui.RunStrip(a.client, a.store)
+		return ui.RunStrip(a.client, a.store, a.opts)
 	case "strip-toggle":
 		return a.stripToggle()
 	case "sidebar-toggle":

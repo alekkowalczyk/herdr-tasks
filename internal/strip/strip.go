@@ -22,7 +22,7 @@ const (
 	// Label marks a pane as a strip.
 	Label = "Task"
 	// Rows of content a strip shows.
-	Rows = 6
+	Rows = 7
 	// ParkingLabel names the temporary tabs panes wait in while a strip is added.
 	ParkingLabel = "herdr-tasks parking"
 )
@@ -111,10 +111,13 @@ func (h Host) place(tabID string, n *herdr.Node, target, split string, ratio flo
 // Close removes a strip pane.
 func (h Host) Close(paneID string) error { return h.ClosePane(paneID) }
 
-// Fit sizes a strip at the bottom of its tab so it shows Rows rows. It
+// Fit sizes a strip at the bottom of its tab so it shows Rows rows.
+func (h Host) Fit(paneID string) error { return h.FitRows(paneID, Rows) }
+
+// FitRows sizes a strip at the bottom of its tab so it shows rows rows. It
 // measures the pane's frame and visible rows together, so running it again
 // changes nothing. It leaves a strip alone if you moved it away from the bottom.
-func (h Host) Fit(paneID string) error {
+func (h Host) FitRows(paneID string, rows int) error {
 	tabID, err := h.PaneTab(paneID)
 	if err != nil {
 		return err
@@ -138,7 +141,7 @@ func (h Host) Fit(paneID string) error {
 	if !ok || area.Height <= 0 || shown <= 0 {
 		return errors.New("strip pane not in its tab's layout")
 	}
-	if shown == Rows {
+	if shown == rows {
 		return nil
 	}
 	frame := r.Height - shown // borders and title around the strip's text
@@ -146,7 +149,7 @@ func (h Host) Fit(paneID string) error {
 		// herdr only updates visible rows while a window shows the tab.
 		frame = 2
 	}
-	above := area.Height - (Rows + frame)
+	above := area.Height - (rows + frame)
 	// Aim a quarter row in, so herdr lands on the same row whether it
 	// rounds or truncates.
 	ratio := (float64(above) + 0.25) / float64(area.Height)
