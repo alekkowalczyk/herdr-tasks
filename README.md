@@ -13,6 +13,8 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 | Done | `✓` | Finished. Close the tab from the overview when you're ready. |
 | Tool | `◇` | Not a task: a tab that stays open for a tool like lazygit, or a running app. Sorted last, left out of the counts, listed under TOOLS at the bottom of the overview, and has no strip unless you turn one on. |
 
+![The task overview: every tab across four spaces, grouped by stage, with the selected task's note and links](docs/screenshots/overview.png)
+
 ## What it adds to herdr
 
 - **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
@@ -22,6 +24,12 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 - **Spaces sidebar**: stage counts under each space.
 
 The Agents list is left alone.
+
+![Claude Code asking for permission in one pane. The strip at the bottom says "agent asking" and shows the task's note, Claude's entry, and links](docs/screenshots/agent-asking.png)
+
+![Claude Code running a long test script. The strip says "agent running"; the sidebar counts each space's stages](docs/screenshots/agent-running.png)
+
+The screenshots show real Claude Code sessions in throwaway demo repos.
 
 ## Install
 

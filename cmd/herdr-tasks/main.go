@@ -420,6 +420,9 @@ func (a *app) list() error {
 		info := ""
 		if t.Reason != "" {
 			info = "until " + t.Reason
+			if t.Stage == task.Review {
+				info = "waiting for " + t.Reason
+			}
 		} else if len(t.Links) > 0 {
 			info = "↗ " + t.Links[0].Display()
 		}
