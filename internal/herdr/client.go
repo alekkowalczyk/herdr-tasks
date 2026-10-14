@@ -382,24 +382,41 @@ func (c *Client) SplitPane(target, direction string, ratio float64, env map[stri
 	return r.Pane.ID, err
 }
 
+// ErrNotMoved is returned when herdr declines to move a pane.
+type ErrNotMoved struct{ Pane, Reason string }
+
+func (e *ErrNotMoved) Error() string {
+	return fmt.Sprintf("herdr didn't move pane %s (%s)", e.Pane, e.Reason)
+}
+
+// move sends pane.move and reports a move herdr declined as an error, since
+// herdr answers those with success and changed: false.
+func (c *Client) move(paneID string, destination map[string]any) error {
+	var r struct {
+		Result struct {
+			Changed bool   `json:"changed"`
+			Reason  string `json:"reason"`
+		} `json:"move_result"`
+	}
+	if err := c.Call("pane.move", map[string]any{"pane_id": paneID, "destination": destination, "focus": false}, &r); err != nil {
+		return err
+	}
+	if !r.Result.Changed {
+		return &ErrNotMoved{Pane: paneID, Reason: r.Result.Reason}
+	}
+	return nil
+}
+
 // ParkPane moves a pane out into a tab of its own.
 func (c *Client) ParkPane(paneID, label string) error {
-	return c.Call("pane.move", map[string]any{
-		"pane_id":     paneID,
-		"destination": map[string]any{"type": "new_tab", "label": label},
-		"focus":       false,
-	}, nil)
+	return c.move(paneID, map[string]any{"type": "new_tab", "label": label})
 }
 
 // MovePane moves a pane next to target in tabID.
 func (c *Client) MovePane(paneID, tabID, target, split string, ratio float64) error {
-	return c.Call("pane.move", map[string]any{
-		"pane_id": paneID,
-		"destination": map[string]any{
-			"type": "tab", "tab_id": tabID, "target_pane_id": target, "split": split, "ratio": ratio,
-		},
-		"focus": false,
-	}, nil)
+	return c.move(paneID, map[string]any{
+		"type": "tab", "tab_id": tabID, "target_pane_id": target, "split": split, "ratio": ratio,
+	})
 }
 
 // SetRootRatio sets the ratio of a tab's top-level split.

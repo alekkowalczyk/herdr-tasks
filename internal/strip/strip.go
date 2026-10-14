@@ -61,6 +61,10 @@ func (h Host) Open(tabID string) (string, error) {
 	anchor := leaves[0]
 	for _, p := range leaves[1:] {
 		if err := h.ParkPane(p, ParkingLabel); err != nil {
+			// Put back whatever already moved, and leave the tab without a strip.
+			if rerr := h.rebuild(tabID, root, anchor); rerr != nil {
+				return "", fmt.Errorf("making room for the strip: %w; putting panes back: %v (look for tabs named %q)", err, rerr, ParkingLabel)
+			}
 			return "", fmt.Errorf("making room for the strip: %w", err)
 		}
 	}
@@ -92,10 +96,14 @@ func (h Host) rebuild(tabID string, n *herdr.Node, anchor string) error {
 }
 
 // place moves the panes of n back next to target, keeping n's arrangement.
+// A pane that never left the tab stays where it is.
 func (h Host) place(tabID string, n *herdr.Node, target, split string, ratio float64) error {
 	first := n.Leaves()[0]
 	if err := h.MovePane(first, tabID, target, split, ratio); err != nil {
-		return err
+		var nm *herdr.ErrNotMoved
+		if !errors.As(err, &nm) || nm.Reason != "same_tab" {
+			return err
+		}
 	}
 	return h.rebuild(tabID, n, first)
 }
@@ -134,6 +142,10 @@ func (h Host) Fit(paneID string) error {
 		return nil
 	}
 	frame := r.Height - shown // borders and title around the strip's text
+	if frame < 0 || frame > 4 {
+		// herdr only updates visible rows while a window shows the tab.
+		frame = 2
+	}
 	above := area.Height - (Rows + frame)
 	// Aim a quarter row in, so herdr lands on the same row whether it
 	// rounds or truncates.

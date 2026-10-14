@@ -23,7 +23,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.2.0"
+const version = "0.2.1"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 

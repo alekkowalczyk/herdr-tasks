@@ -1,6 +1,6 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.2.0"
+version = "0.2.1"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
