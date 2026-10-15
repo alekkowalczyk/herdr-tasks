@@ -410,15 +410,16 @@ func TestSidebarListsTasksMostUrgentFirst(t *testing.T) {
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("rows = %q, want %q", got, want)
 	}
-	if val(tok, "t5") != "" || val(tok, "tasks_paused") != "‖ 1" || val(tok, "tasks_parked") != "○ 1" || val(tok, "tasks_done") != "✓ 1" || val(tok, "tasks_active") != "" {
+	// Under the list, counts name their stage so "○ 1" can't pass for a tab named 1.
+	if val(tok, "t5") != "" || val(tok, "tasks_paused") != "1 paused" || val(tok, "tasks_parked") != "1 parked" || val(tok, "tasks_done") != "1 done" || val(tok, "tasks_active") != "" {
 		t.Fatalf("hidden stages should only show as counts: %v", tok)
 	}
 
 	// Switching to counts clears the rows and brings back every count.
 	Run(f, st, on, time.Now(), func(s *store.State, _ *herdr.Live) error { s.SidebarCounts = true; return nil })
 	tok = f.tokens["w1"]
-	if val(tok, "t1_ask") != "" || val(tok, "tasks_active") != "● 3" || val(tok, "tasks_review") != "◐ 1" {
-		t.Fatalf("counts mode: %v / %v", val(tok, "t1_ask"), val(tok, "tasks_active"))
+	if val(tok, "t1_ask") != "" || val(tok, "tasks_active") != "● 3" || val(tok, "tasks_review") != "◐ 1" || val(tok, "tasks_parked") != "○ 1" {
+		t.Fatalf("counts mode: %v", tok)
 	}
 }
 

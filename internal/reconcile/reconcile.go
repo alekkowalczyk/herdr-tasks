@@ -404,9 +404,20 @@ func reportTokens(h Herdr, s *store.State, live *herdr.Live) error {
 		}
 		if !s.SidebarCounts {
 			// The list shows active and in-review tasks; the counts line
-			// keeps only what the list hides.
+			// keeps only what the list hides, as "1 parked" rather than
+			// "○ 1", which reads like a tab named 1.
 			for _, st := range []task.Stage{task.Active, task.Review} {
 				tokens["tasks_"+string(st)] = nil
+			}
+			counts := map[task.Stage]int{}
+			for _, st := range stages {
+				counts[st]++
+			}
+			for _, st := range []task.Stage{task.Paused, task.Parked, task.Done} {
+				if counts[st] > 0 {
+					v := strconv.Itoa(counts[st]) + " " + strings.ToLower(st.Label())
+					tokens["tasks_"+string(st)] = &v
+				}
 			}
 		}
 		if err := reportInChunks(h, w.ID, tokens); err != nil {
