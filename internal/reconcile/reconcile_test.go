@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -444,19 +445,24 @@ func TestSidebarListsPriorityTasksFirstWhateverTheirStage(t *testing.T) {
 		return nil
 	})
 	tok := f.tokens["w2"]
-	got := []string{
-		val(tok, "t1_pri"), val(tok, "t1_ask"),
-		val(tok, "t2_pri"), val(tok, "t2"),
-		val(tok, "t3_pri"), val(tok, "t3"),
-		val(tok, "t4_pri"), val(tok, "t4_ask"),
-		val(tok, "t5_pri"), val(tok, "t5"),
+	// herdr puts " · " between two tokens, so the ! shares its row's token:
+	// $tN_pri (red) for a priority row, $tN_ask when its agent is asking.
+	row := func(i int) string {
+		var parts []string
+		for _, k := range []string{"_pri", "_ask", "_you", ""} {
+			if v := val(tok, fmt.Sprintf("t%d%s", i, k)); v != "" {
+				parts = append(parts, k+"="+v)
+			}
+		}
+		return strings.Join(parts, " ")
 	}
+	got := []string{row(1), row(2), row(3), row(4), row(5)}
 	want := []string{
-		"!", "? hotfix",
-		"!", "‖ legal review",
-		"!", "○ checkout",
-		"", "? fix login",
-		"", "",
+		"_ask=! ? hotfix",
+		"_pri=! ‖ legal review",
+		"_pri=! ○ checkout",
+		"_ask=? fix login",
+		"",
 	}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("rows = %q, want %q", got, want)

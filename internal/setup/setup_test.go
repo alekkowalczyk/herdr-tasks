@@ -171,7 +171,7 @@ func TestSidebarRowsFitHerdrsLimits(t *testing.T) {
 	}
 }
 
-func TestTaskRowsStartWithARedPriorityMark(t *testing.T) {
+func TestTaskRowsStartWithARedPriorityRow(t *testing.T) {
 	out, _, err := Apply("", cmd)
 	if err != nil {
 		t.Fatal(err)
@@ -184,7 +184,7 @@ func TestTaskRowsStartWithARedPriorityMark(t *testing.T) {
 			continue
 		}
 		found++
-		if first["token"] != fmt.Sprintf("$t%d_pri", found) || first["fg"] != "#ff5f6d" || first["bold"] != true {
+		if first["token"] != fmt.Sprintf("$t%d_pri", found) || first["fg"] != "#ff5f6d" || first["bold"] != nil {
 			t.Fatalf("row %d starts with %v", found, first)
 		}
 	}

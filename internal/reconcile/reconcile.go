@@ -460,8 +460,8 @@ var listHidden = map[task.Group]bool{task.GPaused: true, task.GParked: true, tas
 
 // ListTokens are the sidebar rows listing a space's tasks, priority tasks
 // first, then most urgent first: $tN_ask for an agent asking, $tN_you when
-// it's your turn, and $tN for the rest, so each can get its own color, with
-// $tN_pri holding the ! in front of a priority task. Paused, parked, done,
+// it's your turn, $tN_pri for a priority task ("! ‖ name"), and $tN for the
+// rest, so each can get its own color. Paused, parked, done,
 // and tool tabs are left out unless they're a priority. With show false
 // every row is cleared.
 func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) map[string]*string {
@@ -509,15 +509,17 @@ func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) m
 		if i > len(rows) {
 			continue
 		}
-		if rows[i-1].pri {
-			bang := "!"
-			tokens[base+"_pri"] = &bang
-		}
 		v := rows[i-1].text
-		switch rows[i-1].g {
-		case task.Asking:
+		if rows[i-1].pri {
+			// In the row's own token: herdr puts " · " between two tokens.
+			v = "! " + v
+		}
+		switch {
+		case rows[i-1].g == task.Asking:
 			tokens[base+"_ask"] = &v
-		case task.YourTurn:
+		case rows[i-1].pri:
+			tokens[base+"_pri"] = &v
+		case rows[i-1].g == task.YourTurn:
 			tokens[base+"_you"] = &v
 		default:
 			tokens[base] = &v
