@@ -2,6 +2,8 @@
 
 A [herdr](https://herdr.dev) plugin that treats every tab as a task. Each tab gets a stage, a note, and links, and one overview shows every task across all spaces.
 
+Any task that isn't done can also be a **priority** (`f`): it gets a red `!` and stays in the sidebar list whatever its stage.
+
 You set the stage. Agents never get a status from you: for active tasks, herdr's own agent detection decides whether it's your turn or the agent is still running.
 
 | Stage | Marker | Use it for |
@@ -18,10 +20,10 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 ## What it adds to herdr
 
 - **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
-- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add or remove a link (`l`, `L`), or rename the task (`r`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
+- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), make it a priority or not (`f`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add or remove a link (`l`, `L`), or rename the task (`r`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
 - **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
-- **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then running and in review. Paused, parked, done, and tool tabs stay out of the list; a line under it counts the hidden ones by stage (`2 paused 1 parked`). `ctrl+b a` switches to plain stage counts and back.
+- **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then running and in review. Priority tasks come before all of them, with a red `!`, even when paused or parked. Other paused, parked, done, and tool tabs stay out of the list; a line under it counts the hidden ones by stage (`2 paused 1 parked`). `ctrl+b a` switches to plain stage counts and back.
 
 The Agents list is left alone.
 
@@ -86,6 +88,7 @@ Gives tabs their plain names back, clears the sidebar counts, takes the marked b
 | `↑` `↓` / `j` `k` | click, wheel | select a task |
 | `↵` | double-click | jump to the tab |
 | `a` `v` `p` `z` `d` `o` | | set Active, In review (asks what for), Paused (asks why), Parked, Done, Tool |
+| `f` | | make it a priority, or not (Done and Tool end it) |
 | `n` | | edit the note (`ctrl+s` saves, `esc` cancels) |
 | `l` / `L` | `×` next to a link | add a link / remove one |
 | `r` | | rename the task (also renames the tab) |
@@ -106,6 +109,7 @@ herdr-tasks set parked
 herdr-tasks review "approval + QA"
 herdr-tasks tool
 herdr-tasks pause "PR #212 review"
+herdr-tasks priority                                   # off: herdr-tasks priority off
 herdr-tasks note set "Old endpoint stays behind a flag until mobile ships."
 herdr-tasks note add "Opened draft PR #431."          # a line with your name, or the agent's
 herdr-tasks link add https://github.com/acme/api/pull/431
@@ -141,7 +145,7 @@ Run `herdr-tasks sync` after changing them.
 - State lives in `~/.local/state/herdr/plugins/herdr-tasks/<session>.json`, one file per herdr session, keyed by tab ID. herdr keeps tab IDs across restarts. If a tab still gets a new ID, a named task follows it by space and name.
 - herdr runs `herdr-tasks hook` on startup and when tabs or spaces are created, closed, renamed, or moved. Each run brings markers, order, and sidebar counts in line. Sidebar counts don't survive a herdr restart, so the startup hook reports them again.
 - Unnamed tabs keep showing their position number after the marker, and the plugin updates that number when tabs move.
-- The sidebar list is up to 7 rows per space, sent as workspace metadata tokens (`$t1`…`$t7`, with `_ask` and `_you` variants so they can be colored). A hook on agent status changes keeps it current.
+- The sidebar list is up to 7 rows per space, sent as workspace metadata tokens (`$t1`…`$t7`, with `_ask` and `_you` variants so they can be colored, and `_pri` for the red `!`). A hook on agent status changes keeps it current.
 - Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
 - A strip is an ordinary pane labeled `Task` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
 

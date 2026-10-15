@@ -403,17 +403,21 @@ func reportTokens(h Herdr, s *store.State, live *herdr.Live) error {
 			tokens[k] = v
 		}
 		if !s.SidebarCounts {
-			// The list shows active and in-review tasks; the counts line
-			// keeps only what the list hides, as "1 parked" rather than
-			// "○ 1", which reads like a tab named 1.
+			// The list shows active, in-review, and priority tasks; the
+			// counts line keeps only what the list hides, as "1 parked"
+			// rather than "○ 1", which reads like a tab named 1.
 			for _, st := range []task.Stage{task.Active, task.Review} {
 				tokens["tasks_"+string(st)] = nil
 			}
 			counts := map[task.Stage]int{}
-			for _, st := range stages {
-				counts[st]++
+			for _, tab := range tabs {
+				if t, ok := s.Tasks[tab.ID]; ok && t.Priority {
+					continue
+				}
+				counts[stageOf(s, tab.ID)]++
 			}
 			for _, st := range []task.Stage{task.Paused, task.Parked, task.Done} {
+				tokens["tasks_"+string(st)] = nil
 				if counts[st] > 0 {
 					v := strconv.Itoa(counts[st]) + " " + strings.ToLower(st.Label())
 					tokens["tasks_"+string(st)] = &v
@@ -454,13 +458,16 @@ const ListRows = 7
 // listHidden are the stages the sidebar list leaves out.
 var listHidden = map[task.Group]bool{task.GPaused: true, task.GParked: true, task.GDone: true, task.GTool: true}
 
-// ListTokens are the sidebar rows listing a space's tasks, most urgent first:
-// $tN_ask for an agent asking, $tN_you when it's your turn, and $tN for the
-// rest, so each can get its own color. Paused, parked, done, and tool tabs
-// are left out. With show false every row is cleared.
+// ListTokens are the sidebar rows listing a space's tasks, priority tasks
+// first, then most urgent first: $tN_ask for an agent asking, $tN_you when
+// it's your turn, and $tN for the rest, so each can get its own color, with
+// $tN_pri holding the ! in front of a priority task. Paused, parked, done,
+// and tool tabs are left out unless they're a priority. With show false
+// every row is cleared.
 func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) map[string]*string {
 	type row struct {
 		g    task.Group
+		pri  bool
 		text string
 	}
 	var rows []row
@@ -471,31 +478,40 @@ func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) m
 				continue
 			}
 			g := task.GroupOf(t.Stage, tab.AgentStatus)
-			if listHidden[g] {
+			if listHidden[g] && !t.Priority {
 				continue
 			}
 			glyph := t.Stage.Glyph()
 			if g == task.Asking {
 				glyph = "?"
 			}
-			rows = append(rows, row{g, glyph + " " + t.Name(live.Position(tab.ID))})
+			rows = append(rows, row{g, t.Priority, glyph + " " + t.Name(live.Position(tab.ID))})
 		}
 		order := map[task.Group]int{}
 		for i, g := range task.Groups {
 			order[g] = i
 		}
-		sort.SliceStable(rows, func(i, j int) bool { return order[rows[i].g] < order[rows[j].g] })
+		sort.SliceStable(rows, func(i, j int) bool {
+			if rows[i].pri != rows[j].pri {
+				return rows[i].pri
+			}
+			return order[rows[i].g] < order[rows[j].g]
+		})
 		if len(rows) > ListRows {
 			more := fmt.Sprintf("+%d more", len(rows)-ListRows+1)
-			rows = append(rows[:ListRows-1], row{task.GDone, more})
+			rows = append(rows[:ListRows-1], row{task.GDone, false, more})
 		}
 	}
 	tokens := map[string]*string{}
 	for i := 1; i <= ListRows; i++ {
 		base := "t" + strconv.Itoa(i)
-		tokens[base+"_ask"], tokens[base+"_you"], tokens[base] = nil, nil, nil
+		tokens[base+"_pri"], tokens[base+"_ask"], tokens[base+"_you"], tokens[base] = nil, nil, nil, nil
 		if i > len(rows) {
 			continue
+		}
+		if rows[i-1].pri {
+			bang := "!"
+			tokens[base+"_pri"] = &bang
 		}
 		v := rows[i-1].text
 		switch rows[i-1].g {

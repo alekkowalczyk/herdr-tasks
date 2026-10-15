@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -167,5 +168,27 @@ func TestSidebarRowsFitHerdrsLimits(t *testing.T) {
 		if len(r.([]any)) > 16 {
 			t.Fatalf("row with %d tokens; herdr allows 16", len(r.([]any)))
 		}
+	}
+}
+
+func TestTaskRowsStartWithARedPriorityMark(t *testing.T) {
+	out, _, err := Apply("", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := decode(t, out)["ui"].(map[string]any)["sidebar"].(map[string]any)["spaces"].(map[string]any)["rows"].([]any)
+	found := 0
+	for _, r := range rows {
+		first, ok := r.([]any)[0].(map[string]any)
+		if !ok || !strings.HasSuffix(fmt.Sprint(first["token"]), "_pri") {
+			continue
+		}
+		found++
+		if first["token"] != fmt.Sprintf("$t%d_pri", found) || first["fg"] != "#ff5f6d" || first["bold"] != true {
+			t.Fatalf("row %d starts with %v", found, first)
+		}
+	}
+	if found != 7 {
+		t.Fatalf("%d task rows start with a priority mark, want 7", found)
 	}
 }

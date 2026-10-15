@@ -275,6 +275,17 @@ func (m *stripModel) action(k string) tea.Cmd {
 		return m.setStage(task.Done)
 	case "o":
 		return m.setStage(task.Tool)
+	case "f":
+		if !m.t.Stage.TakesPriority() {
+			m.msg = fmt.Sprintf("A %s task can't be a priority.", strings.ToLower(m.t.Stage.Label()))
+			return nil
+		}
+		on := !m.t.Priority
+		done := "Priority"
+		if !on {
+			done = "Not a priority"
+		}
+		return m.change(func(t *task.Task) { _ = t.SetPriority(on) }, done)
 	case "n":
 		return m.startNote()
 	case "l":
@@ -382,7 +393,11 @@ func (m *stripModel) View() string {
 	_, _, gc := groupInfo(g)
 
 	// First line: stage, what's going on, and what it's waiting for.
-	head := " " + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph()+" "+t.Stage.Label())
+	head := " "
+	if t.Priority {
+		head += sAsk.Render("! priority") + sDim.Render(" · ")
+	}
+	head += lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(t.Stage.Glyph() + " " + t.Stage.Label())
 	if t.Stage == task.Active {
 		head += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Bold(g == task.Asking).Render(groupWord(g))
 	}
@@ -482,8 +497,11 @@ func (m *stripModel) bottom(w int) string {
 		return fit(sDim.Render(fmt.Sprintf(" Press a link number to remove it (1–%d), any other key to cancel", len(m.t.Links))), w)
 	}
 	type button struct{ key, label string }
-	buttons := []button{{"a", "active"}, {"v", "review"}, {"p", "pause"}, {"z", "park"}, {"d", "done"}, {"o", "tool"},
-		{"n", "note"}, {"l", "link"}, {"r", "rename"}}
+	buttons := []button{{"a", "active"}, {"v", "review"}, {"p", "pause"}, {"z", "park"}, {"d", "done"}, {"o", "tool"}}
+	if m.t.Stage.TakesPriority() {
+		buttons = append(buttons, button{"f", "priority"})
+	}
+	buttons = append(buttons, button{"n", "note"}, button{"l", "link"}, button{"r", "rename"})
 	if len(m.t.Links) > 0 {
 		buttons = append(buttons, button{"L", "unlink"})
 	}
@@ -505,6 +523,9 @@ func (m *stripModel) bottom(w int) string {
 		if bt.key == current {
 			// The current stage's button shows in its color.
 			st = st.Foreground(stageColor(m.t.Stage))
+		}
+		if bt.key == "f" && m.t.Priority {
+			st = st.Foreground(cAsk)
 		}
 		chip := st.Render(sBold.Render(key) + st.Render(" "+bt.label))
 		cw := ansi.StringWidth(chip)

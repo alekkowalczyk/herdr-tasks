@@ -135,12 +135,13 @@ func RemoveBlocks(src string) string {
 // list on, it only counts the stages the list leaves out.
 const countsRow = `[{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tasks_review", fg = "#b9a6ff" }, { token = "$tasks_paused", fg = "#e7b75a" }, { token = "$tasks_parked", fg = "#93a5c6" }, { token = "$tasks_done", fg = "#6f7884" }]`
 
-// listRows are the sidebar rows listing a space's tasks: one token per kind
-// of row, so asking and your-turn tasks stand out. See reconcile.ListTokens.
+// listRows are the sidebar rows listing a space's tasks: a red ! for a
+// priority task, then one token per kind of row, so asking and your-turn
+// tasks stand out. See reconcile.ListTokens.
 func listRows() []string {
 	var rows []string
 	for i := 1; i <= 7; i++ {
-		rows = append(rows, fmt.Sprintf(`  [{ token = "$t%[1]d_ask", fg = "#ff5f6d", bold = true }, { token = "$t%[1]d_you", fg = "#ff8d6e" }, "$t%[1]d"],`, i))
+		rows = append(rows, fmt.Sprintf(`  [{ token = "$t%[1]d_pri", fg = "#ff5f6d", bold = true }, { token = "$t%[1]d_ask", fg = "#ff5f6d", bold = true }, { token = "$t%[1]d_you", fg = "#ff8d6e" }, "$t%[1]d"],`, i))
 	}
 	return rows
 }

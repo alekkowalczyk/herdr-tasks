@@ -159,3 +159,31 @@ func TestToolTabs(t *testing.T) {
 		t.Fatal("you can turn a task's strip off")
 	}
 }
+
+func TestPriority(t *testing.T) {
+	now := time.Now()
+	tk := &Task{Stage: Active}
+	if err := tk.SetPriority(true); err != nil || !tk.Priority {
+		t.Fatalf("priority on: %v %+v", err, tk)
+	}
+	tk.SetStage(Parked, "", now)
+	if !tk.Priority {
+		t.Fatal("parking dropped the priority")
+	}
+	tk.SetStage(Done, "", now)
+	if tk.Priority {
+		t.Fatal("done kept the priority")
+	}
+	if err := tk.SetPriority(true); err == nil || tk.Priority {
+		t.Fatalf("a done task took priority: %+v", tk)
+	}
+	tk.SetStage(Active, "", now)
+	_ = tk.SetPriority(true)
+	tk.SetStage(Tool, "", now)
+	if tk.Priority {
+		t.Fatal("a tool kept the priority")
+	}
+	if err := tk.SetPriority(false); err != nil {
+		t.Fatalf("turning priority off should always work: %v", err)
+	}
+}

@@ -34,6 +34,8 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks review [waiting for]   your part is done; waiting on approval, merge, or tests
   herdr-tasks pause [reason]         on hold until something happens
   herdr-tasks tool                   not a task: a tab for a tool or a running app
+  herdr-tasks priority [on|off]      a red ! in the sidebar, which lists it even
+                                     when paused or parked (done ends it)
   herdr-tasks note set <text>                             replace your note
   herdr-tasks note add <text> [--as NAME]                 add a line (agents use this)
   herdr-tasks note clear
@@ -185,6 +187,8 @@ func run(args []string) error {
 	case "tool":
 		a.flags.args = append([]string{"tool"}, a.flags.args...)
 		return a.set()
+	case "priority":
+		return a.priority()
 	case "strip":
 		return ui.RunStrip(a.client, a.store, a.opts)
 	case "strip-toggle":
@@ -282,6 +286,18 @@ func (a *app) set() error {
 	})
 }
 
+func (a *app) priority() error {
+	on := true
+	switch strings.Join(a.flags.args, " ") {
+	case "", "on":
+	case "off":
+		on = false
+	default:
+		return errors.New("priority on|off")
+	}
+	return a.change(func(t *task.Task) error { return t.SetPriority(on) })
+}
+
 func (a *app) note() error {
 	if len(a.flags.args) == 0 {
 		return errors.New("note set|add|clear")
@@ -356,6 +372,9 @@ func (a *app) show() error {
 	tab, _ := live.Tab(id)
 	pos := live.Position(id)
 	fmt.Printf("%s  (%s · %s)\n", t.Name(pos), t.Workspace, id)
+	if t.Priority {
+		fmt.Print("! ")
+	}
 	fmt.Printf("%s %s · %s", t.Stage.Glyph(), t.Stage.Label(), task.Age(time.Since(t.Since)))
 	if g := task.GroupOf(t.Stage, tab.AgentStatus); g == task.YourTurn {
 		fmt.Print(" · your turn")
@@ -429,7 +448,11 @@ func (a *app) list() error {
 		} else if len(t.Links) > 0 {
 			info = "↗ " + t.Links[0].Display()
 		}
-		fmt.Printf("%s %-7s %-6s %-14s %-32s %s\n", t.Stage.Glyph(), t.Stage, tab.ID, t.Workspace, t.Name(live.Position(tab.ID)), info)
+		pri := " "
+		if t.Priority {
+			pri = "!"
+		}
+		fmt.Printf("%s %s %-7s %-6s %-14s %-32s %s\n", pri, t.Stage.Glyph(), t.Stage, tab.ID, t.Workspace, t.Name(live.Position(tab.ID)), info)
 	}
 	return nil
 }

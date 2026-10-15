@@ -423,6 +423,50 @@ func TestSidebarListsTasksMostUrgentFirst(t *testing.T) {
 	}
 }
 
+func TestSidebarListsPriorityTasksFirstWhateverTheirStage(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	f.tabs = append(f.tabs,
+		herdr.Tab{ID: "w2:t2", WorkspaceID: "w2", Label: "legal review"},
+		herdr.Tab{ID: "w2:t3", WorkspaceID: "w2", Label: "fix login", AgentStatus: "blocked"},
+		herdr.Tab{ID: "w2:t4", WorkspaceID: "w2", Label: "old spike"},
+		herdr.Tab{ID: "w2:t5", WorkspaceID: "w2", Label: "hotfix", AgentStatus: "blocked"},
+	)
+	Run(f, st, on, time.Now(), func(s *store.State, _ *herdr.Live) error {
+		now := time.Now()
+		s.Tasks["w2:t1"].SetStage(task.Parked, "", now)
+		s.Tasks["w2:t2"].SetStage(task.Paused, "legal", now)
+		s.Tasks["w2:t4"].SetStage(task.Parked, "", now)
+		for _, id := range []string{"w2:t1", "w2:t2", "w2:t5"} {
+			if err := s.Tasks[id].SetPriority(true); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	tok := f.tokens["w2"]
+	got := []string{
+		val(tok, "t1_pri"), val(tok, "t1_ask"),
+		val(tok, "t2_pri"), val(tok, "t2"),
+		val(tok, "t3_pri"), val(tok, "t3"),
+		val(tok, "t4_pri"), val(tok, "t4_ask"),
+		val(tok, "t5_pri"), val(tok, "t5"),
+	}
+	want := []string{
+		"!", "? hotfix",
+		"!", "‖ legal review",
+		"!", "○ checkout",
+		"", "? fix login",
+		"", "",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("rows = %q, want %q", got, want)
+	}
+	// Listed tasks aren't counted again under the list.
+	if val(tok, "tasks_parked") != "1 parked" || val(tok, "tasks_paused") != "" {
+		t.Fatalf("counts: parked %q, paused %q", val(tok, "tasks_parked"), val(tok, "tasks_paused"))
+	}
+}
+
 func TestSidebarListOverflow(t *testing.T) {
 	f, st := newFake(), newStore(t)
 	for i := 4; i <= 12; i++ {

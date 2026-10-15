@@ -167,9 +167,11 @@ type Task struct {
 	Stage     Stage     `json:"stage"`
 	Since     time.Time `json:"since"`
 	Reason    string    `json:"reason,omitempty"`
-	Note      string    `json:"note,omitempty"`
-	Log       []Entry   `json:"log,omitempty"`
-	Links     []Link    `json:"links,omitempty"`
+	// A priority task shows in the sidebar with a red ! whatever its stage.
+	Priority bool    `json:"priority,omitempty"`
+	Note     string  `json:"note,omitempty"`
+	Log      []Entry `json:"log,omitempty"`
+	Links    []Link  `json:"links,omitempty"`
 	// The tab label this plugin last set, so its own renames aren't mistaken for yours.
 	Applied string `json:"applied,omitempty"`
 	// The pane showing this task's strip. You can turn a task's strip off,
@@ -224,6 +226,22 @@ func (t *Task) SetStage(s Stage, reason string, now time.Time) {
 	case reason != "":
 		t.Reason = reason
 	}
+	if !s.TakesPriority() {
+		t.Priority = false
+	}
+}
+
+// TakesPriority reports whether a task in this stage can be a priority:
+// done tasks are finished, and tools aren't work.
+func (s Stage) TakesPriority() bool { return s != Done && s != Tool }
+
+// SetPriority marks the task as a priority, or not.
+func (t *Task) SetPriority(on bool) error {
+	if on && !t.Stage.TakesPriority() {
+		return fmt.Errorf("a %s task can't be a priority", strings.ToLower(t.Stage.Label()))
+	}
+	t.Priority = on
+	return nil
 }
 
 func (t *Task) AddLink(raw, label, by string, now time.Time) Link {

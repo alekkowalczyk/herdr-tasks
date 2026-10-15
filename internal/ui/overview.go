@@ -174,6 +174,9 @@ func (m *model) rebuild() {
 		if order[a.group] != order[b.group] {
 			return order[a.group] < order[b.group]
 		}
+		if a.task.Priority != b.task.Priority {
+			return a.task.Priority
+		}
 		return a.task.Since.After(b.task.Since)
 	})
 	if m.selected() == nil && len(m.rows) > 0 {
@@ -229,6 +232,24 @@ func (m *model) change(fn func(t *task.Task), done string) {
 	}
 	m.rebuild()
 	m.msg = done
+}
+
+func (m *model) togglePriority() {
+	r := m.selected()
+	if r == nil {
+		return
+	}
+	name := r.task.Name(r.pos)
+	if !r.task.Stage.TakesPriority() {
+		m.msg = fmt.Sprintf("%s is %s, so it can't be a priority", name, strings.ToLower(r.task.Stage.Label()))
+		return
+	}
+	on := !r.task.Priority
+	done := name + " is a priority"
+	if !on {
+		done = name + " is no longer a priority"
+	}
+	m.change(func(t *task.Task) { _ = t.SetPriority(on) }, done)
 }
 
 func (m *model) setStage(s task.Stage) {
@@ -529,6 +550,8 @@ func (m *model) key(k string) tea.Cmd {
 		m.setStage(task.Done)
 	case "o":
 		m.setStage(task.Tool)
+	case "f":
+		m.togglePriority()
 	case "n":
 		m.startNote()
 	case "l":
@@ -792,7 +815,7 @@ func (m *model) listLines(w, h int) []string {
 	}
 	spaceW = min(spaceW, 14)
 	const agentW, ageW = 11, 4
-	rest := max(10, w-2-spaceW-agentW-ageW-8)
+	rest := max(10, w-4-spaceW-agentW-ageW-8)
 	nameW := rest * 6 / 10
 	infoW := rest - nameW
 
@@ -877,7 +900,12 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 	if sel {
 		marker = "▌"
 	}
+	pri := ""
+	if r.task.Priority {
+		pri = "!"
+	}
 	line := bg.Render(marker) +
+		bg.Inherit(sAsk).Render(fit(pri, 2)) +
 		cell(r.task.Stage.Glyph(), 2, stageColor(r.task.Stage)) +
 		cell(r.ws.Label, spaceW, cDim) + bg.Render("  ") +
 		cell(name, nameW, nameColor) + bg.Render(" ") +
@@ -906,6 +934,9 @@ func (m *model) detailLines(w, h int) []string {
 	if t.Stage == task.Active {
 		// Only active tasks split further, by what the agent is doing.
 		line += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(gc).Render(groupWord(r.group))
+	}
+	if t.Priority {
+		line = sAsk.Render("! priority") + sDim.Render(" · ") + line
 	}
 	add(line + sDim.Render(" · "+task.Age(time.Since(t.Since))))
 	if t.Stage.TakesReason() && t.Reason != "" {
@@ -978,7 +1009,7 @@ func (m *model) footer() string {
 		return fit(sDim.Render(" Press a link number to remove it, any other key to cancel"), m.width)
 	}
 	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
-		{"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
+		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
 			{"L", "L remove link"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
