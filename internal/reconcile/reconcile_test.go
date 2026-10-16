@@ -407,7 +407,7 @@ func TestSidebarListsTasksMostUrgentFirst(t *testing.T) {
 	Run(f, st, on, time.Now(), setStage("w1:t8", task.Done))
 	tok := f.tokens["w1"]
 	got := []string{val(tok, "t1_ask"), val(tok, "t2_you"), val(tok, "t3"), val(tok, "t4")}
-	want := []string{"? date picker", "● release notes", "● refund webhooks", "◐ tab 4"}
+	want := []string{"? date picker", "● release notes", "↻ refund webhooks", "◐ tab 4"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("rows = %q, want %q", got, want)
 	}
@@ -431,13 +431,14 @@ func TestSidebarListsPriorityTasksFirstWhateverTheirStage(t *testing.T) {
 		herdr.Tab{ID: "w2:t3", WorkspaceID: "w2", Label: "fix login", AgentStatus: "blocked"},
 		herdr.Tab{ID: "w2:t4", WorkspaceID: "w2", Label: "old spike"},
 		herdr.Tab{ID: "w2:t5", WorkspaceID: "w2", Label: "hotfix", AgentStatus: "blocked"},
+		herdr.Tab{ID: "w2:t6", WorkspaceID: "w2", Label: "deploy", AgentStatus: "working"},
 	)
 	Run(f, st, on, time.Now(), func(s *store.State, _ *herdr.Live) error {
 		now := time.Now()
 		s.Tasks["w2:t1"].SetStage(task.Parked, "", now)
 		s.Tasks["w2:t2"].SetStage(task.Paused, "legal", now)
 		s.Tasks["w2:t4"].SetStage(task.Parked, "", now)
-		for _, id := range []string{"w2:t1", "w2:t2", "w2:t5"} {
+		for _, id := range []string{"w2:t1", "w2:t2", "w2:t5", "w2:t6"} {
 			if err := s.Tasks[id].SetPriority(true); err != nil {
 				return err
 			}
@@ -456,9 +457,11 @@ func TestSidebarListsPriorityTasksFirstWhateverTheirStage(t *testing.T) {
 		}
 		return strings.Join(parts, " ")
 	}
-	got := []string{row(1), row(2), row(3), row(4), row(5)}
+	// A working agent gets ↻, since a priority row's color can't show it.
+	got := []string{row(1), row(2), row(3), row(4), row(5), row(6)}
 	want := []string{
 		"_ask=! ? hotfix",
+		"_pri=! ↻ deploy",
 		"_pri=! ‖ legal review",
 		"_pri=! ○ checkout",
 		"_ask=? fix login",

@@ -482,8 +482,12 @@ func ListTokens(s *store.State, live *herdr.Live, tabs []herdr.Tab, show bool) m
 				continue
 			}
 			glyph := t.Stage.Glyph()
-			if g == task.Asking {
+			switch g {
+			case task.Asking:
 				glyph = "?"
+			case task.Running:
+				// Color alone can't show it: a priority row is all red.
+				glyph = "↻"
 			}
 			rows = append(rows, row{g, t.Priority, glyph + " " + t.Name(live.Position(tab.ID))})
 		}
