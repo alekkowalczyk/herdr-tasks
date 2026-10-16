@@ -309,6 +309,15 @@ func (f *fakeStrips) CloseTab(tabID string) error {
 	return nil
 }
 func (f *fakeStrips) Relaunch(string) error { return nil }
+func (f *fakeStrips) Rename(paneID, label string) error {
+	for i, p := range f.panes {
+		if p.ID == paneID {
+			f.panes[i].Label = label
+			return nil
+		}
+	}
+	return fmt.Errorf("no pane %s", paneID)
+}
 
 func (f *fakeStrips) strips() map[string]bool {
 	out := map[string]bool{}
@@ -321,6 +330,29 @@ func (f *fakeStrips) strips() map[string]bool {
 }
 
 var withStrips = Options{Markers: true, SortTabs: true, Strip: true}
+
+func TestStripsFromBeforeTheRenameAreKeptAndRenamed(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	old := f.add("w1:t2", "Task")
+	if _, err := Run(f, st, withStrips, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, p := range f.panes {
+		if p.TabID == "w1:t2" && (p.Label == "Task" || p.Label == StripLabel) {
+			n++
+		}
+	}
+	s, _ := st.Load()
+	if n != 1 || s.Tasks["w1:t2"].StripPane != old {
+		t.Fatalf("the old strip wasn't kept: %d strips, state has %q", n, s.Tasks["w1:t2"].StripPane)
+	}
+	for _, p := range f.panes {
+		if p.ID == old && p.Label != "Task strip" {
+			t.Fatalf("old strip is still labeled %q", p.Label)
+		}
+	}
+}
 
 func TestEveryTaskGetsAStripButToolsDont(t *testing.T) {
 	f, st := newFakeStrips(), newStore(t)

@@ -51,13 +51,15 @@ type Strips interface {
 	Close(paneID string) error
 	CloseTab(tabID string) error
 	Relaunch(paneID string) error
+	Rename(paneID, label string) error
 }
 
 // StripLabel and ParkingLabel match package strip; they're repeated here so
-// reconciliation doesn't depend on it.
+// reconciliation doesn't depend on it. Strips used to be labeled "Task".
 const (
-	StripLabel   = "Task"
-	ParkingLabel = "herdr-tasks parking"
+	StripLabel    = "Task strip"
+	oldStripLabel = "Task"
+	ParkingLabel  = "herdr-tasks parking"
 )
 
 func ConfigDir() string {
@@ -592,7 +594,7 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 		if t.StripPane == "" {
 			// Pick up a strip this state doesn't know about yet.
 			for _, p := range byTab[tab.ID] {
-				if p.Label == StripLabel {
+				if p.Label == StripLabel || p.Label == oldStripLabel {
 					t.StripPane = p.ID
 				}
 			}
@@ -616,6 +618,11 @@ func syncStrips(sh Strips, s *store.State, live *herdr.Live, opt Options) error 
 					firstErr = err
 				}
 				continue
+			}
+			if p := byID[t.StripPane]; p.Label != StripLabel {
+				if err := sh.Rename(t.StripPane, StripLabel); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
 			if opt.Startup {
 				if err := sh.Relaunch(t.StripPane); err != nil && firstErr == nil {

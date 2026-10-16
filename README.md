@@ -147,7 +147,7 @@ Run `herdr-tasks sync` after changing them.
 - Unnamed tabs keep showing their position number after the marker, and the plugin updates that number when tabs move.
 - The sidebar list is up to 7 rows per space, sent as workspace metadata tokens (`$t1`…`$t7`, with `_ask` and `_you` variants so they can be colored, and `_pri` for priority tasks). A hook on agent status changes keeps it current.
 - Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
-- A strip is an ordinary pane labeled `Task` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
+- A strip is an ordinary pane labeled `Task strip` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
 
 ## Not yet
 

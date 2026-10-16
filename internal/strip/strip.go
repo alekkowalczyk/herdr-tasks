@@ -20,7 +20,7 @@ import (
 
 const (
 	// Label marks a pane as a strip.
-	Label = "Task"
+	Label = "Task strip"
 	// Rows of content a strip shows.
 	Rows = 7
 	// ParkingLabel names the temporary tabs panes wait in while a strip is added.
@@ -110,6 +110,9 @@ func (h Host) place(tabID string, n *herdr.Node, target, split string, ratio flo
 
 // Close removes a strip pane.
 func (h Host) Close(paneID string) error { return h.ClosePane(paneID) }
+
+// Rename relabels a strip, as one from before strips were called "Task strip".
+func (h Host) Rename(paneID, label string) error { return h.RenamePane(paneID, label) }
 
 // Fit sizes a strip at the bottom of its tab so it shows Rows rows.
 func (h Host) Fit(paneID string) error { return h.FitRows(paneID, Rows) }
