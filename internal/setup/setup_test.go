@@ -192,3 +192,27 @@ func TestTaskRowsStartWithARedPriorityRow(t *testing.T) {
 		t.Fatalf("%d task rows start with a priority mark, want 7", found)
 	}
 }
+
+func TestWorkingRowsAreBlue(t *testing.T) {
+	out, _, err := Apply("", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := decode(t, out)["ui"].(map[string]any)["sidebar"].(map[string]any)["spaces"].(map[string]any)["rows"].([]any)
+	found := 0
+	for _, r := range rows {
+		for _, item := range r.([]any) {
+			m, ok := item.(map[string]any)
+			if !ok || !strings.HasSuffix(fmt.Sprint(m["token"]), "_run") {
+				continue
+			}
+			found++
+			if m["token"] != fmt.Sprintf("$t%d_run", found) || m["fg"] != "#5ec9e8" {
+				t.Fatalf("working token %d is %v", found, m)
+			}
+		}
+	}
+	if found != 7 {
+		t.Fatalf("%d rows have a working token, want 7", found)
+	}
+}

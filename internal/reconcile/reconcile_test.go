@@ -438,7 +438,7 @@ func TestSidebarListsTasksMostUrgentFirst(t *testing.T) {
 	f.tabs = append(f.tabs, herdr.Tab{ID: "w1:t8", WorkspaceID: "w1", Label: "backups"})
 	Run(f, st, on, time.Now(), setStage("w1:t8", task.Done))
 	tok := f.tokens["w1"]
-	got := []string{val(tok, "t1_ask"), val(tok, "t2_you"), val(tok, "t3"), val(tok, "t4")}
+	got := []string{val(tok, "t1_ask"), val(tok, "t2_you"), val(tok, "t3_run"), val(tok, "t4")}
 	want := []string{"? date picker", "● release notes", "↻ refund webhooks", "◐ tab 4"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("rows = %q, want %q", got, want)
