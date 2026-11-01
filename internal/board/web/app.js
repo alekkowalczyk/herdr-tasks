@@ -293,11 +293,18 @@
   let ownerAsked = false;
   let asking = false;
 
-  function connect() {
+  // stop lets go of the stream, and of any try to take it up again.
+  function stop() {
     clearTimeout(retryTimer);
     retryTimer = 0;
     if (stream) stream.abort();
     stream = null;
+  }
+
+  function connect() {
+    stop();
+    // A page you can't see waits until it shows: see wire.
+    if (document.hidden) return;
     const k = key();
     if (!k) {
       signOut();
@@ -2050,6 +2057,13 @@
     });
     window.addEventListener('online', () => {
       if (retryTimer) connect();
+    });
+    // A page you can't see lets go of its stream, and loads the board again
+    // when it shows: the browser opens only six connections to the board at
+    // once, and a page waiting for one never loads.
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden) stop();
+      else if (!stream && !signedOut) connect();
     });
   }
 

@@ -159,7 +159,7 @@ What it can't do:
 - Show the cursor. herdr doesn't say where it is.
 - Send Home, End, Page Up, Page Down, Delete and Insert in the pane's own key mode: herdr has no names for them, so they go as the usual sequences, which shells and Claude Code accept.
 
-Screens are snapshots taken several times a second, so fast output can look choppy. If herdr quits while you watch, the view says the session isn't running rather than keep showing its last screens. Emoji with a variation selector, and joined emoji, can be one cell off in width; only their row shifts.
+A board tab you can't see stops listening, and catches up when you come back to it: the browser opens only six connections to the board at once, and a tab waiting for one never loads. Screens are snapshots taken several times a second, so fast output can look choppy. If herdr quits while you watch, the view says the session isn't running rather than keep showing its last screens. Emoji with a variation selector, and joined emoji, can be one cell off in width; only their row shifts.
 
 ## Command line
 

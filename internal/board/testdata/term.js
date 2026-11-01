@@ -207,6 +207,9 @@ function page(platform) {
     let wake = null;
     let ended = false;
     const s = {
+      get ended() {
+        return ended;
+      },
       push(text) {
         chunks.push(new TextEncoder().encode(text));
         if (wake) wake();
@@ -277,6 +280,13 @@ function page(platform) {
     removeEventListener: (type, fn) => windowListeners.removeEventListener(type, fn),
   };
   pg.window = windowListeners;
+  // hide hides the page, or shows it again, as a tab put behind another does.
+  const docListeners = new Element('document');
+  pg.hidden = false;
+  pg.hide = on => {
+    pg.hidden = on;
+    docListeners.fire('visibilitychange');
+  };
   pg.navigator = {
     platform,
     clipboard: {
@@ -290,6 +300,11 @@ function page(platform) {
     window,
     navigator: pg.navigator,
     document: {
+      get hidden() {
+        return pg.hidden;
+      },
+      addEventListener: (type, fn) => docListeners.addEventListener(type, fn),
+      removeEventListener: (type, fn) => docListeners.removeEventListener(type, fn),
       createElement: tag => new Element(tag),
       execCommand: cmd => {
         pg.commands.push(cmd);
@@ -740,6 +755,36 @@ const tests = {
     await settle();
     assert.equal(pg.live().length, 0);
     assert.equal(pg.status(), 'That tab isn’t on the board.');
+  },
+
+  // A page you can't see lets go of its stream, as the browser opens only
+  // six connections to the board at once. Shown again, it takes up a new
+  // one, keeping the screens meanwhile. Closed, it listens no more.
+  async 'a hidden view lets go of its stream'() {
+    const pg = await opened();
+    assert.equal(pg.streamKeys.length, 1);
+    const first = pg.server.stream;
+    pg.hide(true);
+    await settle();
+    assert.ok(first.ended, 'the stream stayed open while hidden');
+    pg.runTimers(60e3);
+    await settle();
+    assert.equal(pg.streamKeys.length, 1, 'it took up a stream while hidden');
+    assert.equal(pg.live().length, 2, 'the screens went');
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streamKeys.length, 2, 'shown again, it took up no stream');
+    pg.server.send('layout', {zoomed: false, area, panes: [A, B]});
+    await settle();
+    assert.equal(pg.status(), '');
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streamKeys.length, 2, 'shown twice, it took up two streams');
+    pg.view.close();
+    pg.hide(true);
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streamKeys.length, 2, 'a closed view took up a stream');
   },
 };
 

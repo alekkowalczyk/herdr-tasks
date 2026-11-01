@@ -51,9 +51,12 @@ function page(stored, good, hash, {https, owner} = {}) {
       },
     },
   };
+  // A page that shows: one that doesn't waits to take up a stream.
+  const document = fake();
+  document.hidden = false;
   const ctx = {
     window,
-    document: fake(),
+    document,
     Element: class Element {},
     location: {search: '', hash: hash || '', pathname: '/work/', protocol: https ? 'https:' : 'http:'},
     history: {replaceState() {}},

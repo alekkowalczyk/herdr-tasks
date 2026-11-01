@@ -266,6 +266,9 @@ function page(stored, path, hash, search, tailnet) {
   const ids = new Map();
   const document = {
     body: doc.body,
+    get hidden() {
+      return Boolean(pg.hidden);
+    },
     get activeElement() {
       return doc.activeElement;
     },
@@ -436,6 +439,11 @@ function page(stored, path, hash, search, tailnet) {
   vm.createContext(ctx);
   vm.runInContext(src, ctx);
 
+  // hide hides the page, or shows it again, as a tab put behind another does.
+  pg.hide = on => {
+    pg.hidden = on;
+    for (const fn of doc.listeners.visibilitychange || []) fn({});
+  };
   // send sends a board on the newest stream.
   pg.send = (b, event) => pg.streams[pg.streams.length - 1].push('event: ' + (event || 'board') + '\ndata: ' + JSON.stringify(b) + '\n\n');
   // otherTab stores key, as a tab that signs in does, and tells this one.
@@ -1602,6 +1610,51 @@ const tests = {
     assert.equal(body.querySelector('.agent-when').textContent, 'answered', "the update didn't show");
     assert.equal(body.querySelector('.detail-agents').scrollTop, 120, 'the agents went back to the top');
     assert.equal(body.querySelector('.detail-notes').scrollTop, 40, 'the note went back to the top');
+  },
+
+  // A page you can't see lets go of its stream, as the browser opens only
+  // six connections to the board at once, and a page waiting for one never
+  // loads. Shown again, it loads the board again and takes up a new one.
+  async 'a hidden page lets go of its stream'() {
+    const titles = pg => pg.$('board').querySelectorAll('.card-title').map(t => t.textContent);
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    assert.equal(pg.streams.length, 1);
+    pg.hide(true);
+    await settle();
+    assert.ok(pg.streams[0].signal.aborted, 'the stream stayed open while hidden');
+    pg.runTimers(60e3);
+    await settle();
+    assert.equal(pg.streams.length, 1, 'it took up a stream while hidden');
+    assert.deepEqual(titles(pg), ['Fix the ABC-12 login loop'], 'the board went while hidden');
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streams.length, 2, 'shown again, it took up no stream');
+    assert.equal(pg.gets.length, 2, "shown again, it didn't load the board");
+    pg.send(board(card({title: 'Renamed'})));
+    await settle();
+    assert.deepEqual(titles(pg), ['Renamed']);
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streams.length, 2, 'shown twice, it took up two streams');
+  },
+
+  // A page opened behind another waits until it shows to take up a stream.
+  async 'a page opened hidden waits to be shown'() {
+    const pg = page('k1');
+    pg.hide(true);
+    await settle();
+    // The first stream may have started before the page knew; it goes.
+    assert.ok(pg.streams.every(s => s.signal.aborted), 'a stream stayed open while hidden');
+    const before = pg.streams.length;
+    pg.runTimers(60e3);
+    await settle();
+    assert.equal(pg.streams.length, before, 'it took up a stream while hidden');
+    pg.hide(false);
+    await settle();
+    assert.equal(pg.streams.length, before + 1);
   },
 };
 

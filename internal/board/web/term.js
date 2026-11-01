@@ -143,7 +143,7 @@
 
     function connect() {
       retryTimer = 0;
-      if (closed) return;
+      if (closed || document.hidden) return;
       const ctl = new AbortController();
       stream = ctl;
       listen(ctl).then(again => {
@@ -439,6 +439,17 @@
     // A context menu takes the button, and on macOS opens before it's let go.
     const ups = ['pointerup', 'pointercancel', 'blur', 'contextmenu'];
     for (const type of ups) window.addEventListener(type, mouseUp);
+    // A page you can't see lets go of its stream, as the board's does, and
+    // takes up a new one when it shows. The screens stay meanwhile.
+    const seen = () => {
+      if (document.hidden) {
+        clearTimeout(retryTimer);
+        retryTimer = 0;
+        if (stream) stream.abort();
+        stream = null;
+      } else if (!stream) connect();
+    };
+    document.addEventListener('visibilitychange', seen);
     connect();
 
     return {
@@ -450,6 +461,7 @@
         cancelAnimationFrame(placing);
         resized.disconnect();
         for (const type of ups) window.removeEventListener(type, mouseUp);
+        document.removeEventListener('visibilitychange', seen);
         for (const p of panes.values()) p.term.dispose();
         panes.clear();
         box.replaceChildren();
