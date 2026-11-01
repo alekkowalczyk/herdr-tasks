@@ -851,7 +851,7 @@ func (a *app) remove(purge bool) error {
 		fmt.Printf("herdr-tasks: note: couldn't remove %s/herdr-tasks: %v\n", setup.BinDir(), err)
 	}
 	if purge {
-		if err := linear.DeleteKey(); err != nil {
+		if err := deleteLinearKey(); err != nil {
 			fmt.Printf("herdr-tasks: note: couldn't delete the Linear key: %v\n", err)
 		}
 		if err := os.RemoveAll(store.Dir()); err != nil {
@@ -866,6 +866,10 @@ func (a *app) remove(purge bool) error {
 
 // writeSettings is claudehook.WriteSettings; tests replace it.
 var writeSettings = claudehook.WriteSettings
+
+// deleteLinearKey is linear.DeleteKey, which on macOS runs security against
+// the login keychain; tests replace it.
+var deleteLinearKey = linear.DeleteKey
 
 // tailscaleCLI is the tailscale command remove runs; tests replace it.
 var tailscaleCLI board.Tailscale = tailnet.CLI{}

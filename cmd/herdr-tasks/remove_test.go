@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ type installed struct {
 	calls string
 	// tailscale is the tailscale command remove runs.
 	tailscale *fakeTailscale
+	// keyDeleted counts the calls to delete the Linear key.
+	keyDeleted *int
 }
 
 // fakeTailscale is the tailscale command in memory: what it serves, and the
@@ -104,6 +107,12 @@ func install(t *testing.T) installed {
 	was := tailscaleCLI
 	tailscaleCLI = in.tailscale
 	t.Cleanup(func() { tailscaleCLI = was })
+	// --purge deletes the Linear key, which on macOS is in the real login
+	// keychain whatever HOME says.
+	in.keyDeleted = new(int)
+	wasDelete := deleteLinearKey
+	deleteLinearKey = func() error { *in.keyDeleted++; return nil }
+	t.Cleanup(func() { deleteLinearKey = wasDelete })
 	return in
 }
 
@@ -146,6 +155,23 @@ func (in installed) untouched(t *testing.T, config, settings string) {
 	}
 	if b, err := os.ReadFile(in.calls); err == nil {
 		t.Errorf("herdr was run: %q", b)
+	}
+}
+
+// --purge deletes the Linear key through deleteLinearKey, never the real
+// keychain, and the saved notes and links.
+func TestRemovePurgeDeletesTheKey(t *testing.T) {
+	in := install(t)
+	var err error
+	stdout(t, func() { err = (&app{}).remove(true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *in.keyDeleted != 1 {
+		t.Errorf("the Linear key was deleted %d times, want once", *in.keyDeleted)
+	}
+	if _, err := os.Stat(in.state); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the state folder is still there: %v", err)
 	}
 }
 
