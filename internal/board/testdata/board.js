@@ -857,6 +857,17 @@ const tests = {
     assert.equal(said.hidden, true, 'the take’s reply stayed after 15 s');
   },
 
+  // The board the GET answers with shows at once, before the stream sends
+  // anything.
+  async 'the board loaded first shows'() {
+    const pg = page('k1');
+    pg.answers['/api/board?session=work body'] = JSON.stringify(board(card({title: 'Loaded by the GET'})));
+    await settle();
+    assert.equal(pg.$('board').hidden, false);
+    assert.deepEqual(pg.$('board').querySelectorAll('.card-title').map(e => e.textContent), ['Loaded by the GET']);
+    assert.equal(pg.streams.length, 1);
+  },
+
   // The page asks for its own session's board and events, by the session in
   // its path, encoded.
   async 'a board page asks for its own session'() {

@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -2254,10 +2255,11 @@ func TestSlackSessionFromSettings(t *testing.T) {
 func TestSlackSessionFallsBackToDefault(t *testing.T) {
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
 	ts := startServer(t, Config{Sessions: running(work)}, func(s *Server) {
-		calls := 0
+		var calls atomic.Int32
 		s.cfg.Options = func() (reconcile.Options, error) {
-			// The first read is the server's own check, which must work.
-			if calls++; calls > 1 {
+			// The first read is the server's own check, which must work. The
+			// hub's goroutines read too, so calls are counted atomically.
+			if calls.Add(1) > 1 {
 				return reconcile.Options{}, errors.New("unreadable")
 			}
 			return reconcile.Options{Board: true, BoardPort: s.cfg.Port, SlackSession: "work"}, nil
