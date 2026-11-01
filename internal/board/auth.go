@@ -266,9 +266,14 @@ func sameOrigin(w http.ResponseWriter, r *http.Request, want string) bool {
 }
 
 // guard is what both doors share. door, if there is one, judges every
-// request, and apiDoor the /api/ ones, before the Sec-Fetch-Site and key checks; each says false
-// once it has answered.
-func (a *Auth) guard(h http.Handler, adminOnly func(path string) bool, door func(http.ResponseWriter, *http.Request) bool, apiDoor func(http.ResponseWriter, *http.Request, string) bool) http.Handler {
+// request, and apiDoor the /api/ ones, before the Sec-Fetch-Site and key
+// checks; each says false once it has answered.
+func (a *Auth) guard(
+	h http.Handler,
+	adminOnly func(path string) bool,
+	door func(http.ResponseWriter, *http.Request) bool,
+	apiDoor func(http.ResponseWriter, *http.Request, string) bool,
+) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
 		hd.Set("Content-Security-Policy", csp)

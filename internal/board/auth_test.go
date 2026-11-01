@@ -426,10 +426,14 @@ func TestTailnetDoorChecksOrigin(t *testing.T) {
 }
 
 func TestTailnetDoorRefusesAdminPaths(t *testing.T) {
-	h, _ := tailnet(tailnetOrigin)
-	w := send(h, "POST", "/api/login-code", with(bearer(testToken), "Host", "localhost"), "")
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Only herdr-tasks on this machine can do that.") {
-		t.Errorf("login code with the admin token: %d %q, want 403 and the message", w.Code, w.Body)
+	a := NewAuth(testToken)
+	s := NewServer(Config{StateDir: t.TempDir(), Version: "test"}, a, nil)
+	h := s.TailnetHandler(func() string { return tailnetOrigin })
+	for _, p := range []string{"/api/login-code", "/api/shutdown"} {
+		w := send(h, "POST", p, with(bearer(testToken), "Host", "localhost"), "")
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Only herdr-tasks on this machine can do that.") {
+			t.Errorf("%s with the admin token: %d %q, want 403 and the message", p, w.Code, w.Body)
+		}
 	}
 }
 
@@ -458,6 +462,21 @@ func TestSessionSignsInTailnetOwner(t *testing.T) {
 		if c.want == 200 && !strings.Contains(w.Body.String(), a.BrowserKey()) {
 			t.Errorf("owner sign-in: %q, want the browser key", w.Body)
 		}
+	}
+}
+
+// The code alone decides when there is one, and no body is no code.
+func TestSessionCodeAndEmptyBodyOnTailnetDoor(t *testing.T) {
+	a := NewAuth(testToken)
+	s := NewServer(Config{StateDir: t.TempDir(), Version: "test", TailnetOwner: func() string { return "dana@acme.test" }}, a, nil)
+	h := s.TailnetHandler(func() string { return tailnetOrigin })
+	hs := map[string]string{"Host": "localhost", "Origin": tailnetOrigin, "Tailscale-User-Login": "dana@acme.test"}
+	w := send(h, "POST", "/api/session", hs, "")
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), a.BrowserKey()) {
+		t.Errorf("owner with no body: %d %q, want 200 and the key", w.Code, w.Body)
+	}
+	if w := send(h, "POST", "/api/session", hs, `{"code":"nope"}`); w.Code != http.StatusUnauthorized {
+		t.Errorf("owner with a wrong code: got %d, want 401", w.Code)
 	}
 }
 

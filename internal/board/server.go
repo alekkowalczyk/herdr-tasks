@@ -280,7 +280,8 @@ func (s *Server) loginCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"code": s.auth.LoginCode(time.Now())})
 }
 
-// session swaps a login code for the browser key.
+// session swaps a login code for the browser key. On the tailnet door, the
+// machine's owner needs no code: no code, and the owner's login, is enough.
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
