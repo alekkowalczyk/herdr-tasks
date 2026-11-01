@@ -641,7 +641,7 @@ func TestLooksSecret(t *testing.T) {
 }
 
 func TestSecretPathFoldsCase(t *testing.T) {
-	for _, p := range []string{".\u017fsh/config", ".\u00dfh/github", ".\u1e9eh/github", ".ssh/id_r\u017fa", ".\u212auBE/config"} {
+	for _, p := range []string{".\u017fsh/config", ".\u00dfh/github", ".\u1e9eh/github", ".ssh/id_r\u017fa", ".\u212auBE/config", ".con\ufb01g/gcloud/credentials.db", ".CONFIG/GCLOUD/x"} {
 		if !secretPath("/work", p) {
 			t.Errorf("secretPath(%q) = false, want true", p)
 		}

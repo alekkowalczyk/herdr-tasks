@@ -281,7 +281,7 @@ func secretPath(base, path string) bool {
 func secretParts(parts []string) bool {
 	for i, p := range parts {
 		p = fold(p)
-		if LooksSecretDir(p) || (p == "gcloud" && i > 0 && strings.EqualFold(parts[i-1], ".config")) {
+		if LooksSecretDir(p) || (p == "gcloud" && i > 0 && fold(parts[i-1]) == ".config") {
 			return true
 		}
 		if LooksSecret(p) {
