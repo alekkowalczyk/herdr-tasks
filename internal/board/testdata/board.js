@@ -250,13 +250,15 @@ const spaced = (cards, spaces) => ({version: '0.10.0', linearKey: false, session
 const slackCard = more =>
   card({space: 'w1', spaceLabel: 'billing', slack: Object.assign({place: '#billing', channel: 'C0123ABCD', research: '', muted: false}, more)});
 
-// page runs the script as a tab opened at /, signed in with stored. The
-// server takes only the key in pg.good.
-function page(stored) {
+// page runs the script as a tab opened at path (/work/ unless given) with the
+// hash and search, signed in with stored. The server takes only the key in pg.good, and
+// answers a request for the board or the list with pg.answers[url], a
+// status, or 200 with nothing to read before the stream's own board.
+function page(stored, path, hash, search) {
   doc.body = new Element('body');
   doc.activeElement = null;
   doc.listeners = {};
-  const pg = {good: stored, streams: [], posts: []};
+  const pg = {good: stored, streams: [], posts: [], gets: [], answers: {}, replaced: [], addresses: []};
   const ids = new Map();
   const document = {
     body: doc.body,
@@ -294,10 +296,11 @@ function page(stored) {
       chunks.push(new TextEncoder().encode(text));
       if (wake) wake();
     };
-    s.signal.addEventListener('abort', () => {
+    s.end = () => {
       ended = true;
       if (wake) wake();
-    });
+    };
+    s.signal.addEventListener('abort', s.end);
     return {
       ok: true,
       status: 200,
@@ -323,8 +326,13 @@ function page(stored) {
 
   async function fetch(url, opts) {
     const k = ((opts.headers || {}).Authorization || '').replace(/^Bearer /, '');
-    if (url === '/api/events') {
-      const s = {key: k, signal: opts.signal};
+    if (url.startsWith('/api/board')) {
+      pg.gets.push(url);
+      const status = k === pg.good ? pg.answers[url] || 200 : 401;
+      return {ok: status < 300, status, text: async () => pg.answers[url + ' body'] || ''};
+    }
+    if (url.startsWith('/api/events')) {
+      const s = {url, key: k, signal: opts.signal};
       pg.streams.push(s);
       return k === pg.good ? openStream(s) : reply(401);
     }
@@ -354,9 +362,15 @@ function page(stored) {
   };
 
   // The address: pushState and replaceState change its hash.
-  const location = {search: '', hash: '', pathname: '/'};
+  const location = {
+    search: search || '',
+    hash: hash || '',
+    pathname: path || '/work/',
+    replace: url => pg.replaced.push(url),
+  };
   pg.location = location;
   const go = url => {
+    pg.addresses.push(String(url));
     const i = String(url).indexOf('#');
     location.hash = i < 0 ? '' : String(url).slice(i);
   };
@@ -407,7 +421,7 @@ function page(stored) {
   vm.runInContext(src, ctx);
 
   // send sends a board on the newest stream.
-  pg.send = b => pg.streams[pg.streams.length - 1].push('event: board\ndata: ' + JSON.stringify(b) + '\n\n');
+  pg.send = (b, event) => pg.streams[pg.streams.length - 1].push('event: ' + (event || 'board') + '\ndata: ' + JSON.stringify(b) + '\n\n');
   // otherTab stores key, as a tab that signs in does, and tells this one.
   pg.otherTab = key => {
     storage.set(KEY, key);
@@ -574,14 +588,14 @@ const tests = {
 
     // From the tab's view, which then shows the new tab.
     pg.$('board').querySelector('.card').click();
-    assert.equal(pg.location.hash, '#tab=work/w1%3At1');
+    assert.equal(pg.location.hash, '#tab=w1%3At1');
     pg.$('detail-body').querySelector('[data-act="spaces"]').click();
     pg.$('menu').querySelector('.menu-item').click();
     await settle();
     assert.deepEqual(pg.posts[1].body, {session: 'work', tab: 'w1:t1', action: 'move', workspace: 'w2'});
     pg.posts[1].answer(200, {tab: 'w2:t5'});
     await settle();
-    assert.equal(pg.location.hash, '#tab=work/w2%3At5', 'the view stayed on the old tab');
+    assert.equal(pg.location.hash, '#tab=w2%3At5', 'the view stayed on the old tab');
 
     // A move that went wrong partway is followed too, and says why.
     pg.send(spaced([card({tab: 'w2:t5', space: 'w2', spaceLabel: 'infra'})], SPACES));
@@ -595,7 +609,7 @@ const tests = {
     await settle();
     pg.posts[2].answer(500, {tab: 'w1:t6', error: 'Moved 1 of 2 panes; the rest are still in the old tab'});
     await settle();
-    assert.equal(pg.location.hash, '#tab=work/w1%3At6');
+    assert.equal(pg.location.hash, '#tab=w1%3At6');
     assert.equal(pg.toasts().pop(), 'Moved 1 of 2 panes; the rest are still in the old tab');
   },
 
@@ -841,6 +855,185 @@ const tests = {
     assert.equal(said.textContent, 'Took it: new tab w2:t1, with research');
     pg.runTimers(16000);
     assert.equal(said.hidden, true, 'the take’s reply stayed after 15 s');
+  },
+
+  // The page asks for its own session's board and events, by the session in
+  // its path, encoded.
+  async 'a board page asks for its own session'() {
+    let pg = page('k1');
+    await settle();
+    assert.deepEqual(pg.gets, ['/api/board?session=work']);
+    assert.equal(pg.streams[0].url, '/api/events?session=work');
+    assert.equal(pg.$('session-name').textContent, 'work');
+    assert.equal(pg.$('session-name').hidden, false);
+    pg = page('k1', '/my%20work/');
+    await settle();
+    assert.deepEqual(pg.gets, ['/api/board?session=my%20work']);
+    assert.equal(pg.streams[0].url, '/api/events?session=my%20work');
+  },
+
+  // Signing in takes the code out of the address and leaves the path and
+  // the view where they are.
+  async 'signing in keeps the path'() {
+    const pg = page(null, '/work/', '#tab=w1%3At1', '?code=abc');
+    await settle();
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/session', {code: 'abc'}]]);
+    pg.good = 'k9';
+    pg.posts[0].answer(200, {key: 'k9'});
+    await settle();
+    assert.deepEqual(pg.addresses, ['/work/#tab=w1%3At1']);
+    assert.deepEqual(pg.streams.map(s => s.key), ['k9']);
+  },
+
+  // The server may not have read a session yet, as when the board opens its
+  // page at once: the page asks again every 2 s, and says nothing, for 10 s.
+  async 'a session not read yet is asked for again'() {
+    const pg = page('k1');
+    pg.answers['/api/board?session=work'] = 404;
+    await settle();
+    for (let i = 0; i < 5; i++) {
+      assert.equal(pg.gets.length, i + 1);
+      assert.doesNotMatch(pg.$('empty-text').textContent, /isn’t running/, 'the page gave up after ' + (i + 1));
+      pg.runTimers(3000);
+      await settle();
+    }
+    assert.equal(pg.gets.length, 6);
+    assert.equal(pg.streams.length, 0);
+    assert.match(pg.$('empty-text').textContent, /^This session isn’t running\./);
+    assert.equal(pg.$('empty-text').querySelector('a').getAttribute('href'), '/');
+    assert.equal(pg.$('board').hidden, true);
+
+    // Read in time, it shows the board.
+    const late = page('k1');
+    late.answers['/api/board?session=work'] = 404;
+    await settle();
+    delete late.answers['/api/board?session=work'];
+    late.runTimers(3000);
+    await settle();
+    late.send(board(card()));
+    await settle();
+    assert.equal(late.$('board').hidden, false);
+    assert.equal(late.$('board').querySelectorAll('.card').length, 1);
+  },
+
+  // When the session stops, its stream ends, and the page, after trying
+  // again for 10 s, says it isn't running.
+  async 'a stopped session ends its page'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    assert.equal(pg.$('board').hidden, false);
+    pg.answers['/api/board?session=work'] = 404;
+    pg.streams[0].end();
+    await settle();
+    for (let i = 0; i < 6; i++) {
+      pg.runTimers(3000);
+      await settle();
+    }
+    assert.match(pg.$('empty-text').textContent, /^This session isn’t running\./);
+    assert.equal(pg.$('empty-text').querySelector('a').getAttribute('href'), '/');
+    assert.equal(pg.$('board').hidden, true);
+  },
+
+  // At /, the page lists the running sessions, each a link to its board, with
+  // a card count, and marks the one Slack asks go to. A session without a page
+  // has none.
+  async 'the list links to each session'() {
+    const pg = page('k1', '/');
+    await settle();
+    assert.deepEqual(pg.gets, ['/api/board']);
+    assert.equal(pg.streams[0].url, '/api/events');
+    assert.equal(pg.$('session-name').textContent, '');
+    const list = {
+      version: '0.11.0',
+      slack: 'work',
+      sessions: [
+        {name: 'work', cards: 2, stale: false},
+        {name: 'a b', cards: 1, stale: true},
+        {name: 'api', cards: 0, stale: false},
+      ],
+    };
+    pg.send(list, 'sessions');
+    await settle();
+    const rows = pg.$('session-list').querySelectorAll('li');
+    assert.deepEqual(
+      rows.map(r => r.textContent),
+      ['work2 cardsSlack asks come here', 'a b1 cardstale', 'api0 cards'],
+    );
+    assert.deepEqual(
+      rows.map(r => (r.querySelector('a') ? r.querySelector('a').getAttribute('href') : null)),
+      ['/work/', '/a%20b/', null],
+    );
+    assert.equal(pg.$('session-list').hidden, false);
+    assert.equal(pg.$('empty').hidden, true);
+    assert.deepEqual(pg.replaced, []);
+
+    // A change updates the rows.
+    list.sessions[0].cards = 3;
+    pg.send(list, 'sessions');
+    await settle();
+    assert.equal(pg.$('session-list').querySelectorAll('li')[0].textContent, 'work3 cardsSlack asks come here');
+
+    // With one session, the page goes to its board.
+    list.sessions = [{name: 'side', cards: 1, stale: false}];
+    pg.send(list, 'sessions');
+    await settle();
+    assert.deepEqual(pg.replaced, ['/side/']);
+
+    // With none, it says so.
+    const none = page('k1', '/');
+    await settle();
+    none.send({version: '0.11.0', slack: 'default', sessions: []}, 'sessions');
+    await settle();
+    assert.equal(none.$('empty-text').textContent, 'No herdr session is running.');
+    assert.equal(none.$('session-list').hidden, true);
+  },
+
+  // A view address from before, /#tab=<session>/<tab>, goes to the session's
+  // page, with the tab as the new address has it. On the session's own page,
+  // the old address opens the view too; another session's doesn't.
+  async 'an old view address still works'() {
+    let pg = page('k1', '/', '#tab=side/w1%3At1');
+    await settle();
+    assert.deepEqual(pg.replaced, ['/side/#tab=w1%3At1']);
+    assert.deepEqual(pg.gets, [], 'the list loaded after the page moved on');
+
+    pg = page('k1', '/work/', '#tab=work/w1%3At1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    assert.ok(doc.body.classList.contains('viewing'), 'no view opened');
+    assert.equal(pg.$('detail-title').textContent, 'Fix the ABC-12 login loop');
+
+    pg = page('k1', '/work/', '#tab=side/w1%3At1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    assert.ok(!doc.body.classList.contains('viewing'), 'a view opened');
+    assert.deepEqual(pg.replaced, []);
+
+    pg = page('k1', '/work/', '#tab=w1%3At1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    assert.ok(doc.body.classList.contains('viewing'), 'no view opened');
+  },
+
+  // With Slack asks going to a session that isn't running, a session's page
+  // says so where the Slack line goes, with no buttons.
+  async 'a session shows why Slack asks aren’t on it'() {
+    const pg = page('k1');
+    await settle();
+    const waiting = 'Slack asks go to herdr session default, which isn’t running.';
+    pg.send(Object.assign(board(card()), {slackWaiting: waiting}));
+    await settle();
+    assert.equal(pg.$('slack-bar').hidden, false);
+    assert.equal(pg.$('slack').textContent, waiting);
+    assert.equal(slackPart(pg, 'slack-fetch').hidden, true);
+    pg.send(board(card()));
+    await settle();
+    assert.equal(pg.$('slack-bar').hidden, true);
   },
 
   // A change the board doesn't have yet shows for 5 s after it's answered.

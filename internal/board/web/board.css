@@ -147,27 +147,16 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .badge.stale { color: var(--ink-paused); background: color-mix(in srgb, var(--paused) 18%, transparent); }
 .badge.count { color: #fff; background: var(--ask); min-width: 18px; height: 18px; padding: 0 5px; justify-content: center; font-variant-numeric: tabular-nums; }
 
-.sessions {
-  display: inline-flex;
-  gap: 2px;
-  padding: 3px;
-  border-radius: 10px;
-  background: var(--surface-2);
-}
-.sessions button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 12px;
-  border: 0;
+.session-name {
+  padding: 3px 12px;
   border-radius: 8px;
-  background: transparent;
-  color: var(--muted);
+  background: var(--surface-2);
+  color: var(--fg);
   font-size: 13px;
   font-weight: 550;
+  text-decoration: none;
 }
-.sessions button:hover { color: var(--fg); }
-.sessions button[aria-pressed="true"] { background: var(--surface); color: var(--fg); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12); }
+.session-name:hover { background: var(--well); }
 
 .spaces {
   display: flex;
@@ -826,3 +815,25 @@ body.viewing .empty { display: none; }
 @media (hover: none) {
   .card { cursor: default; }
 }
+
+/* The list of sessions at / */
+
+.session-list {
+  width: min(560px, 100%);
+  margin: 0 auto;
+  padding: 32px 24px;
+  list-style: none;
+}
+.session-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding: 12px 4px;
+  border-bottom: 1px solid var(--line);
+}
+.session-link { font-size: 16px; font-weight: 600; color: var(--fg); }
+a.session-link { text-decoration: none; }
+a.session-link:hover { color: var(--ink-link); text-decoration: underline; }
+.session-cards { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.session-slack { margin-left: auto; color: var(--ink-slack); font-size: 12px; }

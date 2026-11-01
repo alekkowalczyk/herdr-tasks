@@ -17,8 +17,8 @@
 <body>
 <header class="top">
   <h1 class="brand">Tasks</h1>
+  <a id="session-name" class="session-name" href="/" title="All sessions" hidden></a>
   <span id="stale" class="badge stale" title="herdr didn't answer the last read. This is what it showed before." hidden>stale</span>
-  <nav id="sessions" class="sessions" aria-label="Sessions" hidden></nav>
   <div id="spaces" class="spaces" role="group" aria-label="Spaces" hidden></div>
   <div id="slack-bar" class="slack-bar" hidden>
     <span id="slack" class="slack-line"></span>
@@ -30,6 +30,7 @@
 </header>
 <p id="hint" class="hint" hidden>Add a Linear API key to see issue status: <code>herdr-tasks linear-key</code></p>
 <main id="board" class="board" hidden></main>
+<ul id="session-list" class="session-list" hidden></ul>
 <section id="empty" class="empty" aria-live="polite">
   <p id="empty-text" class="empty-text">Connecting…</p>
 </section>

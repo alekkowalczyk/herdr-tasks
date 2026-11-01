@@ -30,15 +30,15 @@ function fake() {
 // Timers that don't keep this script running.
 const unref = t => (t && t.unref ? t.unref() : t);
 
-// page runs the script as a tab opened at /, or at hash, with storage
+// page runs the script as a tab opened at /work/, or at hash, with storage
 // holding stored. The server takes only the key good. A stream it takes
 // stays open.
 function page(stored, good, hash) {
   const storage = new Map(stored ? [[KEY, stored]] : []);
   const listeners = {};
-  const streams = []; // the key each /api/events request was sent with
+  const streams = []; // the key each connection's first request, for the board, was sent with
   const views = []; // each tab view the page opened, as session/tab
-  const ok = {ok: true, status: 200, body: {getReader: () => ({read: () => new Promise(() => {})})}};
+  const ok = {ok: true, status: 200, text: async () => '', body: {getReader: () => ({read: () => new Promise(() => {})})}};
   const denied = {ok: false, status: 401, json: async () => ({error: 'Sign in again'})};
   const window = {
     addEventListener: (type, fn) => (listeners[type] = listeners[type] || []).push(fn),
@@ -53,7 +53,7 @@ function page(stored, good, hash) {
     window,
     document: fake(),
     Element: class Element {},
-    location: {search: '', hash: hash || '', pathname: '/'},
+    location: {search: '', hash: hash || '', pathname: '/work/'},
     history: {replaceState() {}},
     localStorage: {
       getItem: k => (storage.has(k) ? storage.get(k) : null),
@@ -61,7 +61,7 @@ function page(stored, good, hash) {
     },
     fetch: async (url, opts) => {
       const auth = ((opts && opts.headers) || {}).Authorization || '';
-      if (url === '/api/events') streams.push(auth.replace(/^Bearer /, ''));
+      if (url === '/api/board?session=work') streams.push(auth.replace(/^Bearer /, ''));
       return auth === 'Bearer ' + good ? ok : denied;
     },
     setTimeout: (fn, ms) => unref(setTimeout(fn, ms)),
@@ -120,12 +120,12 @@ async function main() {
 
   // A tab opened at a tab's view, with no key, opens the view once another
   // tab signs in.
-  p = page(null, 'new-key', '#tab=acme/api');
+  p = page(null, 'new-key', '#tab=api');
   await settle();
   expect('views before', p.views, []);
   p.otherTab('new-key');
   await settle();
-  expect('views after another tab signed in', p.views, ['acme/api']);
+  expect('views after another tab signed in', p.views, ['work/api']);
 }
 
 main().then(

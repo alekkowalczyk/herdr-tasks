@@ -1,6 +1,8 @@
-// The task board page. It signs in with the one-time code in its address,
-// shows the board the server streams, and posts task changes back. Opening
-// a card shows its tab's terminals (term.js) next to the whole card.
+// The task board page. It signs in with the one-time code in its address.
+// At /<session>/ it shows the board the server streams for that herdr
+// session, and posts task changes back; opening a card shows its tab's
+// terminals (term.js) next to the whole card. At / it lists the running
+// sessions, each a link to its board.
 //
 // Titles, notes, recaps, prompts and links come from agents and other
 // people. The page builds its DOM with createElement, textContent and
@@ -11,7 +13,6 @@
 
   // What the page keeps in the browser.
   const KEY = 'herdr-tasks-board-key';
-  const SESSION = 'herdr-tasks-board-session';
   const SPACES = 'herdr-tasks-board-spaces';
   const DONE_OPEN = 'herdr-tasks-board-done-open';
 
@@ -86,6 +87,7 @@
   const key = () => load(KEY) || '';
 
   let board = null; // the latest board the server sent
+  let list = null; // at /, the latest list of sessions
   let index = new Map(); // card key → that card on the board
   let signedOut = false;
   // Changes posted but not on the board yet, by card key. Each changes how
@@ -93,7 +95,6 @@
   const overrides = new Map();
   const cardEls = new Map(); // card key → its element
   const columnEls = new Map(); // column id → {section, cards, count, toggle}
-  let session = ''; // the session shown
   let dragging = null; // {key, stage, el} while a card is dragged
   let held = false; // a render waits until the drag or the menu ends
   let menuFor = null; // {key, trigger} while the Move to menu is open
@@ -112,6 +113,26 @@
   const taking = new Set(); // message IDs
   let slackReply = null; // {text, problem}
   let replyTimer = 0;
+
+  // The page's session is the first part of its path: /work/. At / there
+  // is none, and the page is the list of sessions.
+  const session = (() => {
+    const m = /^\/([^/]+)\/$/.exec(location.pathname);
+    try {
+      return m ? decodeURIComponent(m[1]) : '';
+    } catch (e) {
+      return '';
+    }
+  })();
+  const BOARD_URL = session ? '/api/board?session=' + encodeURIComponent(session) : '/api/board';
+  const EVENTS_URL = session ? '/api/events?session=' + encodeURIComponent(session) : '/api/events';
+  // pageOf is the address of a session's board.
+  function pageOf(name) {
+    return '/' + encodeURIComponent(name) + '/';
+  }
+  // The board serves no page for sessions called - or api, so the list
+  // shows them without a link.
+  const hasPage = name => name !== '-' && name !== 'api';
 
   const $ = id => document.getElementById(id);
   const keyOf = c => c.session + '\n' + c.tab;
@@ -200,7 +221,7 @@
   // ---- Talking to the server
 
   // signIn swaps the code in the address for the browser key, and takes the
-  // code out of the address.
+  // code out of the address. The page stays where it is.
   async function signIn() {
     const code = new URLSearchParams(location.search).get('code');
     if (code === null) return;
@@ -217,7 +238,7 @@
     } catch (e) {
       // The server didn't answer. A key from before may still work.
     } finally {
-      history.replaceState(null, '', '/');
+      history.replaceState(null, '', location.pathname + location.hash);
     }
   }
 
@@ -225,6 +246,7 @@
   let streamKey = ''; // the key the stream signed in with
   let retryIn = 0;
   let retryTimer = 0;
+  let misses = 0; // times in a row the server hadn't read this session
 
   function connect() {
     clearTimeout(retryTimer);
@@ -241,12 +263,15 @@
     const ctl = new AbortController();
     stream = ctl;
     listen(ctl, k).then(again => {
-      if (again && stream === ctl) retry();
+      if (stream !== ctl) return;
+      if (again === 'missing') wait();
+      else if (again) retry();
     });
   }
 
-  // listen reads the board stream, signed in with k, until it ends, and says
-  // whether to try again.
+  // listen loads the board, or the list of sessions, and reads its stream,
+  // signed in with k, until it ends. It says whether to try again, or
+  // 'missing' when the server has no such session.
   async function listen(ctl, k) {
     let quiet = 0;
     // The server pings every 25 s, so a stream silent for longer is gone.
@@ -256,15 +281,21 @@
     };
     try {
       wake();
-      const res = await fetch('/api/events', {
-        headers: {Authorization: 'Bearer ' + k},
-        signal: ctl.signal,
-        cache: 'no-store',
-      });
+      const init = {headers: {Authorization: 'Bearer ' + k}, signal: ctl.signal, cache: 'no-store'};
+      const first = await fetch(BOARD_URL, init);
+      if (first.status === 401) {
+        signOut(k);
+        return false;
+      }
+      if (first.status === 404) return 'missing';
+      if (!first.ok) return true;
+      got(await first.text());
+      const res = await fetch(EVENTS_URL, init);
       if (res.status === 401) {
         signOut(k);
         return false;
       }
+      if (res.status === 404) return 'missing';
       if (!res.ok || !res.body) return true;
       const reader = res.body.getReader();
       const text = new TextDecoder();
@@ -277,7 +308,7 @@
         for (let end; (end = buf.indexOf('\n\n')) >= 0; ) {
           const ev = parseEvent(buf.slice(0, end));
           buf = buf.slice(end + 2);
-          if (ev.event === 'board') gotBoard(ev.data);
+          if (ev.event === (session ? 'board' : 'sessions')) got(ev.data);
         }
       }
     } catch (e) {
@@ -308,8 +339,9 @@
   function retry() {
     retryIn = Math.min(retryIn ? retryIn * 2 : 1000, 15000);
     const lost = retryIn >= 4000;
-    $('conn').textContent = lost ? 'The board server isn’t answering' : board ? 'Reconnecting…' : 'Connecting…';
-    if (!board && lost) {
+    const shown = board || list;
+    $('conn').textContent = lost ? 'The board server isn’t answering' : shown ? 'Reconnecting…' : 'Connecting…';
+    if (!shown && lost) {
       showMessage(
         document.createTextNode('The board server isn’t answering. Run '),
         el('code', '', 'herdr-tasks board'),
@@ -319,14 +351,63 @@
     retryTimer = setTimeout(connect, retryIn * (0.75 + Math.random() / 2));
   }
 
-  function gotBoard(data) {
-    let b;
+  // wait asks for the session again in 2 s. The server may not have read it
+  // yet, as when the board opens the page as it starts; after about 10 s the
+  // page says it isn't running.
+  function wait() {
+    if (++misses > 5) {
+      giveUp();
+      return;
+    }
+    retryTimer = setTimeout(connect, 2000);
+  }
+
+  function giveUp() {
+    board = null;
+    $('conn').textContent = '';
+    if (viewing) {
+      history.replaceState(null, '', location.pathname + location.search);
+      hideView();
+    }
+    showMessage(...goneText());
+  }
+
+  function goneText() {
+    return [document.createTextNode('This session isn’t running. '), attrs(el('a', '', 'See the running sessions'), {href: '/'})];
+  }
+
+  // got reads what the stream sends: the session's board, or the list.
+  function got(data) {
+    let v;
     try {
-      b = JSON.parse(data);
+      v = JSON.parse(data);
     } catch (e) {
       return;
     }
-    if (!b || !Array.isArray(b.sessions)) return;
+    if (!v || !Array.isArray(v.sessions)) return;
+    misses = 0;
+    if (session) gotBoard(v);
+    else gotList(v);
+  }
+
+  function gotList(l) {
+    list = l;
+    retryIn = 0;
+    $('conn').textContent = '';
+    $('version').textContent = l.version ? 'v' + l.version : '';
+    const only = l.sessions.length === 1 ? l.sessions[0] : null;
+    if (only && hasPage(only.name)) {
+      location.replace(pageOf(only.name));
+      return;
+    }
+    if (!l.sessions.length) {
+      showMessage(document.createTextNode('No herdr session is running.'));
+      return;
+    }
+    renderList(l);
+  }
+
+  function gotBoard(b) {
     board = b;
     index = new Map();
     for (const s of b.sessions) for (const c of s.cards) index.set(keyOf(c), c);
@@ -551,7 +632,7 @@
     const follow = reply => {
       const tab = reply && typeof reply.tab === 'string' ? reply.tab : '';
       if (!tab || !viewing || viewing.session !== c.session || viewing.tab !== c.tab) return;
-      history.replaceState(history.state, '', viewHash(c.session, tab));
+      history.replaceState(history.state, '', viewHash(tab));
       route();
     };
     work(c, {action: 'move', workspace: id}, 'Moving to ' + label + '…').then(
@@ -640,6 +721,7 @@
 
   function showMessage(...nodes) {
     $('board').hidden = true;
+    $('session-list').hidden = true;
     $('empty').hidden = false;
     $('empty-text').replaceChildren(...nodes);
   }
@@ -651,7 +733,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['sessions', 'spaces', 'slack-bar', 'stale', 'hint']) $(id).hidden = true;
+      for (const id of ['spaces', 'slack-bar', 'stale', 'hint']) $(id).hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
         el('code', '', 'herdr-tasks board'),
@@ -662,16 +744,14 @@
     if (!board) return;
     prune();
     $('version').textContent = board.version ? 'v' + board.version : '';
-    renderSlack(board.slack);
+    renderSlack(board.slack, board.slackWaiting);
     const sessions = board.sessions;
     $('hint').hidden = board.linearKey || !sessions.some(s => s.cards.some(c => c.links.some(l => l.kind === 'linear')));
-    const s = sessions.find(x => x.name === load(SESSION)) || sessions[0];
-    session = s ? s.name : '';
-    renderSessions(sessions);
+    const s = sessions.find(x => x.name === session);
     $('stale').hidden = !s || !s.stale;
     if (!s) {
       $('spaces').hidden = true;
-      showMessage(document.createTextNode('No herdr session is running.'));
+      showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
       const space = renderSpaces(s, cards);
@@ -684,8 +764,11 @@
 
   // renderSlack shows the Slack watcher's line, while the board has one: its
   // status, cut short when it's long (its title has all of it), Fetch when
-  // it offers one, and how many asks were skipped.
-  function renderSlack(line) {
+  // it offers one, and how many asks were skipped. On a session Slack asks
+  // don't go to, it's the one line that says where they go, when they go to
+  // a session that isn't running.
+  function renderSlack(line, waiting) {
+    if (!line && waiting) line = {text: waiting, problem: false};
     $('slack-bar').hidden = !line;
     const e = $('slack');
     e.textContent = line ? line.text : '';
@@ -762,23 +845,28 @@
     );
   }
 
-  function renderSessions(sessions) {
-    const nav = $('sessions');
-    nav.hidden = sessions.length < 2;
+  // renderList shows the running sessions, each a link to its board with
+  // how many cards it has. The one Slack asks go to says so.
+  function renderList(l) {
+    const ul = $('session-list');
     sync(
-      nav,
-      nav.hidden ? [] : sessions,
+      ul,
+      l.sessions,
       s => s.name,
-      () => attrs(el('button'), {type: 'button'}),
-      (b, s) => {
-        b.setAttribute('aria-pressed', String(s.name === session));
-        const parts = [el('span', '', s.name)];
+      () => el('li', 'session-row'),
+      (li, s) => {
+        const n = s.cards === 1 ? '1 card' : s.cards + ' cards';
+        const parts = [
+          hasPage(s.name) ? attrs(el('a', 'session-link', s.name), {href: pageOf(s.name)}) : el('span', 'session-link', s.name),
+          el('span', 'session-cards', n),
+        ];
         if (s.stale) parts.push(attrs(el('span', 'badge stale', 'stale'), {title: $('stale').getAttribute('title')}));
-        const asking = s.cards.filter(c => c.column === 'asking').length;
-        if (asking) parts.push(attrs(el('span', 'badge count', asking), {title: asking + ' asking', 'aria-label': asking + ' asking'}));
-        b.replaceChildren(...parts);
+        if (s.name === l.slack) parts.push(el('span', 'session-slack', 'Slack asks come here'));
+        li.replaceChildren(...parts);
       },
     );
+    ul.hidden = false;
+    $('empty').hidden = true;
   }
 
   function spaceChoices() {
@@ -1010,28 +1098,39 @@
 
   // ---- A tab's view: its terminals, and the whole card next to them
 
-  // The view is at #tab=<session>/<tab>, so a reload keeps it.
-  function viewHash(session, tab) {
-    return '#tab=' + encodeURIComponent(session) + '/' + encodeURIComponent(tab);
+  // The view is at #tab=<tab>, so a reload keeps it.
+  function viewHash(tab) {
+    return '#tab=' + encodeURIComponent(tab);
   }
 
-  // hashView is the tab the address shows, or null for the board.
-  function hashView() {
+  // hashTab is the tab the address shows. An old address has the session
+  // before the tab, as #tab=<session>/<tab>, and says which; a new one has
+  // none ('' as the session).
+  function hashTab() {
     const h = location.hash || '';
-    const i = h.indexOf('/');
-    if (!h.startsWith('#tab=') || i < 0) return null;
+    if (!h.startsWith('#tab=')) return null;
+    const rest = h.slice(5);
+    const i = rest.indexOf('/');
     try {
-      return {session: decodeURIComponent(h.slice(5, i)), tab: decodeURIComponent(h.slice(i + 1))};
+      if (i < 0) return {session: '', tab: decodeURIComponent(rest)};
+      return {session: decodeURIComponent(rest.slice(0, i)), tab: decodeURIComponent(rest.slice(i + 1))};
     } catch (e) {
       return null;
     }
+  }
+
+  // hashView is the tab of this session the address shows, or null for the
+  // board.
+  function hashView() {
+    const v = session ? hashTab() : null;
+    return v && (!v.session || v.session === session) ? {session, tab: v.tab} : null;
   }
 
   function openView(k) {
     const c = cardByKey(k);
     if (!c) return;
     closeMenu(false);
-    history.pushState({view: true}, '', viewHash(c.session, c.tab));
+    history.pushState({view: true}, '', viewHash(c.tab));
     route();
   }
 
@@ -1389,7 +1488,7 @@
   }
 
   function buildColumns() {
-    const doneOpen = load(DONE_OPEN) === '1';
+    const doneOpen = load(DONE_OPEN + ' ' + session) === '1';
     for (const col of COLUMNS) {
       const section = attrs(el('section', 'column'), {'data-column': col.id, 'aria-labelledby': 'col-' + col.id});
       const name = attrs(el('span', 'col-name', col.label), {id: 'col-' + col.id});
@@ -1404,7 +1503,7 @@
         toggle.addEventListener('click', () => {
           const open = section.classList.toggle('collapsed') === false;
           toggle.setAttribute('aria-expanded', String(open));
-          save(DONE_OPEN, open ? '1' : '0');
+          save(DONE_OPEN + ' ' + session, open ? '1' : '0');
         });
       } else {
         title.classList.add('col-head');
@@ -1551,12 +1650,6 @@
       }
     });
 
-    $('sessions').addEventListener('click', e => {
-      const b = e.target instanceof Element ? e.target.closest('button') : null;
-      if (!b) return;
-      save(SESSION, b.getAttribute('data-key'));
-      render();
-    });
     $('spaces').addEventListener('click', e => {
       const b = e.target instanceof Element ? e.target.closest('button') : null;
       if (b) chooseSpace(b.getAttribute('data-key') === '*' ? '' : b.getAttribute('data-key'));
@@ -1623,11 +1716,27 @@
     });
   }
 
+  // moveOldHash sends an old address, /#tab=<session>/<tab>, to the page of
+  // its session. It says whether it did.
+  function moveOldHash() {
+    const v = session ? null : hashTab();
+    if (!v || !v.session || !hasPage(v.session)) return false;
+    location.replace(pageOf(v.session) + viewHash(v.tab));
+    return true;
+  }
+
+  if (session) {
+    const name = $('session-name');
+    name.textContent = session;
+    name.hidden = false;
+    document.title = session + ' · Tasks';
+  }
   buildSlack();
   buildColumns();
   wire();
   setInterval(tickAges, 30e3);
   signIn().then(() => {
+    if (moveOldHash()) return;
     connect();
     route();
   });

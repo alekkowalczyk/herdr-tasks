@@ -320,3 +320,56 @@ func TestPageHasFetchAndSkipped(t *testing.T) {
 		}
 	}
 }
+
+// Each session has its own board page, so the page has no switcher between
+// sessions and keeps no choice of one.
+func TestPageHasNoSessionSwitcher(t *testing.T) {
+	b, err := fs.ReadFile(web, "web/index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `id="sessions"`) {
+		t.Error(`index.html has id="sessions"`)
+	}
+	if strings.Contains(pageScripts(t)["web/app.js"], "herdr-tasks-board-session") {
+		t.Error("app.js keeps a chosen session")
+	}
+}
+
+// The page asks for its own session's board and events.
+func TestPageScopesRequestsBySession(t *testing.T) {
+	src := withoutComments(pageScripts(t)["web/app.js"])
+	for _, want := range []string{"/api/board?session=", "/api/events?session="} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js doesn't ask for %s", want)
+		}
+	}
+}
+
+// Signing in takes the code out of the address and stays on the page's path,
+// with its hash.
+func TestSignInKeepsThePath(t *testing.T) {
+	body := jsFunction(t, withoutComments(pageScripts(t)["web/app.js"]), "signIn")
+	if !strings.Contains(body, "history.replaceState(null, '', location.pathname + location.hash)") {
+		t.Errorf("signIn doesn't replace the address with the path and hash:\n%s", body)
+	}
+}
+
+// The list of sessions at / links to each board, with the session name
+// encoded.
+func TestPageHasSessionList(t *testing.T) {
+	src := withoutComments(pageScripts(t)["web/app.js"])
+	if !strings.Contains(src, "'sessions'") {
+		t.Error("app.js doesn't handle the sessions event")
+	}
+	if body := jsFunction(t, src, "pageOf"); !strings.Contains(body, "encodeURIComponent(") {
+		t.Errorf("pageOf doesn't encode the session name:\n%s", body)
+	}
+}
+
+// A session's page says why Slack asks aren't on it, when the board says.
+func TestPageShowsSlackWaiting(t *testing.T) {
+	if !strings.Contains(pageScripts(t)["web/app.js"], "slackWaiting") {
+		t.Error("app.js doesn't read slackWaiting")
+	}
+}
