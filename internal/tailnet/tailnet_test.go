@@ -89,13 +89,29 @@ func TestServedReadsTargets(t *testing.T) {
 }
 
 func TestServedNonProxyPortsMapToEmpty(t *testing.T) {
-	serve := `{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true},"9000":{"TCPForward":"127.0.0.1:1"}},"Web":{"devbox.tail0000.ts.net:443":{"Handlers":{"/":{"Path":"/tmp/x"}}}}}`
+	serve := `{"TCP":{"443":{"HTTPS":true},"8443":{"HTTPS":true},"9001":{}},"Web":{"devbox.tail0000.ts.net:443":{"Handlers":{"/":{"Path":"/tmp/x"}}}}}`
 	bin, _ := fakeTailscale(t, "", serve, 0)
 	got, err := CLI{Bin: bin}.Served(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[int]string{443: "", 8443: ""}
+	want := map[int]string{443: "", 8443: "", 9001: ""}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A port served with --tcp or --http is served too, so it's never taken for
+// a free one.
+func TestServedTCPAndHTTPPorts(t *testing.T) {
+	serve := `{"TCP":{"5432":{"TCPForward":"127.0.0.1:5432"},"80":{"HTTP":true},"7391":{"HTTPS":true}},` +
+		`"Web":{"devbox.tail0000.ts.net:80":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:3000"}}},"devbox.tail0000.ts.net:7391":{"Handlers":{"/":{"Proxy":"unix:/s/board.sock"}}}}}`
+	bin, _ := fakeTailscale(t, "", serve, 0)
+	got, err := CLI{Bin: bin}.Served(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int]string{5432: "127.0.0.1:5432", 80: "http://127.0.0.1:3000", 7391: "unix:/s/board.sock"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

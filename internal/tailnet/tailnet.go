@@ -76,15 +76,19 @@ func (c CLI) Self(ctx context.Context) (Self, error) {
 	return self, nil
 }
 
-// Served reads `serve status --json`. It maps each HTTPS port to the target
-// it proxies to, or "" when the port serves something else.
+// Served reads `serve status --json`. It maps every port tailscale serve
+// serves to its target: what an HTTPS or HTTP port proxies to, what a TCP
+// port forwards to, or "" when the port serves something else.
 func (c CLI) Served(ctx context.Context) (map[int]string, error) {
 	out, err := c.run(ctx, "serve", "status", "--json")
 	if err != nil {
 		return nil, err
 	}
 	var cfg struct {
-		TCP map[string]struct{ HTTPS bool }
+		TCP map[string]struct {
+			HTTPS, HTTP bool
+			TCPForward  string
+		}
 		Web map[string]struct {
 			Handlers map[string]struct{ Proxy string }
 		}
@@ -95,23 +99,27 @@ func (c CLI) Served(ctx context.Context) (map[int]string, error) {
 		}
 	}
 	targets := map[int]string{}
+	web := map[int]bool{} // the ports whose target is a web handler's
 	for key, tcp := range cfg.TCP {
 		port, err := strconv.Atoi(key)
-		if err != nil || !tcp.HTTPS {
+		if err != nil {
 			continue
 		}
-		targets[port] = ""
+		targets[port] = tcp.TCPForward
+		if tcp.HTTPS || tcp.HTTP {
+			targets[port], web[port] = "", true
+		}
 	}
-	for hostPort, web := range cfg.Web {
+	for hostPort, h := range cfg.Web {
 		i := strings.LastIndex(hostPort, ":")
 		if i < 0 {
 			continue
 		}
 		port, err := strconv.Atoi(hostPort[i+1:])
-		if _, ok := targets[port]; err != nil || !ok {
+		if err != nil || !web[port] {
 			continue
 		}
-		targets[port] = web.Handlers["/"].Proxy
+		targets[port] = h.Handlers["/"].Proxy
 	}
 	return targets, nil
 }

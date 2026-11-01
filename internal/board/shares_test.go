@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"maps"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,28 +193,37 @@ func TestShareServesAndRecords(t *testing.T) {
 }
 
 func TestShareRefusesTakenPort(t *testing.T) {
-	others := map[int]string{8443: "http://127.0.0.1:8801"}
+	// 8443 proxies over HTTPS, and 5432 is a --tcp forward.
+	others := map[int]string{8443: "http://127.0.0.1:8801", 5432: "127.0.0.1:5432"}
 	ts := newFakeTS(maps.Clone(others))
-	f := startSharing(t, shortDir(t), ts, "http://localhost:8443/")
-	st, reply := f.share(t, "http://localhost:8443/")
-	if want := "Port 8443 is already shared with your tailnet for something else."; st != http.StatusConflict || reply["error"] != want {
-		t.Errorf("share: %d %q, want 409 %q", st, reply, want)
+	f := startSharing(t, shortDir(t), ts, "http://localhost:8443/", "http://localhost:5432/")
+	for _, port := range []int{8443, 5432} {
+		st, reply := f.share(t, fmt.Sprintf("http://localhost:%d/", port))
+		if want := fmt.Sprintf("Port %d is already shared with your tailnet for something else.", port); st != http.StatusConflict || reply["error"] != want {
+			t.Errorf("share %d: %d %q, want 409 %q", port, st, reply, want)
+		}
+		if n := ts.serves(port); n > 0 {
+			t.Errorf("Tailscale was asked %q", ts.changes())
+		}
 	}
-	if n := ts.serves(8443); n > 0 {
-		t.Errorf("Tailscale was asked %q", ts.changes())
-	}
-	if got := ts.entries()[8443]; got != others[8443] {
-		t.Errorf("Tailscale serves %q at 8443, want %q", got, others[8443])
+	if !maps.Equal(ts.entries(), map[int]string{8443: others[8443], 5432: others[5432], 7391: "unix:" + f.sock}) {
+		t.Errorf("Tailscale serves %v, want the others' entries kept", ts.entries())
 	}
 }
 
 func TestShareRefusesBadLinks(t *testing.T) {
 	ts := newFakeTS(nil)
-	bad := []string{"http://localhost:0/", "http://localhost:70000/", "http://localhost:7391/", "https://example.test/", "http://localhost/"}
-	f := startSharing(t, shortDir(t), ts, bad...)
-	for _, url := range bad {
-		if st, reply := f.share(t, url); st != http.StatusBadRequest || reply["error"] == "" {
-			t.Errorf("%s: %d %q, want 400 with the reason", url, st, reply)
+	bad := map[string]string{
+		"http://localhost:0/":     "There's no port 0: ports go from 1 to 65535.",
+		"http://localhost:70000/": "There's no port 70000: ports go from 1 to 65535.",
+		"http://localhost:7391/":  "Port 7391 is the board's own.",
+		"https://example.test/":   "Only localhost links can be shared.",
+		"http://localhost/":       "Only a localhost link with a port can be shared.",
+	}
+	f := startSharing(t, shortDir(t), ts, slices.Sorted(maps.Keys(bad))...)
+	for link, why := range bad {
+		if st, reply := f.share(t, link); st != http.StatusBadRequest || reply["error"] != why {
+			t.Errorf("%s: %d %q, want 400 %q", link, st, reply, why)
 		}
 	}
 	if st, reply := f.share(t, "http://localhost:4100/"); st != http.StatusNotFound || reply["error"] != "That link isn't on the task." {
@@ -385,6 +396,32 @@ func TestShareProxyWebSocket(t *testing.T) {
 	}
 }
 
+// syncBuffer is a log the server writes to while the test reads it.
+type syncBuffer struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// logged has the log written to a buffer until the test ends.
+func logged(t *testing.T) *syncBuffer {
+	b := &syncBuffer{}
+	log.SetOutput(b)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return b
+}
+
 func TestShareProxyNothingListening(t *testing.T) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -396,6 +433,7 @@ func TestShareProxyNothingListening(t *testing.T) {
 	link := fmt.Sprintf("http://localhost:%d/", p)
 	f := startSharing(t, dir, newFakeTS(nil), link)
 	f.shareOK(t, link)
+	logs := logged(t)
 	resp, err := shareClient(shareSock(dir, p)).Get("http://localhost/")
 	if err != nil {
 		t.Fatal(err)
@@ -404,6 +442,16 @@ func TestShareProxyNothingListening(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if want := fmt.Sprintf("Nothing answers at localhost:%d.", p); resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(b), want) {
 		t.Errorf("with no dev server: %s %q, want 502 %q", resp.Status, b, want)
+	}
+	// The log says why, once.
+	if got := strings.Count(logs.String(), "connection refused"); got != 1 {
+		t.Errorf("the log says connection refused %d times, want once:\n%s", got, logs)
+	}
+	if resp, err := shareClient(shareSock(dir, p)).Get("http://localhost/"); err == nil {
+		resp.Body.Close()
+	}
+	if got := strings.Count(logs.String(), "connection refused"); got != 1 {
+		t.Errorf("after a second request, the log says connection refused %d times, want once", got)
 	}
 }
 
@@ -561,6 +609,155 @@ func TestShareServeFails(t *testing.T) {
 	}
 	if rec, err := loadRecord(dir); err != nil || len(rec.Shares) > 0 {
 		t.Errorf("recorded %+v, %v; want no shares", rec.Shares, err)
+	}
+}
+
+// A dev server on https is shared over TLS, also after a restart. A link to
+// the same port over http then opens the share as it is.
+func TestShareTLS(t *testing.T) {
+	var mu sync.Mutex
+	var host, origin string
+	var p int
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/old" {
+			http.Redirect(w, r, fmt.Sprintf("https://localhost:%d/next", p), http.StatusFound)
+			return
+		}
+		mu.Lock()
+		host, origin = r.Host, r.Header.Get("Origin")
+		mu.Unlock()
+		io.WriteString(w, "the dev server, on https")
+	}))
+	defer backend.Close()
+	p = portOf(backend)
+	dir := shortDir(t)
+	ts := newFakeTS(nil)
+	link := fmt.Sprintf("https://localhost:%d/app", p)
+	plainLink := fmt.Sprintf("http://localhost:%d/other", p)
+	f := startSharing(t, dir, ts, link, plainLink)
+	tailnet := fmt.Sprintf("https://devbox.tail0000.ts.net:%d", p)
+	if href := f.shareOK(t, link); href != tailnet+"/app" {
+		t.Errorf("href = %q", href)
+	}
+	if rec, err := loadRecord(dir); err != nil || len(rec.Shares) != 1 || !rec.Shares[0].TLS {
+		t.Fatalf("recorded %+v, %v; want a TLS share", rec.Shares, err)
+	}
+	c := shareClient(shareSock(dir, p))
+	get := func(path, from string) (*http.Response, string) {
+		t.Helper()
+		req, err := http.NewRequest("GET", "http://localhost"+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if from != "" {
+			req.Header.Set("Origin", from)
+		}
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, string(b)
+	}
+	if resp, body := get("/app", tailnet); resp.StatusCode != http.StatusOK || body != "the dev server, on https" {
+		t.Fatalf("through the share: %s %q", resp.Status, body)
+	}
+	mu.Lock()
+	if want := fmt.Sprintf("localhost:%d", p); host != want || origin != "https://"+want {
+		t.Errorf("the dev server saw Host %q, Origin %q; want %q and %q", host, origin, want, "https://"+want)
+	}
+	mu.Unlock()
+	if resp, _ := get("/old", ""); resp.Header.Get("Location") != tailnet+"/next" {
+		t.Errorf("redirect to %q, want %q", resp.Header.Get("Location"), tailnet+"/next")
+	}
+
+	// The same port from an http link: the share as it is.
+	if href := f.shareOK(t, plainLink); href != tailnet+"/other" {
+		t.Errorf("href = %q", href)
+	}
+	if rec, err := loadRecord(dir); err != nil || len(rec.Shares) != 1 || !rec.Shares[0].TLS || ts.serves(p) != 1 {
+		t.Errorf("recorded %+v, %v, asked %q; want the TLS share kept", rec.Shares, err, ts.changes())
+	}
+
+	// After a restart, still over TLS.
+	f.cancel()
+	select {
+	case <-f.stopped:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the server didn't stop")
+	}
+	f = startTailnet(t, dir, ts, onTheTailnet, linksTask(link))
+	f.line(t, func(l *TailnetLine) bool { return len(l.Shares) == 1 })
+	if resp, body := get("/app", ""); resp.StatusCode != http.StatusOK || body != "the dev server, on https" {
+		t.Errorf("through the share after a restart: %s %q", resp.Status, body)
+	}
+}
+
+// Stopping a share closes its connections to the dev server, kept open
+// for the next request until then.
+func TestStopClosesIdleConnections(t *testing.T) {
+	var open atomic.Int64
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "the dev server")
+	}))
+	backend.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		switch st {
+		case http.StateNew:
+			open.Add(1)
+		case http.StateClosed, http.StateHijacked:
+			open.Add(-1)
+		}
+	}
+	backend.Start()
+	defer backend.Close()
+	p := portOf(backend)
+	dir := shortDir(t)
+	link := fmt.Sprintf("http://localhost:%d/", p)
+	f := startSharing(t, dir, newFakeTS(nil), link)
+	f.shareOK(t, link)
+	resp, err := shareClient(shareSock(dir, p)).Get("http://localhost/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if open.Load() != 1 {
+		t.Fatalf("the dev server has %d connections open, want the proxy's one", open.Load())
+	}
+	if code, msg := f.stopSharing(t, p); code != http.StatusNoContent {
+		t.Fatalf("stop sharing: %d %s", code, msg)
+	}
+	for deadline := time.Now().Add(3 * time.Second); open.Load() > 0; time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("after the share stopped, the dev server still has %d connections open", open.Load())
+		}
+	}
+}
+
+// A share Tailscale serves but that can't be recorded is taken back out,
+// and the answer says so, with why taking it out failed too.
+func TestShareUndoneWhenNotRecorded(t *testing.T) {
+	ts := newFakeTS(nil)
+	dir := shortDir(t)
+	f := startSharing(t, dir, ts, "http://localhost:4100/")
+	board := filepath.Dir(serverFile(dir, "tailnet.json"))
+	if err := os.Chmod(board, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(board, 0o700) })
+	ts.mu.Lock()
+	ts.offErr = errors.New("tailscale serve: timed out after 10s")
+	ts.mu.Unlock()
+	st, reply := f.share(t, "http://localhost:4100/")
+	if st != http.StatusInternalServerError || !strings.Contains(reply["error"], "Couldn't record the share") || !strings.Contains(reply["error"], "timed out after 10s") {
+		t.Errorf("share: %d %q, want 500 saying it wasn't recorded, nor taken out", st, reply)
+	}
+	if !slices.Contains(ts.changes(), "off 4100") {
+		t.Errorf("Tailscale was asked %q, want off 4100", ts.changes())
+	}
+	if _, err := os.Lstat(shareSock(dir, 4100)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the share's socket is still there: %v", err)
 	}
 }
 

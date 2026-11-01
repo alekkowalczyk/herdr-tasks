@@ -31,8 +31,8 @@ var tailnetTime = time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
 // onTheTailnet is the settings with the board shared on the tailnet.
 var onTheTailnet = reconcile.Options{Board: true, BoardPort: 7391, BoardTailnet: true}
 
-// fakeTS is Tailscale in memory: this machine, its serve entries, and an
-// error for Serve to give. It logs every call, as "self", "served",
+// fakeTS is Tailscale in memory: this machine, its serve entries, and
+// errors for Serve and Off to give. It logs every call, as "self", "served",
 // "serve <port> <target>" and "off <port>".
 type fakeTS struct {
 	mu       sync.Mutex
@@ -40,6 +40,7 @@ type fakeTS struct {
 	selfErr  error
 	served   map[int]string
 	serveErr error
+	offErr   error
 	// spell is how Tailscale reports a target it was given; nil reports it
 	// as given.
 	spell func(string) string
@@ -108,6 +109,9 @@ func (f *fakeTS) Off(_ context.Context, port int) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, fmt.Sprintf("off %d", port))
+	if f.offErr != nil {
+		return f.offErr
+	}
 	delete(f.served, port)
 	return nil
 }

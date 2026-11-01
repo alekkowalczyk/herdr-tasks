@@ -27,7 +27,8 @@ import (
 type Tailscale interface {
 	// Self is this machine's name on the tailnet, and its owner.
 	Self(ctx context.Context) (tailnet.Self, error)
-	// Served maps each HTTPS port tailscale serve serves to its target.
+	// Served maps every port tailscale serve serves to its target, or to ""
+	// when it has none herdr-tasks could match.
 	Served(ctx context.Context) (map[int]string, error)
 	// Serve shares target with the tailnet at port, until Off.
 	Serve(ctx context.Context, port int, target string) error
@@ -59,11 +60,13 @@ type tailnetRecord struct {
 }
 
 // sharedEntry is one entry herdr-tasks made: the HTTPS port, its target as
-// Tailscale reports it, and when it was made.
+// Tailscale reports it, and when it was made. A shared port's dev server
+// may speak TLS.
 type sharedEntry struct {
 	Port   int       `json:"port"`
 	Target string    `json:"target"`
 	At     time.Time `json:"at"`
+	TLS    bool      `json:"tls,omitempty"`
 }
 
 // socketPath is the path of the socket called name.
@@ -208,6 +211,7 @@ type tailnetDoor struct {
 	srv    *http.Server
 	cancel context.CancelFunc // ends its requests
 	done   chan struct{}      // closed once it stops serving
+	dev    *http.Transport    // a share's, to its dev server; nil for the board's door
 }
 
 // tailnetLine is the board on the tailnet, for the header: nil while
@@ -343,13 +347,8 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 	case listed:
 		return &TailnetLine{Problem: fmt.Sprintf("Port %d is already shared with your tailnet for something else.", port)}, self.Owner, served
 	default:
-		if err := ts.Serve(ctx, port, target); err != nil {
+		if target, err = serveTarget(ctx, ts, port, target); err != nil {
 			return failed(err), self.Owner, served
-		}
-		// Recorded as Tailscale reports it, which may not be how it was
-		// given, so it's still the board's own on the next look.
-		if after, err := ts.Served(ctx); err == nil && after[port] != "" {
-			target = after[port]
 		}
 		rec.Board = &sharedEntry{Port: port, Target: target, At: s.now()}
 	}
@@ -357,6 +356,19 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 		return &TailnetLine{Address: address, Problem: "Couldn't record the board's tailscale serve entry: " + err.Error()}, self.Owner, served
 	}
 	return &TailnetLine{Address: address}, self.Owner, served
+}
+
+// serveTarget has Tailscale serve port at target, and says the target as
+// Tailscale reports it, which may not be how it was given. That's how it's
+// recorded, so it's still herdr-tasks' own on the next look.
+func serveTarget(ctx context.Context, ts Tailscale, port int, target string) (string, error) {
+	if err := ts.Serve(ctx, port, target); err != nil {
+		return "", err
+	}
+	if after, err := ts.Served(ctx); err == nil && after[port] != "" {
+		return after[port], nil
+	}
+	return target, nil
 }
 
 // keepShares listens again on the socket of each share recorded, as the
@@ -373,7 +385,7 @@ func (s *Server) keepShares(served map[int]string) []SharedPort {
 			log.Printf("tailnet: Tailscale no longer serves localhost:%d for herdr-tasks; forgot it", e.Port)
 			continue
 		}
-		if err := s.listenShare(e.Port); err != nil {
+		if err := s.listenShare(e); err != nil {
 			logOnce(&t.shareSaid, fmt.Sprintf("tailnet: couldn't listen for localhost:%d: %v", e.Port, err))
 			listening = false
 		}
@@ -515,7 +527,8 @@ func (s *Server) serveSocket(sock string, h http.Handler) (*tailnetDoor, error) 
 }
 
 // close stops listening on the door's socket, which goes with it. Its
-// streams end at once, and other requests get 2 s to finish.
+// streams end at once, and other requests get 2 s to finish. A share's
+// connections to its dev server close then.
 func (d *tailnetDoor) close() {
 	d.cancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -524,6 +537,9 @@ func (d *tailnetDoor) close() {
 		d.srv.Close()
 	}
 	<-d.done
+	if d.dev != nil {
+		d.dev.CloseIdleConnections()
+	}
 }
 
 // closeDoor closes the board's tailnet door.

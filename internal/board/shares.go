@@ -2,7 +2,9 @@ package board
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +14,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -20,53 +23,80 @@ import (
 const shareWait = 30 * time.Second
 
 // shareProxy is a shared port's door: it sends what comes through
-// tailscale serve to localhost:port, as a request made on this machine.
-// address is the port's address on the tailnet, or "" while the board has
-// none.
-func shareProxy(port int, address func() string) http.Handler {
+// tailscale serve to localhost:port, as a request made on this machine,
+// over TLS when the dev server speaks it. address is the port's address on
+// the tailnet, or "" while the board has none. It returns the transport
+// too, whose connections to the dev server close when the share stops.
+func shareProxy(port int, overTLS bool, address func() string) (http.Handler, *http.Transport) {
 	p := strconv.Itoa(port)
 	local := "localhost:" + p
+	scheme := "http"
+	if overTLS {
+		scheme = "https"
+	}
+	dev := &http.Transport{
+		// Node's dev servers often listen on [::1] only.
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var d net.Dialer
+			c, err := d.DialContext(ctx, "tcp", "127.0.0.1:"+p)
+			if err == nil {
+				return c, nil
+			}
+			if c, err6 := d.DialContext(ctx, "tcp", "[::1]:"+p); err6 == nil {
+				return c, nil
+			}
+			return nil, err
+		},
+		IdleConnTimeout: 90 * time.Second,
+	}
+	if overTLS {
+		// A dev server's certificate is its own, self-signed or from a local
+		// CA, and the dial above only ever reaches this machine's loopback,
+		// so there's nothing to verify it against.
+		dev.TLSClientConfig = &tls.Config{InsecureSkipVerify: true, ServerName: "localhost"}
+	}
+	var mu sync.Mutex
+	said := "" // the cause last logged, so a dev server that's down is logged once
 	return &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
-			r.SetURL(&url.URL{Scheme: "http", Host: "127.0.0.1:" + p})
+			r.SetURL(&url.URL{Scheme: scheme, Host: "127.0.0.1:" + p})
 			// Dev servers such as Vite refuse a Host or an Origin that isn't
 			// theirs.
 			r.Out.Host = local
 			if r.In.Header.Get("Origin") != "" {
-				r.Out.Header.Set("Origin", "http://"+local)
+				r.Out.Header.Set("Origin", scheme+"://"+local)
 			}
 		},
-		Transport: &http.Transport{
-			// Node's dev servers often listen on [::1] only.
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				c, err := d.DialContext(ctx, "tcp", "127.0.0.1:"+p)
-				if err == nil {
-					return c, nil
-				}
-				if c, err6 := d.DialContext(ctx, "tcp", "[::1]:"+p); err6 == nil {
-					return c, nil
-				}
-				return nil, err
-			},
-			IdleConnTimeout: 90 * time.Second,
-		},
+		Transport: dev,
 		ModifyResponse: func(resp *http.Response) error {
+			mu.Lock()
+			said = ""
+			mu.Unlock()
 			loc := resp.Header.Get("Location")
-			for _, from := range []string{"http://" + local, "http://127.0.0.1:" + p} {
+			for _, from := range []string{"http://" + local, "https://" + local, "http://127.0.0.1:" + p, "https://127.0.0.1:" + p} {
 				rest, ok := strings.CutPrefix(loc, from)
 				if ok && (rest == "" || strings.ContainsAny(rest[:1], "/?#")) {
 					if a := address(); a != "" {
 						resp.Header.Set("Location", a+rest)
 					}
+					break
 				}
 			}
 			return nil
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			// A page closed, or the share stopped, isn't news.
+			if !errors.Is(err, context.Canceled) {
+				mu.Lock()
+				if msg := err.Error(); msg != said {
+					said = msg
+					log.Printf("tailnet: %s: %v", local, err)
+				}
+				mu.Unlock()
+			}
 			http.Error(w, "Nothing answers at "+local+".", http.StatusBadGateway)
 		},
-	}
+	}, dev
 }
 
 // shareSocket is the name of a shared port's socket.
@@ -82,25 +112,25 @@ func (s *Server) shareAddress(port int) string {
 	return tailnetAddress(u.Hostname(), port)
 }
 
-// localLink is the port of a link to localhost or 127.0.0.1, and what
-// follows the port, or why it can't be shared.
-func localLink(raw string, boardPort int) (port int, rest string, why string) {
+// localLink is the port of a link to localhost or 127.0.0.1, what follows
+// the port, and whether the link is https, or why it can't be shared.
+func localLink(raw string, boardPort int) (port int, rest string, overTLS bool, why string) {
 	u, err := url.Parse(raw)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") {
-		return 0, "", "Only localhost links can be shared."
+		return 0, "", false, "Only localhost links can be shared."
 	}
 	if h := strings.ToLower(u.Hostname()); h != "localhost" && h != "127.0.0.1" {
-		return 0, "", "Only localhost links can be shared."
+		return 0, "", false, "Only localhost links can be shared."
 	}
 	if u.Port() == "" {
-		return 0, "", "Only a localhost link with a port can be shared."
+		return 0, "", false, "Only a localhost link with a port can be shared."
 	}
 	port, err = strconv.Atoi(u.Port())
 	switch {
 	case err != nil || port < 1 || port > 65535:
-		return 0, "", fmt.Sprintf("There's no port %s: ports go from 1 to 65535.", u.Port())
+		return 0, "", false, fmt.Sprintf("There's no port %s: ports go from 1 to 65535.", u.Port())
 	case port == boardPort:
-		return 0, "", fmt.Sprintf("Port %d is the board's own.", port)
+		return 0, "", false, fmt.Sprintf("Port %d is the board's own.", port)
 	}
 	rest = u.EscapedPath()
 	if u.RawQuery != "" {
@@ -109,7 +139,7 @@ func localLink(raw string, boardPort int) (port int, rest string, why string) {
 	if u.Fragment != "" {
 		rest += "#" + u.EscapedFragment()
 	}
-	return port, rest, ""
+	return port, rest, u.Scheme == "https", ""
 }
 
 // shareLink shares the port of a task's localhost link with the tailnet,
@@ -133,12 +163,12 @@ func (s *Server) shareLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, e.status, e.msg)
 		return
 	}
-	port, rest, why := localLink(req.URL, s.cfg.Port)
+	port, rest, overTLS, why := localLink(req.URL, s.cfg.Port)
 	if why != "" {
 		writeError(w, http.StatusBadRequest, why)
 		return
 	}
-	address, e := s.sharePort(r.Context(), port)
+	address, e := s.sharePort(r.Context(), port, overTLS)
 	if e != nil {
 		writeError(w, e.status, e.msg)
 		return
@@ -146,11 +176,12 @@ func (s *Server) shareLink(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"href": address + rest})
 }
 
-// sharePort shares localhost:port with the tailnet, unless herdr-tasks does
-// already or Tailscale serves the port for something else, and says at
-// what address. A share whose serve fails isn't recorded, and its socket
-// goes.
-func (s *Server) sharePort(ctx context.Context, port int) (string, *taskError) {
+// sharePort shares localhost:port with the tailnet, over TLS when overTLS,
+// unless herdr-tasks does already or Tailscale serves the port for
+// something else, and says at what address. A port shared already stays
+// as it is, whichever scheme its link has now. A share whose serve fails
+// isn't recorded, and its socket goes.
+func (s *Server) sharePort(ctx context.Context, port int, overTLS bool) (string, *taskError) {
 	t := &s.tailnet
 	wait, cancel := context.WithTimeout(ctx, shareWait)
 	defer cancel()
@@ -177,18 +208,21 @@ func (s *Server) sharePort(ctx context.Context, port int) (string, *taskError) {
 	target := "unix:" + socketPath(s.cfg.StateDir, shareSocket(port))
 	got, listed := served[port]
 	made := false
+	e := sharedEntry{Port: port, Target: target, At: s.now(), TLS: overTLS}
 	switch {
 	case i >= 0 && listed && got == rec.Shares[i].Target:
-		if err := s.listenShare(port); err != nil {
+		if err := s.listenShare(rec.Shares[i]); err != nil {
 			return "", failed(http.StatusInternalServerError, err)
 		}
 		return address, nil
 	case listed && got == target:
-		// Its own entry, though the record of it was lost.
-		if err := s.listenShare(port); err != nil {
+		// Its own entry, though the record of it was lost. It listens anew,
+		// as this link says.
+		t.stopShare(port)
+		if err := s.listenShare(e); err != nil {
 			return "", failed(http.StatusInternalServerError, err)
 		}
-		target = got
+		e.Target = got
 	case listed:
 		if i >= 0 {
 			// Recorded, but someone else's now: it's only forgotten.
@@ -202,20 +236,16 @@ func (s *Server) sharePort(ctx context.Context, port int) (string, *taskError) {
 		}
 		return "", &taskError{http.StatusConflict, fmt.Sprintf("Port %d is already shared with your tailnet for something else.", port)}
 	default:
-		if err := s.listenShare(port); err != nil {
+		t.stopShare(port)
+		if err := s.listenShare(e); err != nil {
 			return "", failed(http.StatusInternalServerError, err)
 		}
-		if err := ts.Serve(ctx, port, target); err != nil {
+		if e.Target, err = serveTarget(ctx, ts, port, target); err != nil {
 			t.stopShare(port)
 			return "", failed(http.StatusBadGateway, err)
 		}
 		made = true
-		// Recorded as Tailscale reports it, as the board's entry is.
-		if after, err := ts.Served(ctx); err == nil && after[port] != "" {
-			target = after[port]
-		}
 	}
-	e := sharedEntry{Port: port, Target: target, At: s.now()}
 	if i >= 0 {
 		rec.Shares[i] = e
 	} else {
@@ -223,12 +253,16 @@ func (s *Server) sharePort(ctx context.Context, port int) (string, *taskError) {
 		slices.SortFunc(rec.Shares, func(a, b sharedEntry) int { return a.Port - b.Port })
 	}
 	if err := saveRecord(s.cfg.StateDir, rec); err != nil {
+		msg := "Couldn't record the share: " + err.Error()
 		if made {
 			// Not recorded, it would never be taken out.
-			_ = ts.Off(ctx, port)
-			t.stopShare(port)
+			if err := ts.Off(ctx, port); err != nil {
+				log.Printf("tailnet: localhost:%d is shared but not recorded, and couldn't be taken out: %v", port, err)
+				msg += fmt.Sprintf(". Taking it back out of tailscale serve failed too: %v", err)
+			}
 		}
-		return "", &taskError{http.StatusInternalServerError, "Couldn't record the share: " + err.Error()}
+		t.stopShare(port)
+		return "", &taskError{http.StatusInternalServerError, msg}
 	}
 	log.Printf("tailnet: shared localhost:%d with the tailnet", port)
 	s.showShares(rec.Shares)
@@ -297,30 +331,32 @@ func (s *Server) unsharePort(ctx context.Context, port int) *taskError {
 
 // listenShare listens on a shared port's socket and serves its proxy there,
 // unless it does already.
-func (s *Server) listenShare(port int) error {
+func (s *Server) listenShare(e sharedEntry) error {
 	t := &s.tailnet
-	if d := t.shares[port]; d != nil {
+	if d := t.shares[e.Port]; d != nil {
 		select {
 		case <-d.done: // it stopped on its own, so it opens again
-			t.stopShare(port)
+			t.stopShare(e.Port)
 		default:
 			return nil
 		}
 	}
-	sock := socketPath(s.cfg.StateDir, shareSocket(port))
-	d, err := s.serveSocket(sock, shareProxy(port, func() string { return s.shareAddress(port) }))
+	sock := socketPath(s.cfg.StateDir, shareSocket(e.Port))
+	h, dev := shareProxy(e.Port, e.TLS, func() string { return s.shareAddress(e.Port) })
+	d, err := s.serveSocket(sock, h)
 	if err != nil {
 		return err
 	}
+	d.dev = dev
 	if t.shares == nil {
 		t.shares = map[int]*tailnetDoor{}
 	}
-	t.shares[port] = d
+	t.shares[e.Port] = d
 	return nil
 }
 
-// stopShare stops listening for a shared port. Its socket goes, and its
-// requests and WebSockets end.
+// stopShare stops listening for a shared port. Its socket goes, its
+// requests and WebSockets end, and its connections to the dev server close.
 func (t *tailnetState) stopShare(port int) {
 	if d := t.shares[port]; d != nil {
 		delete(t.shares, port)
