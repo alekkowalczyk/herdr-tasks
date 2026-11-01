@@ -58,7 +58,7 @@ func SettingsFrom(o reconcile.Options, home string) (Settings, error) {
 		return Settings{}, errors.New("slack_topic is over 1,000 characters")
 	}
 	return Settings{
-		Session: o.SlackSession, Workspace: o.SlackWorkspace, Cwd: cwd,
+		Session: o.SlackSessionName(), Workspace: o.SlackWorkspace, Cwd: cwd,
 		DMs: o.SlackDMs, Skip: o.SlackSkipChannels,
 		Every: every, Hours: hours, MaxNew: o.SlackMaxNew, Topic: topic,
 	}, nil

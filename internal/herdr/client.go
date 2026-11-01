@@ -31,6 +31,9 @@ func SocketPath() string {
 	return filepath.Join(base, "herdr.sock")
 }
 
+// DefaultSession is the name of herdr's default session.
+const DefaultSession = "default"
+
 // SessionKey names the herdr session a socket belongs to, so each session
 // keeps its own task state.
 func SessionKey(socketPath string) string {
@@ -38,7 +41,7 @@ func SessionKey(socketPath string) string {
 	if filepath.Base(filepath.Dir(dir)) == "sessions" {
 		return filepath.Base(dir)
 	}
-	return "default"
+	return DefaultSession
 }
 
 // SessionSockets is the socket of every herdr session of this user: the

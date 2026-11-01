@@ -211,7 +211,7 @@ func newRig(t *testing.T) *rig {
 	r := &rig{clock: &fakeClock{t: watchStart}, slack: &fakeSlack{}, herdr: f, store: st}
 	r.opts = reconcile.Options{
 		Markers: true, SortTabs: true, Strip: true,
-		SlackWatch: true, SlackWorkspace: "Slack", SlackCwd: t.TempDir(), SlackDMs: true,
+		SlackWatch: true, SlackSession: "work", SlackWorkspace: "Slack", SlackCwd: t.TempDir(), SlackDMs: true,
 		SlackEvery: "5m", SlackHours: "always", SlackMaxNew: 4,
 	}
 	r.running = []Session{{Name: "work", Herdr: f, Store: st}}
@@ -551,7 +551,7 @@ func TestTickNeedsASession(t *testing.T) {
 	r.running = []Session{work, home}
 	r.clock.add(30 * time.Second) // no backoff: the next tick looks again
 	r.tick()
-	want.Text = "Slack: set slack_session in config.toml; more than one herdr session runs (home, work)"
+	want.Text = "Slack: waiting for herdr session default"
 	if got := r.Status(); got != want {
 		t.Errorf("status = %+v, want %+v", got, want)
 	}
@@ -1390,5 +1390,22 @@ func TestJudgeStoppedDeliversNothing(t *testing.T) {
 	}
 	if _, ok := r.state(t).Seen[rui.ID()]; !ok {
 		t.Errorf("Rui's ask isn't seen after the next check")
+	}
+}
+
+func TestSessionForWaitsForTheNamedSession(t *testing.T) {
+	work, side, def := Session{Name: "work"}, Session{Name: "side"}, Session{Name: "default"}
+	got, why := sessionFor([]Session{work, def}, "default")
+	if got.Name != "default" || why != "" {
+		t.Errorf("got %q, %q", got.Name, why)
+	}
+	if _, why := sessionFor([]Session{work, side}, "default"); why != "waiting for herdr session default" {
+		t.Errorf("why = %q", why)
+	}
+	if _, why := sessionFor(nil, "work"); why != "waiting for herdr session work" {
+		t.Errorf("why = %q", why)
+	}
+	if WaitingFor("work") != "waiting for herdr session work" {
+		t.Errorf("WaitingFor = %q", WaitingFor("work"))
 	}
 }

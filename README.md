@@ -323,7 +323,7 @@ herdr-tasks slack continue
 herdr-tasks move Backend          # any task, not only Slack ones
 ```
 
-When a check fails (the connector isn't signed in, a usage limit, a timeout after 2 minutes), the watcher says so and backs off: 5, 10, 20 minutes, then every 30. The board's header shows "Slack: last check 14:32", or the problem and since when. The tab bar shows `Slack ⚠` while there's a problem, in the tabs of `slack_session` (in every session while that is unset). Everything skipped or failed goes to `slack.log`.
+When a check fails (the connector isn't signed in, a usage limit, a timeout after 2 minutes), the watcher says so and backs off: 5, 10, 20 minutes, then every 30. The board's header shows "Slack: last check 14:32", or the problem and since when. The tab bar shows `Slack ⚠` while there's a problem, in the tabs of the Slack session (`slack_session`, or herdr's default session), and in every session while that one isn't running. Everything skipped or failed goes to `slack.log`.
 
 ### Moving tasks
 
@@ -335,11 +335,13 @@ herdr's own keys for moving panes don't know about tasks. A task moved that way 
 
 ```toml
 slack_watch = true
-slack_session = "work"      # the herdr session for the Slack tabs; needed when more than one runs
+slack_session = "work"      # the herdr session for the Slack tabs; "" is herdr's default session
 slack_cwd = "~/acme-harness"
 ```
 
-Then run `herdr-tasks slack status`. It prints the watcher's state, and starts the server if it isn't running (while `slack_watch` is on), even with `board = false`. Changes to the slack settings take effect within 30 seconds while the server runs. While `slack_session` is unset and more than one herdr session runs, the watcher doesn't start, and `status` and the board say why. Turning `slack_watch` on again within 72 hours of the last check or fetch, or one that was tried, goes on from there; after longer, it starts fresh, with no backlog, like the first time.
+Then run `herdr-tasks slack status`. It prints the watcher's state, and starts the server if it isn't running (while `slack_watch` is on), even with `board = false`. Changes to the slack settings take effect within 30 seconds while the server runs. Asks go to herdr's default session unless `slack_session` names another. While that session isn't running, the watcher waits, and `status` and the board say so. Turning `slack_watch` on again within 72 hours of the last check or fetch, or one that was tried, goes on from there; after longer, it starts fresh, with no backlog, like the first time.
+
+Upgrading: before, with `slack_session` unset, asks went to the only herdr session that was running. Now they go to herdr's default session. If you relied on the old way, set `slack_session` to that session's name.
 
 ## Settings
 
@@ -353,7 +355,7 @@ claude_links = false # link the Linear issues, Slack links, and pages Claude wor
 board = false        # serve the task board on 127.0.0.1
 board_port = 7391    # the board's port
 slack_watch = false        # check Slack for asks
-slack_session = ""         # the herdr session for Slack tabs
+slack_session = ""         # the herdr session for Slack tabs; "" is herdr's default session
 slack_workspace = "Slack inbox"  # its workspace
 slack_cwd = ""             # where research sessions start; "" is the home folder
 slack_dms = true           # DMs and group DMs count

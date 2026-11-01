@@ -29,7 +29,7 @@ type Status struct {
 }
 
 // Watcher checks Slack for asks every slack_every within slack_hours, and
-// delivers them to a herdr session: slack_session, or the only one running.
+// delivers them to one herdr session: slack_session, or herdr's default.
 // It keeps its state in slack/state.json in Dir, and logs what it does.
 type Watcher struct {
 	Dir      string                            // the state folder
@@ -235,26 +235,17 @@ func due(st State, set Settings, now time.Time) bool {
 	return (st.NextTry == nil || !now.Before(*st.NextTry)) && now.Sub(st.LastTry) >= set.Every
 }
 
-// sessionFor is the session asks go to, or why there's none.
+// WaitingFor is the problem while the session asks go to isn't running.
+func WaitingFor(session string) string {
+	return "waiting for herdr session " + session
+}
+
+// sessionFor is the running session called name, or why there's none.
 func sessionFor(running []Session, name string) (Session, string) {
-	if name != "" {
-		if i := slices.IndexFunc(running, func(s Session) bool { return s.Name == name }); i >= 0 {
-			return running[i], ""
-		}
-		return Session{}, "waiting for herdr session " + name
+	if i := slices.IndexFunc(running, func(s Session) bool { return s.Name == name }); i >= 0 {
+		return running[i], ""
 	}
-	switch len(running) {
-	case 0:
-		return Session{}, "waiting for a herdr session"
-	case 1:
-		return running[0], ""
-	}
-	names := make([]string, len(running))
-	for i, s := range running {
-		names[i] = s.Name
-	}
-	slices.Sort(names)
-	return Session{}, "set slack_session in config.toml; more than one herdr session runs (" + strings.Join(names, ", ") + ")"
+	return Session{}, WaitingFor(name)
 }
 
 // checkCwd says why slack_cwd, where research sessions start, can't be

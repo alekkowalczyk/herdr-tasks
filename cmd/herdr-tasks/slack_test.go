@@ -416,11 +416,32 @@ func TestTabBarShowsSlackTrouble(t *testing.T) {
 		t.Errorf("another session's tab bar: %q", got)
 	}
 	opts.SlackSession = ""
-	if got := line("home", opts); !strings.HasSuffix(got, "  Slack ⚠") {
-		t.Errorf("with no slack_session: %q", got)
+	if got := line("home", opts); strings.Contains(got, "Slack ⚠") {
+		t.Errorf("with no slack_session, another session's tab bar: %q", got)
+	}
+	if got := line("default", opts); !strings.HasSuffix(got, "  Slack ⚠") {
+		t.Errorf("with no slack_session, the default session's: %q", got)
 	}
 	opts.SlackWatch = false
 	if got := line("home", opts); strings.Contains(got, "Slack ⚠") {
 		t.Errorf("with slack_watch off: %q", got)
+	}
+}
+
+func TestSlackTroubleShowsInOtherSessionsWhileWaiting(t *testing.T) {
+	dir := t.TempDir()
+	opts := slackOpts()
+	opts.SlackSession = ""
+	saveSlack(t, dir, func(s *slack.State) { s.Problem = slack.WaitingFor("default") })
+	if !slackTrouble(opts, "work", dir) || !slackTrouble(opts, "default", dir) {
+		t.Error("while waiting, every session shows it")
+	}
+	saveSlack(t, dir, func(s *slack.State) { s.Problem = "Slack isn't signed in" })
+	if slackTrouble(opts, "work", dir) || !slackTrouble(opts, "default", dir) {
+		t.Error("another problem shows in the Slack session only")
+	}
+	opts.SlackWatch = false
+	if slackTrouble(opts, "work", dir) || slackTrouble(opts, "default", dir) {
+		t.Error("with slack_watch off, none shows it")
 	}
 }

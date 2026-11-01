@@ -71,6 +71,15 @@ type Options struct {
 	Self string `toml:"-"`
 }
 
+// SlackSessionName is the herdr session Slack asks go to: slack_session, or
+// herdr's default session.
+func (o Options) SlackSessionName() string {
+	if o.SlackSession == "" {
+		return herdr.DefaultSession
+	}
+	return o.SlackSession
+}
+
 // DefaultBoardPort is the board's port when board_port isn't set.
 const DefaultBoardPort = 7391
 

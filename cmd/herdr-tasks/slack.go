@@ -198,14 +198,21 @@ func (a *app) slackContinue() error {
 }
 
 // slackTrouble reports whether the tab bar shows Slack ⚠: the watcher is on,
-// it has a problem, and this herdr session is the one it works for. With no
-// slack_session, which may be the problem itself, every session shows it.
+// it has a problem, and this herdr session is the one it works for. While
+// that session isn't running, which is the problem itself, every session
+// shows it.
 func slackTrouble(opts reconcile.Options, session, dir string) bool {
-	if !opts.SlackWatch || (opts.SlackSession != "" && opts.SlackSession != session) {
+	if !opts.SlackWatch {
 		return false
 	}
 	st, err := slack.Load(dir)
-	return err == nil && st.Problem != ""
+	if err != nil {
+		return false
+	}
+	if session == opts.SlackSessionName() {
+		return st.Problem != ""
+	}
+	return st.Problem == slack.WaitingFor(opts.SlackSessionName())
 }
 
 func (c slackCmd) status() error {

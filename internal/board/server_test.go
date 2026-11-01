@@ -1625,7 +1625,7 @@ func TestTakeEndpointIgnoresExpiredAsks(t *testing.T) {
 	w := &slack.Watcher{
 		Dir: dir, Exe: "/home/u/bin/herdr-tasks",
 		Options: func() (reconcile.Options, error) {
-			return reconcile.Options{SlackWorkspace: "Slack", SlackCwd: dir, SlackEvery: "5m", SlackHours: "always", SlackMaxNew: 4}, nil
+			return reconcile.Options{SlackSession: "work", SlackWorkspace: "Slack", SlackCwd: dir, SlackEvery: "5m", SlackHours: "always", SlackMaxNew: 4}, nil
 		},
 		Sessions: func() []slack.Session {
 			return []slack.Session{{Name: "work", Herdr: noHerdr{}, Store: &store.Store{Dir: dir, Session: "work"}}}

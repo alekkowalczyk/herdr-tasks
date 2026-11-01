@@ -499,10 +499,10 @@ func TestTakeDeliversASkippedAsk(t *testing.T) {
 	running := r.running
 	r.running = nil
 	r.log.Reset()
-	if _, err := r.Take(ctx, "1"); err == nil || err.Error() != "can't take it: waiting for a herdr session" {
+	if _, err := r.Take(ctx, "1"); err == nil || err.Error() != "can't take it: waiting for herdr session work" {
 		t.Errorf("Take with no session = %v", err)
 	}
-	if got := r.log.String(); got != "taking skipped ask 1, as asked\ncan't take it: waiting for a herdr session\n" {
+	if got := r.log.String(); got != "taking skipped ask 1, as asked\ncan't take it: waiting for herdr session work\n" {
 		t.Errorf("log = %q", got)
 	}
 	r.running = running

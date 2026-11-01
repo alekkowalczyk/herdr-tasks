@@ -82,3 +82,17 @@ func TestSettingsTopic(t *testing.T) {
 		t.Errorf("1,001 characters: err = %v", err)
 	}
 }
+
+func TestSettingsFromDefaultsSlackSession(t *testing.T) {
+	o := opts()
+	o.SlackWatch = true
+	set, err := SettingsFrom(o, "/home/dana")
+	if err != nil || set.Session != "default" {
+		t.Errorf("session = %q, %v", set.Session, err)
+	}
+	o.SlackSession = "work"
+	set, err = SettingsFrom(o, "/home/dana")
+	if err != nil || set.Session != "work" {
+		t.Errorf("session = %q, %v", set.Session, err)
+	}
+}
