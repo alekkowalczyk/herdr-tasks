@@ -19,6 +19,7 @@
   const DONE_OPEN = 'herdr-tasks-board-done-open';
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
   const TERMS_FULL = 'herdr-tasks-board-terms-full';
+  const SIDE_FOLDED = 'herdr-tasks-board-side-folded';
 
   const COLUMNS = [
     {id: 'asking', label: 'Asking', hint: 'The agent stopped mid-work, waiting for your answer'},
@@ -846,8 +847,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['spaces', 'prio-only', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
-      hidePop();
+      for (const id of ['side', 'side-open', 'prio-only', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       shareEls.box.hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
@@ -866,9 +866,7 @@
     const s = sessions.find(x => x.name === session);
     $('stale').hidden = !s || !s.stale;
     if (!s) {
-      $('spaces').hidden = true;
-      $('prio-only').hidden = true;
-      hidePop();
+      for (const id of ['side', 'side-open', 'prio-only']) $(id).hidden = true;
       showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
@@ -876,13 +874,12 @@
       const toggle = $('prio-only');
       toggle.hidden = false;
       toggle.setAttribute('aria-pressed', String(prioOnly()));
-      const space = renderSpaces(s, cards, shown);
+      let space = spaceChoices()[s.name] || '';
+      if (!s.spaces.some(x => x.id === space)) space = '';
+      renderSide(s, shown, space);
       renderColumns(space ? shown.filter(c => c.space === space) : shown);
       $('board').hidden = false;
       $('empty').hidden = true;
-      pop.spaces = s.spaces;
-      pop.cards = shown;
-      if (pop.space) fillPop();
     }
     renderDetail();
   }
@@ -1034,99 +1031,107 @@
     }
   }
 
-  // renderSpaces shows the space filter, and returns the space chosen, or
-  // '' for all of them. Each space of cards has a button, with how many of
-  // the cards shown in it are open.
-  function renderSpaces(s, cards, shown) {
-    const open = new Map();
-    const used = new Set(cards.map(c => c.space));
-    for (const c of shown) {
-      if (c.column !== 'done') open.set(c.space, (open.get(c.space) || 0) + 1);
-    }
-    let chosen = spaceChoices()[s.name] || '';
-    if (!s.spaces.some(x => x.id === chosen)) chosen = '';
-    const spaces = s.spaces.filter(x => used.has(x.id) || x.id === chosen);
-    const bar = $('spaces');
-    bar.hidden = spaces.length < 2 && !chosen;
+  // ---- The side panel: each workspace and its tasks, as herdr's sidebar
+  // lists them
+
+  // SIDE_GLYPHS mark a task's column in the side panel, as herdr's sidebar
+  // marks its stage.
+  const SIDE_GLYPHS = {asking: '?', yourturn: '●', running: '↻', review: '◐', paused: '‖', parked: '○', done: '✓'};
+  // The side panel counts a workspace's tasks in these columns, unless
+  // they're a priority, rather than listing them.
+  const SIDE_COUNTED = ['paused', 'parked', 'done'];
+  // A workspace's circle has the colour of the first of these its tasks are
+  // in, and is hollow when they're in none.
+  const SIDE_URGENT = ['asking', 'yourturn', 'running'];
+
+  // sideOrder puts a workspace's tasks as the side panel lists them:
+  // priority first, then by column, newest first.
+  const columnIndex = c => COLUMNS.findIndex(x => x.id === c.column);
+  const sideOrder = (a, b) => b.priority - a.priority || columnIndex(a) - columnIndex(b) || Date.parse(b.since) - Date.parse(a.since);
+
+  // renderSide shows every workspace of s, with chosen picked, and the
+  // cards shown in each. The open task is marked.
+  function renderSide(s, cards, chosen) {
+    $('side').hidden = false;
+    $('side-open').hidden = false;
+    $('side-all').setAttribute('aria-pressed', String(!chosen));
     sync(
-      bar,
-      bar.hidden ? [] : [{id: '', label: 'All'}].concat(spaces),
-      x => x.id || '*',
-      () => attrs(el('button', 'space-filter'), {type: 'button'}),
-      (b, x) => {
-        b.setAttribute('aria-pressed', String(x.id === chosen));
-        const parts = [el('span', '', x.label)];
-        if (x.id && open.get(x.id)) parts.push(el('span', 'n', open.get(x.id)));
-        b.replaceChildren(...parts);
+      $('side-spaces'),
+      s.spaces,
+      x => x.id,
+      () => {
+        const b = attrs(el('button', 'side-space'), {type: 'button'});
+        b.append(attrs(el('span', 'side-dot'), {'aria-hidden': 'true'}), el('span', 'side-label'));
+        const g = el('div', 'side-group');
+        g.append(b, el('div', 'side-tasks'), el('p', 'side-more'));
+        return g;
+      },
+      (g, x) => {
+        const mine = cards.filter(c => c.space === x.id);
+        const b = g.querySelector('.side-space');
+        attrs(b, {'aria-pressed': String(x.id === chosen), 'aria-label': x.label, title: x.label});
+        b.querySelector('.side-label').textContent = x.label;
+        const dot = b.querySelector('.side-dot');
+        const urgent = SIDE_URGENT.find(col => mine.some(c => c.column === col));
+        if (urgent) dot.setAttribute('data-column', urgent);
+        else dot.removeAttribute('data-column');
+        const listed = mine.filter(c => c.priority || !SIDE_COUNTED.includes(c.column)).sort(sideOrder);
+        sync(g.querySelector('.side-tasks'), listed, keyOf, sideTask, fillSideTask);
+        const counts = SIDE_COUNTED.map(col => [col, mine.filter(c => !c.priority && c.column === col).length]).filter(([, n]) => n);
+        const more = g.querySelector('.side-more');
+        more.textContent = counts.map(([col, n]) => n + ' ' + col).join(' · ');
+        more.hidden = !counts.length;
       },
     );
-    return chosen;
   }
 
-  // ---- The tasks of a space, shown while its button is hovered or focused
-
-  // pop is what the list shows: the space, its button, and the spaces and
-  // cards the board shows now.
-  const pop = {space: null, anchor: null, timer: 0, spaces: [], cards: []};
-
-  // order puts a space's open tasks as the list shows them: priority first,
-  // then by column, newest first.
-  const columnIndex = c => COLUMNS.findIndex(x => x.id === c.column);
-  const popOrder = (a, b) => b.priority - a.priority || columnIndex(a) - columnIndex(b) || Date.parse(b.since) - Date.parse(a.since);
-
-  function showPop(b) {
-    clearTimeout(pop.timer);
-    const id = b.getAttribute('data-key');
-    if (id === '*') return hidePop();
-    pop.space = id;
-    pop.anchor = b;
-    fillPop();
+  function sideTask() {
+    const r = attrs(el('button', 'side-task'), {type: 'button'});
+    for (const cls of ['side-prio', 'side-glyph']) r.append(attrs(el('span', cls), {'aria-hidden': 'true'}));
+    r.append(el('span', 'side-title'));
+    return r;
   }
 
-  function hidePop() {
-    clearTimeout(pop.timer);
-    pop.space = null;
-    pop.anchor = null;
-    $('space-pop').hidden = true;
+  function fillSideTask(r, c) {
+    const column = COLUMNS[columnIndex(c)];
+    const label = c.title + (column ? ', ' + column.label : '') + (c.priority ? ', priority' : '');
+    attrs(r, {'data-column': c.column, 'aria-label': label, title: label});
+    r.classList.toggle('pri', c.priority);
+    if (keyOf(c) === detailKey) r.setAttribute('aria-current', 'page');
+    else r.removeAttribute('aria-current');
+    r.querySelector('.side-prio').textContent = c.priority ? '!' : '';
+    r.querySelector('.side-glyph').textContent = SIDE_GLYPHS[c.column] || '●';
+    r.querySelector('.side-title').textContent = c.title;
   }
 
-  // hidePopSoon gives the pointer time to cross from the button to the list.
-  function hidePopSoon() {
-    clearTimeout(pop.timer);
-    pop.timer = setTimeout(hidePop, 200);
-  }
-
-  function fillPop() {
-    const box = $('space-pop');
-    const space = pop.spaces.find(x => x.id === pop.space);
-    if (!space || !pop.anchor.isConnected || viewing) return hidePop();
-    const tasks = pop.cards.filter(c => c.space === pop.space && c.column !== 'done').sort(popOrder);
-    const n = tasks.length;
-    let count = n + ' open';
-    if (prioOnly()) count = n ? n + (n === 1 ? ' priority task' : ' priority tasks') : 'no priority tasks';
-    else if (!n) count = 'nothing open';
-    const rows = tasks.map(c => {
-      const row = attrs(el('button', 'pop-row'), {type: 'button', 'data-key': keyOf(c)});
-      if (c.priority) row.append(attrs(el('span', 'prio', '!'), {role: 'img', 'aria-label': 'Priority', title: 'Priority'}));
-      else row.append(el('span', 'pop-gap'));
-      const column = COLUMNS[columnIndex(c)];
-      row.append(attrs(el('span', 'pop-dot'), {'data-column': c.column}), el('span', 'pop-title', c.title), el('span', 'pop-col', column ? column.label : ''));
-      return row;
-    });
-    box.replaceChildren(el('div', 'pop-head', space.label + ' · ' + count), ...rows);
-    box.setAttribute('aria-label', 'Tasks in ' + space.label);
-    box.hidden = false;
-    const r = pop.anchor.getBoundingClientRect();
-    box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 336)) + 'px';
-    box.style.top = r.bottom + 6 + 'px';
-  }
-
+  // chooseSpace shows only the tasks of space id on the board, or all of
+  // them for ''; a space picked again lets go. From a view, it goes back to
+  // the board, showing the space.
   function chooseSpace(id) {
     const m = spaceChoices();
-    if (!id || m[session] === id) delete m[session];
+    if (!id || (m[session] === id && !viewing)) delete m[session];
     else m[session] = id;
     save(SPACES, JSON.stringify(m));
-    render();
+    if (viewing) closeView();
+    else render();
+  }
+
+  // showFold folds the side panel down to its circles, or opens it, as the
+  // browser keeps it.
+  function showFold() {
+    const folded = load(SIDE_FOLDED) === '1';
+    document.body.classList.toggle('side-folded', folded);
+    const b = $('side-fold');
+    b.setAttribute('aria-expanded', String(!folded));
+    b.textContent = folded ? '»' : '«';
+    b.title = folded ? 'Show the workspaces' : 'Fold the workspaces away';
+  }
+
+  // showDrawer opens the side panel over the page, or closes it, where the
+  // window is too narrow to keep it beside the board.
+  function showDrawer(on) {
+    document.body.classList.toggle('side-open', on);
+    $('side-open').setAttribute('aria-expanded', String(on));
   }
 
   // newer orders a column's cards as the overview does: priority first,
@@ -1354,7 +1359,10 @@
     const c = cardByKey(k);
     if (!c) return;
     closeMenu(false);
-    history.pushState({view: true}, '', viewHash(c.tab));
+    // From a view, the new one takes its place, so Back still goes to the
+    // board.
+    if (viewing) history.replaceState(history.state, '', viewHash(c.tab));
+    else history.pushState({view: true}, '', viewHash(c.tab));
     route();
   }
 
@@ -1392,6 +1400,7 @@
     }
     viewing = {session, tab, terms};
     showFull();
+    render();
     $('view-back').focus();
   }
 
@@ -1928,42 +1937,44 @@
       }
     });
 
-    $('spaces').addEventListener('click', e => {
-      const b = e.target instanceof Element ? e.target.closest('button') : null;
-      if (b) chooseSpace(b.getAttribute('data-key') === '*' ? '' : b.getAttribute('data-key'));
-    });
-
-    // A space's tasks show while its button is hovered or focused, and while
-    // the pointer or focus is in the list. Esc closes it.
-    const spaceBox = $('spaces');
-    const popBox = $('space-pop');
-    const spaceButtonOf = e => (e.target instanceof Element ? e.target.closest('button') : null);
-    const inPop = t => t instanceof Element && (spaceBox.contains(t) || popBox.contains(t));
-    for (const type of ['mouseover', 'focusin']) {
-      spaceBox.addEventListener(type, e => {
-        const b = spaceButtonOf(e);
-        if (b) showPop(b);
-      });
-      popBox.addEventListener(type, () => clearTimeout(pop.timer));
-    }
-    for (const box of [spaceBox, popBox]) {
-      for (const type of ['mouseout', 'focusout']) {
-        box.addEventListener(type, e => {
-          if (pop.space && !inPop(e.relatedTarget)) hidePopSoon();
-        });
+    // The side panel: All and a workspace choose what the board shows, and
+    // a task opens its view, or switches the open one to it. Where the
+    // panel opens over the page, it closes again once something's picked
+    // in it, on a click outside it, or on Esc.
+    $('side-spaces').addEventListener('click', e => {
+      const t = e.target instanceof Element ? e.target : null;
+      const row = t && t.closest('.side-task');
+      const space = t && t.closest('.side-space');
+      if (row) {
+        // Focus stays in the panel, unless the panel closes; then it's the
+        // view's.
+        const drawer = document.body.classList.contains('side-open');
+        showDrawer(false);
+        openView(row.getAttribute('data-key'));
+        if (!drawer && row.isConnected) row.focus();
+      } else if (space) {
+        showDrawer(false);
+        chooseSpace(space.closest('.side-group').getAttribute('data-key'));
       }
-    }
-    popBox.addEventListener('click', e => {
-      const row = e.target instanceof Element ? e.target.closest('.pop-row') : null;
-      if (!row) return;
-      hidePop();
-      openView(row.getAttribute('data-key'));
+    });
+    $('side-all').addEventListener('click', () => {
+      showDrawer(false);
+      chooseSpace('');
+    });
+    $('side-fold').addEventListener('click', () => {
+      save(SIDE_FOLDED, load(SIDE_FOLDED) === '1' ? '' : '1');
+      showFold();
+    });
+    $('side-open').addEventListener('click', () => showDrawer(!document.body.classList.contains('side-open')));
+    document.addEventListener('click', e => {
+      if (!document.body.classList.contains('side-open') || !(e.target instanceof Element)) return;
+      if (!$('side').contains(e.target) && !$('side-open').contains(e.target)) showDrawer(false);
     });
     document.addEventListener('keydown', e => {
-      if (e.key !== 'Escape' || !pop.space) return;
-      const back = popBox.contains(document.activeElement) ? pop.anchor : null;
-      hidePop();
-      if (back) back.focus();
+      if (e.key !== 'Escape' || !document.body.classList.contains('side-open')) return;
+      e.preventDefault();
+      showDrawer(false);
+      $('side-open').focus();
     });
 
     $('prio-only').addEventListener('click', () => {
@@ -2055,6 +2066,7 @@
   buildSlack();
   buildShare();
   buildColumns();
+  showFold();
   wire();
   setInterval(tickAges, 30e3);
   signIn().then(() => {

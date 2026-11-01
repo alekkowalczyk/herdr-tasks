@@ -16,10 +16,10 @@
 </head>
 <body>
 <header class="top">
+  <button id="side-open" class="side-toggle" type="button" aria-label="Workspaces" aria-controls="side" aria-expanded="false" hidden>☰</button>
   <h1 class="brand">Tasks</h1>
   <a id="session-name" class="session-name" href="/" title="All sessions" hidden></a>
   <span id="stale" class="badge stale" title="herdr didn't answer the last read. This is what it showed before." hidden>stale</span>
-  <div id="spaces" class="spaces" role="group" aria-label="Spaces" hidden></div>
   <div id="slack-bar" class="slack-bar" hidden>
     <span id="slack" class="slack-line"></span>
   </div>
@@ -30,13 +30,35 @@
     <span id="version" class="version"></span>
   </div>
 </header>
-<div id="space-pop" class="space-pop" hidden></div>
+<div class="page">
+<nav id="side" class="side" aria-label="Workspaces" hidden>
+  <div class="side-head">
+    <button id="side-all" class="side-all" type="button" aria-pressed="true" title="Show every workspace">All</button>
+    <button id="side-fold" class="side-fold" type="button" aria-label="Workspaces" aria-controls="side-spaces" aria-expanded="true">«</button>
+  </div>
+  <div id="side-spaces" class="side-spaces"></div>
+</nav>
+<div class="main">
 <p id="hint" class="hint" hidden>Add a Linear API key to see issue status: <code>herdr-tasks linear-key</code></p>
 <main id="board" class="board" hidden></main>
 <ul id="session-list" class="session-list" hidden></ul>
 <section id="empty" class="empty" aria-live="polite">
   <p id="empty-text" class="empty-text">Connecting…</p>
 </section>
+
+<section id="view" class="view" aria-labelledby="detail-title" hidden>
+  <div class="view-head">
+    <button id="view-back" class="button back" type="button" title="Back to the board (Esc)"><span aria-hidden="true">←</span> Back</button>
+    <h2 id="detail-title" class="view-title"></h2>
+    <button id="view-full" class="button view-full" type="button"></button>
+  </div>
+  <div class="view-body">
+    <div id="terms" class="terms" role="region" aria-label="Terminals"></div>
+    <aside id="detail-body" class="panel" aria-label="Task"></aside>
+  </div>
+</section>
+</div>
+</div>
 
 <div id="menu" class="menu" role="menu" aria-label="Move to" hidden></div>
 
@@ -52,18 +74,6 @@
     </div>
   </form>
 </dialog>
-
-<section id="view" class="view" aria-labelledby="detail-title" hidden>
-  <div class="view-head">
-    <button id="view-back" class="button back" type="button" title="Back to the board (Esc)"><span aria-hidden="true">←</span> Back</button>
-    <h2 id="detail-title" class="view-title"></h2>
-    <button id="view-full" class="button view-full" type="button"></button>
-  </div>
-  <div class="view-body">
-    <div id="terms" class="terms" role="region" aria-label="Terminals"></div>
-    <aside id="detail-body" class="panel" aria-label="Task"></aside>
-  </div>
-</section>
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
 </body>

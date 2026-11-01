@@ -157,65 +157,6 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 }
 .session-name:hover { background: var(--well); }
 
-.spaces {
-  display: flex;
-  gap: 6px;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.spaces::-webkit-scrollbar { display: none; }
-.space-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12.5px;
-  white-space: nowrap;
-}
-.space-filter:hover { color: var(--fg); border-color: var(--faint); }
-.space-filter[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); }
-.space-filter .n { font-variant-numeric: tabular-nums; opacity: 0.7; }
-
-/* A space's open tasks, under its button while it's hovered or focused. */
-.space-pop {
-  position: fixed;
-  z-index: 30;
-  width: 320px;
-  max-height: min(60vh, 420px);
-  padding: 6px;
-  overflow-y: auto;
-  border: 1px solid var(--line-strong);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: var(--shadow-lift);
-}
-.pop-head { padding: 4px 8px 6px; color: var(--faint); font-size: 11.5px; font-weight: 600; letter-spacing: 0.02em; }
-.pop-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 5px 8px;
-  border: 0;
-  border-radius: 6px;
-  background: none;
-  color: var(--fg);
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-}
-.pop-row:hover, .pop-row:focus-visible { background: var(--surface-2); }
-.pop-row .prio { width: 15px; height: 15px; margin: 0; font-size: 10.5px; }
-.pop-gap { flex: none; width: 15px; }
-.pop-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
-.pop-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pop-col { flex: none; color: var(--faint); font-size: 11.5px; }
-
 /* Shows only the priority tasks while pressed. */
 .prio-only {
   display: inline-flex;
@@ -351,6 +292,81 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 }
 
 .hint { margin: 12px 24px 0; color: var(--muted); font-size: 13px; }
+
+/* The side panel beside the board and the views: each workspace and its
+   tasks, as herdr's sidebar has them. Folded, it keeps the workspaces'
+   circles; on a phone it opens over the page from the header. */
+
+.page { display: flex; flex: 1; min-height: 0; }
+.main { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
+
+.side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 256px;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+}
+.side-head { display: flex; align-items: center; gap: 8px; padding: 12px 10px 6px 14px; }
+.side-all {
+  height: 26px;
+  padding: 0 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.side-all:hover { color: var(--fg); border-color: var(--faint); }
+.side-all[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); }
+.side-fold {
+  width: 28px;
+  height: 28px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
+}
+.side-fold:hover { background: var(--surface-2); color: var(--fg); }
+.side-toggle { display: none; }
+.side-spaces { flex: 1; min-height: 0; padding: 2px 6px 20px; overflow-y: auto; }
+.side-group { margin-top: 6px; }
+.side-space, .side-task {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+}
+.side-space { gap: 9px; padding: 5px 8px; border-radius: 7px; color: var(--fg); font-size: 13.5px; font-weight: 650; }
+.side-space:hover, .side-task:hover { background: var(--surface-2); }
+.side-space[aria-pressed="true"] { background: color-mix(in srgb, var(--focus) 18%, transparent); }
+.side-dot { flex: none; width: 9px; height: 9px; border: 1.5px solid var(--faint); border-radius: 50%; }
+.side-dot[data-column] { border-color: var(--accent); background: var(--accent); }
+.side-label, .side-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.side-task { gap: 5px; padding: 3px 8px 3px 24px; border-radius: 6px; color: var(--ink); font-size: 13px; }
+.side-task.pri { color: var(--ink-ask); }
+.side-task[aria-current] { background: var(--surface-2); box-shadow: inset 2px 0 0 var(--focus); }
+.side-prio { flex: none; width: 8px; font-size: 12px; font-weight: 800; text-align: center; }
+.side-glyph { flex: none; width: 14px; font-size: 12px; text-align: center; }
+.side-more { margin: 1px 0 2px; padding-left: 34px; color: var(--faint); font-size: 12px; }
+
+@media (min-width: 721px) {
+  body.side-folded .side { width: 52px; }
+  body.side-folded .side-head { justify-content: center; padding: 12px 0 6px; }
+  body.side-folded .side-fold { margin: 0; }
+  body.side-folded .side-space { justify-content: center; padding: 8px 0; }
+  body.side-folded .side-dot { width: 11px; height: 11px; }
+  body.side-folded :is(.side-all, .side-label, .side-tasks, .side-more) { display: none; }
+}
 
 /* Board */
 
@@ -702,7 +718,6 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); -web
 
 /* A tab's view: its terminals on the left, the whole card on the right. */
 
-body.viewing .top,
 body.viewing .hint,
 body.viewing .board,
 body.viewing .empty { display: none; }
@@ -922,6 +937,33 @@ body.terms-full .terms { height: auto; }
 @media (max-width: 720px) {
   html, body { height: auto; }
   .top { padding: 10px 16px; }
+  .side-toggle {
+    display: inline-grid;
+    place-items: center;
+    width: 32px;
+    height: 32px;
+    margin-left: -6px;
+    border: 0;
+    border-radius: 8px;
+    background: none;
+    color: var(--fg);
+    font-size: 18px;
+  }
+  .side-fold { display: none; }
+  .side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 25;
+    width: min(300px, 86vw);
+    box-shadow: var(--shadow-lift);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.18s ease-out, visibility 0.18s;
+  }
+  body.side-open .side { transform: none; visibility: visible; }
+  body.side-open::after { content: ""; position: fixed; inset: 0; z-index: 20; background: var(--backdrop); }
   .hint { margin: 10px 16px 0; }
   .board { flex-direction: column; padding: 12px 16px 24px; overflow: visible; }
   .column { flex: none; max-width: none; }

@@ -250,6 +250,9 @@ const spaced = (cards, spaces) => ({version: '0.10.0', linearKey: false, session
 const slackCard = more =>
   card({space: 'w1', spaceLabel: 'billing', slack: Object.assign({place: '#billing', channel: 'C0123ABCD', research: '', muted: false}, more)});
 
+// seeded is what the next page finds stored besides its key.
+let seeded = {};
+
 // page runs the script as a tab opened at path (/work/ unless given) with the
 // hash and search, signed in with stored. The server takes only the key in pg.good, and
 // answers a request for the board or the list with pg.answers[url], a
@@ -259,7 +262,7 @@ function page(stored, path, hash, search, tailnet) {
   doc.body = new Element('body');
   doc.activeElement = null;
   doc.listeners = {};
-  const pg = {good: stored, streams: [], posts: [], gets: [], answers: {}, replaced: [], addresses: []};
+  const pg = {good: stored, streams: [], posts: [], gets: [], answers: {}, replaced: [], addresses: [], pushed: []};
   const ids = new Map();
   const document = {
     body: doc.body,
@@ -285,7 +288,8 @@ function page(stored, path, hash, search, tailnet) {
   };
   pg.$ = id => document.getElementById(id);
 
-  const storage = new Map([[KEY, stored]]);
+  const storage = new Map([[KEY, stored], ...Object.entries(seeded)]);
+  seeded = {};
   const windowListeners = {};
   pg.windows = [];
 
@@ -373,6 +377,7 @@ function page(stored, path, hash, search, tailnet) {
     replace: url => pg.replaced.push(url),
   };
   pg.location = location;
+  pg.history = () => ctx.history;
   const go = url => {
     pg.addresses.push(String(url));
     const i = String(url).indexOf('#');
@@ -401,6 +406,7 @@ function page(stored, path, hash, search, tailnet) {
       },
       pushState(state, title, url) {
         this.state = state;
+        pg.pushed.push(String(url));
         go(url);
       },
       back() {},
@@ -459,19 +465,37 @@ function page(stored, path, hash, search, tailnet) {
   return pg;
 }
 
-// spaceButton is the workspace filter at the top whose label starts with label.
-const spaceButton = (pg, label) =>
+// sideSpace is the side panel's button for the workspace labelled label.
+const sideSpace = (pg, label) =>
   pg
-    .$('spaces')
-    .querySelectorAll('button')
-    .find(b => b.textContent.startsWith(label));
+    .$('side-spaces')
+    .querySelectorAll('.side-space')
+    .find(b => b.querySelector('.side-label').textContent === label);
 
-// popRows is what the workspace's task list shows: each task's title and column.
-const popRows = pg =>
+// sideTask is the side panel's row for the task titled title.
+const sideTask = (pg, title) =>
   pg
-    .$('space-pop')
-    .querySelectorAll('.pop-row')
-    .map(r => r.querySelector('.pop-title').textContent + ' · ' + r.querySelector('.pop-col').textContent);
+    .$('side-spaces')
+    .querySelectorAll('.side-task')
+    .find(r => r.querySelector('.side-title').textContent === title);
+
+// sideRows is what the side panel shows, a line each: a workspace as its
+// label and its circle's column ('idle' when hollow), after a * when it's
+// picked; each of its tasks as its ! when it's a priority, its glyph and its
+// title; and the line counting what the list leaves out.
+const sideRows = pg =>
+  pg
+    .$('side-spaces')
+    .children.flatMap(g => {
+      const b = g.querySelector('.side-space');
+      const dot = b.querySelector('.side-dot').getAttribute('data-column') || 'idle';
+      const head = (b.getAttribute('aria-pressed') === 'true' ? '* ' : '') + b.querySelector('.side-label').textContent + ' ' + dot;
+      const tasks = g
+        .querySelectorAll('.side-task')
+        .map(r => ['.side-prio', '.side-glyph', '.side-title'].map(sel => r.querySelector(sel).textContent).filter(Boolean).join(' '));
+      const more = g.querySelector('.side-more');
+      return [head, ...tasks, ...(more && !more.hidden ? [more.textContent] : [])];
+    });
 
 // agentLines is each agent's heading on el, and the line under it, if any.
 const agentLines = (el, sel) =>
@@ -1312,12 +1336,14 @@ const tests = {
     assert.deepEqual(agentLines(pg.$('detail-body'), '.d-agent'), want);
   },
 
-  // Hovering a workspace lists its open tasks: priority first, then by
-  // column, newest first, each with its column. Done tasks are left out,
-  // as from the count. The list follows new boards, goes when the pointer
-  // leaves, shows for keyboard focus too, and Esc closes it. A task in it
-  // opens its view.
-  async 'hovering a workspace lists its open tasks'() {
+  // The side panel lists every workspace, as herdr's sidebar does: its
+  // circle has the colour of its most urgent task (asking, then your turn,
+  // then running) and is hollow when none needs you. Under it are its tasks,
+  // priority first, then by column, newest first, each with its column's
+  // glyph. Paused, parked and done tasks are left out unless they're a
+  // priority, and counted on a line under the list. It follows new boards,
+  // and goes when the session does.
+  async 'the side panel lists each workspace and its tasks'() {
     const pg = page('k1');
     await settle();
     const billing = more => card(Object.assign({space: 'w1', spaceLabel: 'billing'}, more));
@@ -1327,46 +1353,158 @@ const tests = {
       billing({tab: 'w1:t3', title: 'Asks', column: 'asking', agentStatus: 'blocked'}),
       billing({tab: 'w1:t4', title: 'Urgent', column: 'review', stage: 'review', priority: true}),
       billing({tab: 'w1:t5', title: 'Shipped', column: 'done', stage: 'done'}),
-      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
+      billing({tab: 'w1:t6', title: 'Shelved', column: 'parked', stage: 'parked'}),
+      billing({tab: 'w1:t7', title: 'Waiting', column: 'paused', stage: 'paused', priority: true}),
+      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra', column: 'running', agentStatus: 'working'}),
+      card({tab: 'w3:t1', title: 'Old docs', space: 'w3', spaceLabel: 'docs', column: 'done', stage: 'done'}),
     ];
-    pg.send(spaced(cards, SPACES));
+    const spaces = SPACES.concat([
+      {id: 'w3', label: 'docs'},
+      {id: 'w4', label: 'scratch'},
+    ]);
+    pg.send(spaced(cards, spaces));
     await settle();
-    const pop = pg.$('space-pop');
-    spaceButton(pg, 'All').dispatch('mouseover');
-    assert.equal(pop.hidden, true, 'All has a list');
-    spaceButton(pg, 'billing').dispatch('mouseover');
-    assert.equal(pop.hidden, false);
-    assert.equal(pop.querySelector('.pop-head').textContent, 'billing · 4 open');
-    assert.deepEqual(popRows(pg), ['Urgent · In review', 'Asks · Asking', 'Newer · Your turn', 'Older · Your turn']);
-    assert.equal(pop.querySelectorAll('.pop-row')[0].querySelectorAll('.prio').length, 1);
-    assert.equal(pop.querySelectorAll('.pop-row')[1].querySelectorAll('.prio').length, 0);
+    assert.equal(pg.$('side').hidden, false);
+    assert.equal(pg.$('side-all').getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(sideRows(pg), [
+      'billing asking',
+      '! ◐ Urgent',
+      '! ‖ Waiting',
+      '? Asks',
+      '● Newer',
+      '● Older',
+      '1 parked · 1 done',
+      'infra running',
+      '↻ Infra work',
+      'docs idle',
+      '1 done',
+      'scratch idle',
+    ]);
+    assert.equal(sideTask(pg, 'Asks').getAttribute('data-column'), 'asking');
 
-    pg.send(spaced([cards[0], cards[1], billing({tab: 'w1:t3', title: 'Asks', column: 'done', stage: 'done'}), cards[3], cards[5]], SPACES));
+    const moved = cards.slice();
+    moved[2] = billing({tab: 'w1:t3', title: 'Asks', column: 'done', stage: 'done'});
+    pg.send(spaced(moved, spaces));
     await settle();
-    assert.deepEqual(popRows(pg), ['Urgent · In review', 'Newer · Your turn', 'Older · Your turn'], 'the list kept the old board');
+    assert.deepEqual(sideRows(pg).slice(0, 6), ['billing yourturn', '! ◐ Urgent', '! ‖ Waiting', '● Newer', '● Older', '1 parked · 2 done']);
 
-    // Moving onto the list keeps it; leaving it closes it.
-    spaceButton(pg, 'billing').dispatch('mouseout', {relatedTarget: pop});
-    pop.dispatch('mouseover');
-    pg.runTimers(1000);
-    assert.equal(pop.hidden, false, 'closed on the way to it');
-    pop.dispatch('mouseout', {relatedTarget: null});
-    pg.runTimers(1000);
-    assert.equal(pop.hidden, true);
-
-    spaceButton(pg, 'infra').dispatch('focusin');
-    assert.deepEqual(popRows(pg), ['Infra work · Your turn']);
-    spaceButton(pg, 'infra').dispatch('keydown', {key: 'Escape'});
-    assert.equal(pop.hidden, true);
-
-    spaceButton(pg, 'billing').dispatch('mouseover');
-    pop.querySelectorAll('.pop-row')[1].click();
-    assert.equal(pg.location.hash, '#tab=w1%3At2');
-    assert.equal(pop.hidden, true, 'the list stays over the view');
+    pg.send({version: '0.10.0', linearKey: false, sessions: []});
+    await settle();
+    assert.equal(pg.$('side').hidden, true, 'the panel stayed for a session that went');
   },
 
-  // Priority only shows the priority tasks alone. The workspaces stay, but
-  // count those, and their lists show those. The browser keeps the choice,
+  // A workspace in the side panel shows only its tasks on the board; it
+  // again, or All, shows every workspace. The browser keeps the choice. From
+  // a task's view, a workspace goes back to the board, showing it.
+  async 'a workspace in the side panel shows only its tasks'() {
+    const cards = [
+      card({tab: 'w1:t1', title: 'Billing fix', space: 'w1', spaceLabel: 'billing'}),
+      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
+    ];
+    const titles = pg => pg.$('board').querySelectorAll('.card').map(c => c.querySelector('.card-title').textContent).sort();
+    let pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.deepEqual(titles(pg), ['Billing fix', 'Infra work']);
+
+    sideSpace(pg, 'billing').click();
+    assert.deepEqual(titles(pg), ['Billing fix']);
+    assert.equal(sideSpace(pg, 'billing').getAttribute('aria-pressed'), 'true');
+    assert.equal(pg.$('side-all').getAttribute('aria-pressed'), 'false');
+    assert.equal(pg.storage.get('herdr-tasks-board-spaces'), JSON.stringify({work: 'w1'}));
+    sideSpace(pg, 'billing').click();
+    assert.deepEqual(titles(pg), ['Billing fix', 'Infra work']);
+    sideSpace(pg, 'infra').click();
+    assert.deepEqual(titles(pg), ['Infra work']);
+    pg.$('side-all').click();
+    assert.deepEqual(titles(pg), ['Billing fix', 'Infra work']);
+    assert.equal(pg.$('side-all').getAttribute('aria-pressed'), 'true');
+
+    pg = page('k1', '/work/', '#tab=w1%3At1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.ok(pg.body.classList.contains('viewing'), 'no view opened');
+    sideSpace(pg, 'infra').click();
+    assert.ok(!pg.body.classList.contains('viewing'), 'the view stayed');
+    assert.equal(pg.location.hash, '');
+    assert.deepEqual(titles(pg), ['Infra work']);
+  },
+
+  // A task in the side panel opens its view. In a view, it switches the view
+  // to that task in place: the details or the expanded terminals stay as
+  // they were, and Back still goes to the board. The open task is marked.
+  async 'a task in the side panel opens, or switches the view'() {
+    const cards = [
+      card({tab: 'w1:t1', title: 'Billing fix', space: 'w1', spaceLabel: 'billing'}),
+      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
+    ];
+    const current = pg => pg.$('side-spaces').querySelectorAll('.side-task[aria-current]').map(r => r.querySelector('.side-title').textContent);
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.deepEqual(current(pg), []);
+
+    sideTask(pg, 'Billing fix').click();
+    assert.equal(pg.location.hash, '#tab=w1%3At1');
+    assert.deepEqual(pg.pushed, ['#tab=w1%3At1']);
+    assert.ok(pg.body.classList.contains('viewing'), 'no view opened');
+    assert.equal(pg.$('detail-title').textContent, 'Billing fix');
+    assert.deepEqual(current(pg), ['Billing fix']);
+
+    pg.$('view-full').click();
+    sideTask(pg, 'Infra work').click();
+    assert.equal(pg.location.hash, '#tab=w2%3At1');
+    assert.deepEqual(pg.pushed, ['#tab=w1%3At1'], 'switching added to the history');
+    assert.equal(JSON.stringify(pg.history().state), '{"view":true}', 'Back stopped going to the board');
+    assert.equal(pg.$('detail-title').textContent, 'Infra work');
+    assert.ok(pg.body.classList.contains('terms-full'), 'the terminals stopped being expanded');
+    assert.deepEqual(current(pg), ['Infra work']);
+
+    sideTask(pg, 'Infra work').click();
+    assert.equal(pg.location.hash, '#tab=w2%3At1');
+  },
+
+  // The side panel folds down to its circles, and back. The browser keeps
+  // it folded. On a phone, it opens over the page from the header, and a
+  // task picked in it closes it.
+  async 'the side panel folds away'() {
+    const FOLDED = 'herdr-tasks-board-side-folded';
+    const cards = [card({tab: 'w1:t1', title: 'Billing fix', space: 'w1', spaceLabel: 'billing'})];
+    let pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    const fold = pg.$('side-fold');
+    assert.equal(pg.body.classList.contains('side-folded'), false);
+    assert.equal(fold.getAttribute('aria-expanded'), 'true');
+    fold.click();
+    assert.equal(pg.body.classList.contains('side-folded'), true);
+    assert.equal(fold.getAttribute('aria-expanded'), 'false');
+    assert.equal(pg.storage.get(FOLDED), '1');
+    fold.click();
+    assert.equal(pg.body.classList.contains('side-folded'), false);
+    assert.equal(pg.storage.get(FOLDED), '');
+
+    pg.$('side-open').click();
+    assert.equal(pg.body.classList.contains('side-open'), true);
+    sideTask(pg, 'Billing fix').click();
+    assert.equal(pg.body.classList.contains('side-open'), false, 'the panel stayed over the view');
+    assert.equal(doc.activeElement, pg.$('view-back'), 'focus went into the closed panel');
+
+    seeded = {[FOLDED]: '1'};
+    pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.equal(pg.body.classList.contains('side-folded'), true, "the next page isn't folded");
+    assert.equal(pg.$('side-fold').getAttribute('aria-expanded'), 'false');
+  },
+
+  // Priority only shows the priority tasks alone, on the board and in the
+  // side panel, where every workspace stays. The browser keeps the choice,
   // and a page opened with it starts with it.
   async 'Priority only shows only priority tasks'() {
     const PRIO = 'herdr-tasks-board-priority-only';
@@ -1376,7 +1514,6 @@ const tests = {
       card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
     ];
     const titles = pg => pg.$('board').querySelectorAll('.card').map(c => c.querySelector('.card-title').textContent).sort();
-    const spaces = pg => pg.$('spaces').querySelectorAll('button').map(b => b.textContent);
 
     let pg = page('k1');
     await settle();
@@ -1386,19 +1523,13 @@ const tests = {
     assert.equal(toggle.hidden, false);
     assert.equal(toggle.getAttribute('aria-pressed'), 'false');
     assert.deepEqual(titles(pg), ['Infra work', 'Later', 'Urgent fix']);
-    assert.deepEqual(spaces(pg), ['All', 'billing2', 'infra1']);
+    assert.deepEqual(sideRows(pg), ['billing yourturn', '! ● Urgent fix', '● Later', 'infra yourturn', '● Infra work']);
 
     toggle.click();
     assert.equal(toggle.getAttribute('aria-pressed'), 'true');
     assert.deepEqual(titles(pg), ['Urgent fix']);
-    assert.deepEqual(spaces(pg), ['All', 'billing1', 'infra']);
+    assert.deepEqual(sideRows(pg), ['billing yourturn', '! ● Urgent fix', 'infra idle']);
     assert.equal(pg.storage.get(PRIO), '1');
-    spaceButton(pg, 'billing').dispatch('mouseover');
-    assert.equal(pg.$('space-pop').querySelector('.pop-head').textContent, 'billing · 1 priority task');
-    assert.deepEqual(popRows(pg), ['Urgent fix · Your turn']);
-    spaceButton(pg, 'infra').dispatch('mouseover');
-    assert.equal(pg.$('space-pop').querySelector('.pop-head').textContent, 'infra · no priority tasks');
-    assert.deepEqual(popRows(pg), []);
 
     toggle.click();
     assert.equal(toggle.getAttribute('aria-pressed'), 'false');
