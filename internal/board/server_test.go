@@ -263,7 +263,7 @@ func startServer(t *testing.T, cfg Config, tune func(*Server)) *testServer {
 		t.Fatal(err)
 	}
 	ts := &testServer{port: ln.Addr().(*net.TCPAddr).Port, stopped: make(chan struct{})}
-	auth := NewAuth(testToken, ts.port)
+	auth := NewAuth(testToken)
 	ts.key = auth.key
 	ts.opts = reconcile.Options{Board: true, BoardPort: ts.port}
 	cfg.StateDir, cfg.Port, cfg.Version = t.TempDir(), ts.port, testVersion

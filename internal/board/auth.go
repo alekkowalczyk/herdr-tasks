@@ -1,6 +1,7 @@
 package board
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,7 +16,6 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -139,29 +139,23 @@ func browserKey(token, run string) string {
 // it out.
 type Auth struct {
 	token, key string
-	hosts      []string // 127.0.0.1:<port> and localhost:<port>
-	origins    []string // the same as http:// origins
 
 	mu    sync.Mutex
 	codes map[string]time.Time // login code → when it stops working
 }
 
-// NewAuth checks requests for the server on 127.0.0.1:port. It makes a new
-// browser key, so a server makes one once, as it starts.
-func NewAuth(token string, port int) *Auth {
+// NewAuth checks requests for the server. It makes a new browser key, so a
+// server makes one once, as it starts.
+func NewAuth(token string) *Auth {
 	run, err := secret(32)
 	if err != nil {
 		panic(err) // crypto/rand doesn't fail on the systems herdr runs on
 	}
-	hosts := []string{fmt.Sprintf("127.0.0.1:%d", port), fmt.Sprintf("localhost:%d", port)}
-	return &Auth{
-		token:   token,
-		key:     browserKey(token, run),
-		hosts:   hosts,
-		origins: []string{"http://" + hosts[0], "http://" + hosts[1]},
-		codes:   map[string]time.Time{},
-	}
+	return &Auth{token: token, key: browserKey(token, run), codes: map[string]time.Time{}}
 }
+
+// BrowserKey is the key a signed-in page sends.
+func (a *Auth) BrowserKey() string { return a.key }
 
 // LoginCode makes a code that can be swapped for the browser key once,
 // within a minute.
@@ -199,15 +193,82 @@ func (a *Auth) expire(now time.Time) {
 	}
 }
 
-// Wrap applies the board's security rules before h:
+// loopbackHost is the Host of a request that reached the board on this
+// machine. The port is any: an SSH tunnel brings it to another one.
+var loopbackHost = regexp.MustCompile(`^(127\.0\.0\.1|localhost):[0-9]{1,5}$`)
+
+type loginKey struct{}
+
+// loginOf is the Tailscale login WrapTailnet saw on the request: "" on the
+// loopback door, which ignores Tailscale's headers.
+func loginOf(ctx context.Context) string {
+	login, _ := ctx.Value(loginKey{}).(string)
+	return login
+}
+
+// Wrap is the loopback door. It applies the board's security rules before h:
 //   - Every response gets headers that keep other pages from framing it or
 //     loading anything into it.
-//   - The Host must be the board's own, which stops DNS rebinding.
+//   - The Host must be 127.0.0.1 or localhost, with a port, which stops DNS
+//     rebinding.
 //   - /api/ requests from another site or origin are refused.
 //   - /api/ requests need the admin token or the browser key, and the paths
 //     adminOnly picks need the admin token. /api/session needs neither: the
 //     login code it takes is the credential.
 func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handler {
+	return a.guard(h, adminOnly, func(w http.ResponseWriter, r *http.Request) bool {
+		if !loopbackHost.MatchString(r.Host) {
+			writeError(w, http.StatusForbidden, "The board only answers at 127.0.0.1 or localhost.")
+			return false
+		}
+		return true
+	}, func(w http.ResponseWriter, r *http.Request, p string) bool {
+		return sameOrigin(w, r, "http://"+r.Host)
+	})
+}
+
+// WrapTailnet is the door for requests that come through tailscale serve.
+// Tailscale sends its own Host, so none is checked; every Origin must be
+// origin(), the board's tailnet address, and with none every /api/ request
+// is refused. The paths adminOnly picks are for the CLI on this machine, so
+// they are refused here. The Tailscale-User-Login header is put in the
+// request's context, for loginOf: Tailscale sets it itself, after deleting
+// any the client sent, and a tagged machine has none.
+func (a *Auth) WrapTailnet(h http.Handler, adminOnly func(path string) bool, origin func() string) http.Handler {
+	signed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), loginKey{}, r.Header.Get("Tailscale-User-Login"))
+		h.ServeHTTP(w, r.WithContext(ctx))
+	})
+	return a.guard(signed, adminOnly, nil, func(w http.ResponseWriter, r *http.Request, p string) bool {
+		if adminOnly != nil && adminOnly(p) {
+			writeError(w, http.StatusForbidden, "Only herdr-tasks on this machine can do that.")
+			return false
+		}
+		o := origin()
+		if o == "" {
+			writeError(w, http.StatusForbidden, "Other sites can't use the board.")
+			return false
+		}
+		return sameOrigin(w, r, o)
+	})
+}
+
+// sameOrigin refuses the request, and says so, unless every Origin it sends
+// is want. No Origin passes.
+func sameOrigin(w http.ResponseWriter, r *http.Request, want string) bool {
+	for _, o := range r.Header.Values("Origin") {
+		if o != want {
+			writeError(w, http.StatusForbidden, "Other sites can't use the board.")
+			return false
+		}
+	}
+	return true
+}
+
+// guard is what both doors share. door, if there is one, judges every
+// request, and apiDoor the /api/ ones, before the Sec-Fetch-Site and key checks; each says false
+// once it has answered.
+func (a *Auth) guard(h http.Handler, adminOnly func(path string) bool, door func(http.ResponseWriter, *http.Request) bool, apiDoor func(http.ResponseWriter, *http.Request, string) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hd := w.Header()
 		hd.Set("Content-Security-Policy", csp)
@@ -215,8 +276,7 @@ func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handl
 		hd.Set("Referrer-Policy", "no-referrer")
 		hd.Set("Cache-Control", "no-store")
 		hd.Set("X-Content-Type-Options", "nosniff")
-		if !slices.Contains(a.hosts, r.Host) {
-			writeError(w, http.StatusForbidden, "The board only answers at "+a.hosts[0]+".")
+		if door != nil && !door(w, r) {
 			return
 		}
 		// Judge the path the router will use, so /-/static/../../api/ is still the API.
@@ -225,11 +285,8 @@ func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handl
 			h.ServeHTTP(w, r)
 			return
 		}
-		for _, o := range r.Header.Values("Origin") {
-			if !slices.Contains(a.origins, o) {
-				writeError(w, http.StatusForbidden, "Other sites can't use the board.")
-				return
-			}
+		if !apiDoor(w, r, p) {
+			return
 		}
 		if s := r.Header.Get("Sec-Fetch-Site"); s == "cross-site" || s == "same-site" {
 			writeError(w, http.StatusForbidden, "Other sites can't use the board.")

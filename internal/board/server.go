@@ -77,6 +77,10 @@ type Config struct {
 	// list is slack.ErrNoSkippedAsk.
 	SlackTake func(ctx context.Context, id string) (string, error)
 	Now       func() time.Time
+	// TailnetOwner is the Tailscale login that owns this machine: "" when
+	// it's unknown or the machine is tagged, and nil for none. A request on
+	// the tailnet door with that login signs in without a login code.
+	TailnetOwner func() string
 }
 
 // Server is the board's web server, for every running herdr session.
@@ -93,7 +97,8 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	handler  http.Handler
+	handler  http.Handler // the loopback door
+	mux      *http.ServeMux
 	hub      *hub
 	terms    terminals
 	fetching atomic.Bool // a fetch from the board runs
@@ -172,8 +177,15 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("POST /api/slack/take", s.slackTake)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
 	mux.HandleFunc("POST /api/pane/input", s.paneInput)
+	s.mux = mux
 	s.handler = auth.Wrap(mux, adminOnly)
 	return s
+}
+
+// TailnetHandler is the board's tailnet door, for requests that come
+// through tailscale serve. origin is the board's address on the tailnet.
+func (s *Server) TailnetHandler(origin func() string) http.Handler {
+	return s.auth.WrapTailnet(s.mux, adminOnly, origin)
 }
 
 // reserved reports whether name is a first path segment the board uses for
@@ -273,11 +285,18 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+	// No body is no code, for the owner's sign-in.
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "That isn't a sign-in request.")
 		return
 	}
-	key, ok := s.auth.Redeem(req.Code, time.Now())
+	var key string
+	ok := false
+	if req.Code != "" {
+		key, ok = s.auth.Redeem(req.Code, time.Now())
+	} else if login := loginOf(r.Context()); login != "" && s.cfg.TailnetOwner != nil && s.cfg.TailnetOwner() == login {
+		key, ok = s.auth.BrowserKey(), true
+	}
 	if !ok {
 		writeError(w, http.StatusUnauthorized, signInAgain)
 		return

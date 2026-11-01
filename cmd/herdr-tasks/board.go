@@ -297,7 +297,7 @@ func (a *app) serve() error {
 			}
 			return d.TookLine(), nil
 		},
-	}, board.NewAuth(token, port), lock)
+	}, board.NewAuth(token), lock)
 	w.Changed = s.Refresh
 	watching := make(chan struct{})
 	go func() {

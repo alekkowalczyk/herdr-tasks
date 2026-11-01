@@ -24,7 +24,7 @@ var testToken = strings.Repeat("ab", 32)
 // for the admin, and the browser key it takes.
 func guarded() (http.Handler, string) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
-	a := NewAuth(testToken, authPort)
+	a := NewAuth(testToken)
 	return a.Wrap(ok, func(p string) bool { return p == "/api/shutdown" }), a.key
 }
 
@@ -62,8 +62,10 @@ func TestRejectsForeignHost(t *testing.T) {
 		"evil.example",
 		fmt.Sprintf("evil.example:%d", authPort),
 		fmt.Sprintf("localhost.evil.example:%d", authPort),
-		"127.0.0.1:1",
 		"127.0.0.1",
+		"127.0.0.1:",
+		"127.0.0.1:123456",
+		"127.0.0.1:80.evil.example",
 		fmt.Sprintf("[::1]:%d", authPort),
 		"",
 	} {
@@ -90,8 +92,8 @@ func TestAPIWithoutKeyIs401(t *testing.T) {
 		"Basic " + testToken,
 		testToken,
 		"Bearer " + testToken + "x",
-		"Bearer " + NewAuth("another token", authPort).key,
-		"Bearer " + NewAuth(testToken, authPort).key, // another run's
+		"Bearer " + NewAuth("another token").key,
+		"Bearer " + NewAuth(testToken).key, // another run's
 	} {
 		for _, target := range []string{"/api/board", "/api", "//api/board", "/-/static/../../api/board"} {
 			w := send(h, "GET", target, map[string]string{"Authorization": auth}, "")
@@ -152,10 +154,19 @@ func TestForeignOriginIs403(t *testing.T) {
 			}
 		}
 	}
-	for _, origin := range []string{fmt.Sprintf("http://127.0.0.1:%d", authPort), fmt.Sprintf("http://localhost:%d", authPort)} {
-		if w := send(h, "POST", "/api/board", with(bearer(testToken), "Origin", origin), ""); w.Code != http.StatusOK {
+	for _, origin := range []string{fmt.Sprintf("http://127.0.0.1:%d", authPort), ""} {
+		hs := with(bearer(testToken), "Origin", origin)
+		if origin == "" {
+			hs = bearer(testToken)
+		}
+		if w := send(h, "POST", "/api/board", hs, ""); w.Code != http.StatusOK {
 			t.Errorf("Origin %q: got %d, want 200", origin, w.Code)
 		}
+	}
+	// The Origin has to be the Host's own.
+	hs := with(with(bearer(testToken), "Host", fmt.Sprintf("localhost:%d", authPort)), "Origin", fmt.Sprintf("http://127.0.0.1:%d", authPort))
+	if w := send(h, "POST", "/api/board", hs, ""); w.Code != http.StatusForbidden {
+		t.Errorf("Origin of the other name: got %d, want 403", w.Code)
 	}
 }
 
@@ -196,7 +207,7 @@ func TestStaticNeedsNoKeyAndHasCSP(t *testing.T) {
 
 func TestLoginCodeIsSingleUseAndExpires(t *testing.T) {
 	now := time.Date(2026, 10, 31, 9, 0, 0, 0, time.UTC)
-	a := NewAuth(testToken, authPort)
+	a := NewAuth(testToken)
 	code := a.LoginCode(now)
 	if !regexp.MustCompile(`^[0-9a-f]{32,}$`).MatchString(code) {
 		t.Fatalf("code %q isn't long random hex", code)
@@ -226,7 +237,7 @@ func TestLoginCodeIsSingleUseAndExpires(t *testing.T) {
 
 	// The same through the server: the CLI asks for a code with the admin
 	// token, and the page swaps it for the key without any credential.
-	a = NewAuth(testToken, authPort)
+	a = NewAuth(testToken)
 	s := NewServer(Config{StateDir: t.TempDir(), Port: authPort, Version: "test"}, a, nil)
 	if w := send(s.handler, "POST", "/api/login-code", bearer(a.key), ""); w.Code != http.StatusUnauthorized {
 		t.Errorf("login code with the browser key: got %d, want 401", w.Code)
@@ -254,7 +265,7 @@ func TestLoginCodeIsSingleUseAndExpires(t *testing.T) {
 // that takes the port after the server exits. The key belongs to one run of
 // the server, so the next one turns it away, though the token is the same.
 func TestBrowserKeyIsNewForEachRun(t *testing.T) {
-	first, next := NewAuth(testToken, authPort), NewAuth(testToken, authPort)
+	first, next := NewAuth(testToken), NewAuth(testToken)
 	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(first.key) || first.key == testToken {
 		t.Fatalf("browser key %q isn't 32 bytes of hex apart from the token", first.key)
 	}
@@ -345,5 +356,116 @@ func TestDamagedTokenIsAnError(t *testing.T) {
 	}
 	if _, err := EnsureToken(dir); err == nil || !strings.Contains(err.Error(), "--new-token") {
 		t.Errorf("EnsureToken with a damaged file = %v, want an error naming --new-token", err)
+	}
+}
+
+func TestLoopbackAcceptsAnyPort(t *testing.T) {
+	h, key := guarded()
+	for _, c := range []struct {
+		host, origin string
+		want         int
+	}{
+		{"127.0.0.1:8000", "http://127.0.0.1:8000", 200},
+		{"localhost:9", "", 200},
+		{"evil.test:7391", "", 403},
+		{"127.0.0.1:8000", "http://127.0.0.1:7391", 403},
+		{"127.0.0.1", "", 403},
+	} {
+		hs := with(bearer(key), "Host", c.host)
+		if c.origin != "" {
+			hs["Origin"] = c.origin
+		}
+		if w := send(h, "GET", "/api/board", hs, ""); w.Code != c.want {
+			t.Errorf("Host %q, Origin %q: got %d, want %d", c.host, c.origin, w.Code, c.want)
+		}
+	}
+}
+
+// tailnet is a handler that answers "ok" behind WrapTailnet, as tailscale
+// serve reaches it: with Host localhost.
+func tailnet(origin string) (http.Handler, *Auth) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
+	a := NewAuth(testToken)
+	return a.WrapTailnet(ok, func(p string) bool { return p == "/api/login-code" }, func() string { return origin }), a
+}
+
+const tailnetOrigin = "https://devbox.tail0000.ts.net:7391"
+
+func TestTailnetDoorChecksOrigin(t *testing.T) {
+	h, a := tailnet(tailnetOrigin)
+	key := func() map[string]string { return with(bearer(a.BrowserKey()), "Host", "localhost") }
+	if w := send(h, "GET", "/api/board", with(key(), "Origin", tailnetOrigin), ""); w.Code != http.StatusOK {
+		t.Errorf("the tailnet Origin: got %d, want 200", w.Code)
+	}
+	if w := send(h, "GET", "/api/board", with(key(), "Origin", "https://evil.test"), ""); w.Code != http.StatusForbidden {
+		t.Errorf("another Origin: got %d, want 403", w.Code)
+	}
+	if w := send(h, "GET", "/api/board", with(key(), "Sec-Fetch-Site", "cross-site"), ""); w.Code != http.StatusForbidden {
+		t.Errorf("cross-site: got %d, want 403", w.Code)
+	}
+	if w := send(h, "GET", "/api/board", map[string]string{"Host": "localhost"}, ""); w.Code != http.StatusUnauthorized {
+		t.Errorf("no key: got %d, want 401", w.Code)
+	}
+	// Pages need no key, as on the loopback door.
+	if w := send(h, "GET", "/-/static/app.js", map[string]string{"Host": "localhost"}, ""); w.Code != http.StatusOK {
+		t.Errorf("a page: got %d, want 200", w.Code)
+	}
+	if w := send(h, "GET", "/-/static/app.js", map[string]string{"Host": "localhost"}, ""); w.Header().Get("X-Frame-Options") != "DENY" {
+		t.Error("the tailnet door sets no X-Frame-Options")
+	}
+	none, a := tailnet("")
+	for _, origin := range []string{tailnetOrigin, ""} {
+		hs := with(bearer(a.BrowserKey()), "Host", "localhost")
+		if origin != "" {
+			hs["Origin"] = origin
+		}
+		if w := send(none, "GET", "/api/board", hs, ""); w.Code != http.StatusForbidden {
+			t.Errorf("no tailnet address, Origin %q: got %d, want 403", origin, w.Code)
+		}
+	}
+}
+
+func TestTailnetDoorRefusesAdminPaths(t *testing.T) {
+	h, _ := tailnet(tailnetOrigin)
+	w := send(h, "POST", "/api/login-code", with(bearer(testToken), "Host", "localhost"), "")
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Only herdr-tasks on this machine can do that.") {
+		t.Errorf("login code with the admin token: %d %q, want 403 and the message", w.Code, w.Body)
+	}
+}
+
+func TestSessionSignsInTailnetOwner(t *testing.T) {
+	for _, c := range []struct {
+		owner, login string
+		want         int
+	}{
+		{"dana@acme.test", "dana@acme.test", 200},
+		{"dana@acme.test", "rui@acme.test", 401},
+		{"dana@acme.test", "", 401},
+		{"", "dana@acme.test", 401}, // a tagged machine
+		{"", "", 401},
+	} {
+		a := NewAuth(testToken)
+		s := NewServer(Config{StateDir: t.TempDir(), Version: "test", TailnetOwner: func() string { return c.owner }}, a, nil)
+		h := s.TailnetHandler(func() string { return tailnetOrigin })
+		hs := map[string]string{"Host": "localhost", "Origin": tailnetOrigin}
+		if c.login != "" {
+			hs["Tailscale-User-Login"] = c.login
+		}
+		w := send(h, "POST", "/api/session", hs, "{}")
+		if w.Code != c.want {
+			t.Errorf("owner %q, login %q: got %d, want %d", c.owner, c.login, w.Code, c.want)
+		}
+		if c.want == 200 && !strings.Contains(w.Body.String(), a.BrowserKey()) {
+			t.Errorf("owner sign-in: %q, want the browser key", w.Body)
+		}
+	}
+}
+
+func TestLoopbackIgnoresTailscaleHeaders(t *testing.T) {
+	a := NewAuth(testToken)
+	s := NewServer(Config{StateDir: t.TempDir(), Version: "test", TailnetOwner: func() string { return "dana@acme.test" }}, a, nil)
+	hs := map[string]string{"Tailscale-User-Login": "dana@acme.test"}
+	if w := send(s.handler, "POST", "/api/session", hs, "{}"); w.Code != http.StatusUnauthorized {
+		t.Errorf("owner header on the loopback door: got %d, want 401", w.Code)
 	}
 }

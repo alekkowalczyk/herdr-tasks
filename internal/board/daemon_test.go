@@ -101,7 +101,7 @@ func serveHelper() int {
 	// A helper that a failed test left running doesn't outlive it by much.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
-	s := NewServer(Config{StateDir: dir, Port: port, Version: version, Build: build, Exe: exe, Sessions: running()}, NewAuth(token, port), lock)
+	s := NewServer(Config{StateDir: dir, Port: port, Version: version, Build: build, Exe: exe, Sessions: running()}, NewAuth(token), lock)
 	if err := s.Run(ctx, ln); err != nil {
 		fmt.Fprintln(os.Stderr, "helper:", err)
 		return 1
