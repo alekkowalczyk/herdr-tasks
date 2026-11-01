@@ -97,6 +97,18 @@ Started the watcher.
 	}
 }
 
+func TestSlackStatusNamesTheDefaultSession(t *testing.T) {
+	o := slackOpts()
+	o.SlackSession = ""
+	f := newFakeSlack(t, o)
+	if err := f.status(); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.out.String(); !strings.HasPrefix(got, "Slack watcher: on, for herdr session default, workspace Slack\n") {
+		t.Errorf("printed:\n%s", got)
+	}
+}
+
 func TestSlackStatusLeavesOutWhatDoesntApply(t *testing.T) {
 	f := newFakeSlack(t, slackOpts())
 	f.up = true

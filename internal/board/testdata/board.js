@@ -700,9 +700,9 @@ const tests = {
 
     fetch.click();
     await settle();
-    pg.posts[1].answer(502, {error: 'can’t fetch: waiting for a herdr session'});
+    pg.posts[1].answer(502, {error: 'can’t fetch: waiting for herdr session default'});
     await settle();
-    assert.equal(said.textContent, 'can’t fetch: waiting for a herdr session');
+    assert.equal(said.textContent, 'can’t fetch: waiting for herdr session default');
     assert.ok(said.classList.contains('problem'), 'the error isn’t a problem');
     fetch.click();
     await settle();

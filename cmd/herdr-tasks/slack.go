@@ -240,11 +240,7 @@ func (c slackCmd) status() error {
 	// What the watcher drops when it next saves isn't counted; the file
 	// stays as it is.
 	st.Prune(c.now)
-	which := "the only herdr session running"
-	if set.Session != "" {
-		which = "herdr session " + set.Session
-	}
-	fmt.Fprintf(c.out, "Slack watcher: on, for %s, workspace %s\n", which, set.Workspace)
+	fmt.Fprintf(c.out, "Slack watcher: on, for herdr session %s, workspace %s\n", set.Session, set.Workspace)
 
 	checks := "every " + c.opts.SlackEvery + ", " + c.opts.SlackHours
 	if !strings.EqualFold(strings.TrimSpace(c.opts.SlackHours), "always") {
