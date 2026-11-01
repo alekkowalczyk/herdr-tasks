@@ -159,7 +159,8 @@ func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	if timeout == 0 {
 		timeout = defaultTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	parent := ctx
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, bin, args...)
@@ -170,10 +171,14 @@ func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
 		msg := strings.TrimSpace(stderr.String() + "\n" + stdout.String())
-		if ctx.Err() != nil {
+		switch {
+		case parent.Err() != nil:
+			return nil, fmt.Errorf("tailscale %s: %w", strings.Join(args, " "), parent.Err())
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			msg = "timed out after " + timeout.String()
 		}
-		if strings.Contains(msg, "Access denied") || strings.Contains(msg, "operator") {
+		if (strings.Contains(msg, "Access denied") || strings.Contains(msg, "operator")) &&
+			!strings.Contains(msg, "tailscale set --operator") {
 			msg += " (run: sudo tailscale set --operator=$USER)"
 		}
 		if msg == "" {

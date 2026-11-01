@@ -142,8 +142,9 @@ func TestServeAccessDenied(t *testing.T) {
 func TestCallTimesOut(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "tailscale")
-	// exec so the sleep is the process the timeout kills, not a child of it.
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexec sleep 5\n"), 0o700); err != nil {
+	// The shell is killed but its sleep keeps the output pipes open, which
+	// is what WaitDelay is for.
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	start := time.Now()
@@ -153,6 +154,39 @@ func TestCallTimesOut(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("took %v", d)
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestCallCancelledIsNotATimeout(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "tailscale")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 5\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(200*time.Millisecond, cancel)
+	start := time.Now()
+	err := CLI{Bin: bin}.Off(ctx, 7391)
+	if !errors.Is(err, context.Canceled) || strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v", err)
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("took %v", d)
+	}
+}
+
+func TestOperatorHintNotRepeated(t *testing.T) {
+	bin := filepath.Join(t.TempDir(), "tailscale")
+	script := "#!/bin/sh\necho 'Access denied: use sudo tailscale set --operator=$USER'\nexit 1\n"
+	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := CLI{Bin: bin}.Off(context.Background(), 7391)
+	if err == nil || strings.Count(err.Error(), "tailscale set --operator") != 1 {
+		t.Fatalf("err = %v", err)
 	}
 }
 
