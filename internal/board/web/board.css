@@ -819,6 +819,7 @@ body.details-below .text.long { max-height: none; }
   color: rgba(255, 255, 255, 0.5);
   font-family: "JetBrains Mono", var(--mono);
   white-space: nowrap;
+  user-select: none;
 }
 .term-name { flex: none; max-width: 40%; overflow: hidden; color: #ffffff; font-weight: 600; text-overflow: ellipsis; }
 .term-agent { flex: none; color: #8abeb7; font-weight: 600; }
@@ -832,6 +833,29 @@ body.details-below .text.long { max-height: none; }
   color: #f0c674;
   line-height: 1.35;
 }
+.term-zoom {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 6px;
+  background: rgba(33, 37, 43, 0.92);
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 15px;
+  line-height: 1;
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.12s;
+}
+.term-pane:hover .term-zoom,
+.term-zoom:focus-visible { opacity: 1; }
+.term-zoom:hover { background: #3a3f4b; color: #ffffff; }
 .term-screen { position: absolute; }
 
 .detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: 13px; }
@@ -993,6 +1017,7 @@ body.details-below .text.long { max-height: none; }
 
 @media (hover: none) {
   .card { cursor: default; }
+  .term-zoom { opacity: 1; }
 }
 
 /* The list of sessions at / */

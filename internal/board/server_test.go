@@ -179,7 +179,7 @@ func (c *fakeConn) ask(what string) {
 	c.asked = append(c.asked, what)
 }
 
-// actions is what Move, Research and Continue were asked.
+// actions is what Move, Research, Continue and ZoomPane were asked.
 func (c *fakeConn) actions() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()

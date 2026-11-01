@@ -187,6 +187,7 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("POST /api/slack/take", s.slackTake)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
 	mux.HandleFunc("POST /api/pane/input", s.paneInput)
+	mux.HandleFunc("POST /api/pane/zoom", s.paneZoom)
 	s.mux = mux
 	s.handler = auth.Wrap(mux, adminOnly)
 	return s

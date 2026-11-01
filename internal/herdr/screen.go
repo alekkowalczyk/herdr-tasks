@@ -56,6 +56,16 @@ func (c *Client) SendKeys(paneID string, keys ...string) error {
 	return c.Call("pane.send_keys", map[string]any{"pane_id": paneID, "keys": keys}, nil)
 }
 
+// ZoomPane zooms a pane to its whole tab, focusing it, or shows all the
+// tab's panes again.
+func (c *Client) ZoomPane(paneID string, on bool) error {
+	mode := "off"
+	if on {
+		mode = "on"
+	}
+	return c.Call("pane.zoom", map[string]any{"pane_id": paneID, "mode": mode}, nil)
+}
+
 // Paste pastes text into a pane: herdr wraps it in bracketed paste when the
 // pane has that turned on.
 func (c *Client) Paste(paneID, text string) error {

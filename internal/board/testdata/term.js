@@ -178,6 +178,8 @@ function page(platform) {
     hold: false, // input requests wait for release
     waiting: [],
     inputReplies: [], // how input requests fail, in turn, once released
+    zooms: [], // each zoom request, as {session, pane, zoom, key}
+    zoomReplies: [], // how zoom requests fail, in turn
     inFlight: {},
     mostInFlight: {},
     send(name, data) {
@@ -244,6 +246,12 @@ function page(platform) {
       if (r && r.before) r.before();
       if (r) return {ok: false, status: r.status, body: null, json: async () => ({error: r.error})};
       return openStream(opts.signal);
+    }
+    if (url === '/api/pane/zoom') {
+      server.zooms.push({...JSON.parse(opts.body), key: k});
+      const r = server.zoomReplies.shift();
+      if (r) return {ok: false, status: r.status, json: async () => ({error: r.error})};
+      return {ok: true, status: 204};
     }
     assert.equal(url, '/api/pane/input');
     const req = JSON.parse(opts.body);
@@ -370,6 +378,19 @@ async function opened(platform = 'MacIntel') {
   return pg;
 }
 
+// zoomButtons is each pane's zoom button, in order.
+function zoomButtons(pg) {
+  const out = [];
+  const walk = e => {
+    for (const c of e.children) {
+      if (c.tag === 'button' && c.className === 'term-zoom') out.push(c);
+      walk(c);
+    }
+  };
+  walk(pg.box);
+  return out;
+}
+
 // heads is what each pane's header shows, in order, and its label.
 function heads(pg) {
   const out = [];
@@ -377,7 +398,7 @@ function heads(pg) {
     for (const c of e.children) {
       if (c.className === 'term-pane') {
         const head = c.children.find(h => h.className === 'term-head');
-        out.push([...head.children.filter(h => !h.hidden && h.textContent).map(h => h.textContent), c.attrs['aria-label']]);
+        out.push([...head.children.filter(h => !h.hidden && h.textContent && h.tag !== 'button').map(h => h.textContent), c.attrs['aria-label']]);
       }
       walk(c);
     }
@@ -785,6 +806,47 @@ const tests = {
     pg.hide(false);
     await settle();
     assert.equal(pg.streamKeys.length, 2, 'a closed view took up a stream');
+  },
+
+  // A pane's header has a button that zooms it to the whole tab, in herdr
+  // too, as do two clicks on the header; zoomed, it shows the tab's panes
+  // again. A tab of one pane has nothing to zoom.
+  async 'a pane zooms in herdr from its header'() {
+    const pg = await opened();
+    const zoomOf = i => zoomButtons(pg)[i];
+    const a = zoomOf(0);
+    assert.equal(a.hidden, false);
+    assert.equal(a.textContent, '⤢');
+    assert.equal(a.attrs.title, 'Zoom this pane to the whole tab, in herdr too');
+    assert.equal(a.attrs['aria-label'], 'Zoom claude: Fixing it');
+    a.fire('click', event({target: a}));
+    await settle();
+    assert.deepEqual(pg.server.zooms, [{session: 'work', pane: 'w1:p1', zoom: true, key: 'k'}]);
+
+    pg.server.send('layout', {zoomed: true, area, panes: [{...A, width: 80}]});
+    await settle();
+    assert.equal(pg.live().length, 1);
+    assert.equal(zoomButtons(pg).length, 1);
+    assert.equal(zoomOf(0).textContent, '⤡');
+    assert.equal(zoomOf(0).attrs.title, "Show all the tab's panes again, in herdr too");
+    assert.equal(zoomOf(0).attrs['aria-label'], 'Unzoom claude: Fixing it');
+    const head = zoomOf(0).parent.children.find(h => h.className === 'term-head');
+    head.fire('dblclick', event({target: head}));
+    await settle();
+    assert.deepEqual(pg.server.zooms[1], {session: 'work', pane: 'w1:p1', zoom: false, key: 'k'});
+
+    pg.server.zoomReplies.push({status: 502, error: 'herdr: no pane w1:p1'});
+    zoomOf(0).fire('click', event({target: zoomOf(0)}));
+    await settle();
+    assert.deepEqual(pg.toasts, ['herdr: no pane w1:p1']);
+    pg.server.zoomReplies.push({status: 401, error: 'Sign in again.'});
+    zoomOf(0).fire('click', event({target: zoomOf(0)}));
+    await settle();
+    assert.deepEqual(pg.signOuts, ['k']);
+
+    pg.server.send('layout', {zoomed: false, area, panes: [A]});
+    await settle();
+    assert.equal(zoomOf(0).hidden, true, 'a lone pane offers a zoom');
   },
 };
 

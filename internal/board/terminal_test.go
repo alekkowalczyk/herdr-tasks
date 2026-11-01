@@ -96,6 +96,30 @@ func (c *fakeConn) zoom(tab, pane string) {
 	c.layouts[tab].Zoomed, c.layouts[tab].Focused = true, pane
 }
 
+// ZoomPane zooms a pane as herdr does: its tab shows it alone, focused, or
+// all its panes again. It's asked as "zoom <pane> on" or "... off".
+func (c *fakeConn) ZoomPane(paneID string, on bool) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.down {
+		return errDown
+	}
+	for _, p := range c.panes {
+		if p.ID != paneID {
+			continue
+		}
+		if l, ok := c.layouts[p.TabID]; ok {
+			l.Zoomed = on
+			if on {
+				l.Focused = paneID
+			}
+		}
+		c.asked = append(c.asked, "zoom "+paneID+" "+map[bool]string{true: "on", false: "off"}[on])
+		return nil
+	}
+	return &herdr.Error{Code: "pane_not_found", Message: "no pane " + paneID}
+}
+
 // stopAnswering has herdr stop answering, as when it quits.
 func (c *fakeConn) stopAnswering() {
 	c.mu.Lock()
@@ -426,6 +450,71 @@ func TestZoomedTabShowsTheFocusedPane(t *testing.T) {
 	quiet(t, events, 200*time.Millisecond)
 	if n := work.readsOf("w1:p1"); n != 0 {
 		t.Errorf("the hidden pane was read %d times", n)
+	}
+}
+
+// untilLayout reads events until a layout that ok takes.
+func untilLayout(t *testing.T, events <-chan sseEvent, ok func(termLayout) bool) termLayout {
+	t.Helper()
+	for {
+		ev := nextEvent(t, events)
+		var l termLayout
+		if ev.name == "layout" && json.Unmarshal([]byte(ev.data), &l) == nil && ok(l) {
+			return l
+		}
+	}
+}
+
+func TestZoomZoomsAPaneInHerdr(t *testing.T) {
+	work := termTab(t)
+	ts := startServer(t, Config{Sessions: running(work)}, quickTerms)
+	ts.shows(t, "work", "w1:t1")
+	events, _ := ts.tabStream(t, "work", "w1:t1")
+	opening(t, events)
+
+	if code, msg := ts.postTo(t, "/api/pane/zoom", `{"session":"work","pane":"w1:p2","zoom":true}`); code != http.StatusNoContent {
+		t.Fatalf("zoom: %d %q", code, msg)
+	}
+	l := untilLayout(t, events, func(l termLayout) bool { return l.Zoomed })
+	if len(l.Panes) != 1 || l.Panes[0].Pane != "w1:p2" {
+		t.Errorf("zoomed layout shows %+v, want w1:p2 alone", l.Panes)
+	}
+	if code, msg := ts.postTo(t, "/api/pane/zoom", `{"session":"work","pane":"w1:p2","zoom":false}`); code != http.StatusNoContent {
+		t.Fatalf("unzoom: %d %q", code, msg)
+	}
+	untilLayout(t, events, func(l termLayout) bool { return !l.Zoomed && len(l.Panes) == 2 })
+	if got, want := work.actions(), []string{"zoom w1:p2 on", "zoom w1:p2 off"}; !slices.Equal(got, want) {
+		t.Errorf("asked herdr %q, want %q", got, want)
+	}
+}
+
+func TestZoomChecksTheRequest(t *testing.T) {
+	work := termTab(t)
+	ts := startServer(t, Config{Sessions: running(work)}, quickTerms)
+	ts.shows(t, "work", "w1:t1")
+	for _, c := range []struct {
+		what, body string
+		want       int
+	}{
+		{"not JSON", `zoom`, 400},
+		{"no pane", `{"session":"work","zoom":true}`, 400},
+		{"no session", `{"pane":"w1:p1","zoom":true}`, 400},
+		{"another session", `{"session":"home","pane":"w1:p1","zoom":true}`, 404},
+		// The strip, a pane in a tool tab, and a pane that isn't there.
+		{"the strip", `{"session":"work","pane":"w1:p3","zoom":true}`, 403},
+		{"a tool tab's pane", `{"session":"work","pane":"w1:p4","zoom":true}`, 403},
+		{"no such pane", `{"session":"work","pane":"w1:p9","zoom":true}`, 403},
+	} {
+		if code, msg := ts.postTo(t, "/api/pane/zoom", c.body); code != c.want || msg == "" {
+			t.Errorf("%s: %d %q, want %d with an error", c.what, code, msg, c.want)
+		}
+	}
+	if got := work.actions(); len(got) != 0 {
+		t.Errorf("asked herdr %q", got)
+	}
+	work.stopAnswering()
+	if code, msg := ts.postTo(t, "/api/pane/zoom", `{"session":"work","pane":"w1:p1","zoom":true}`); code != http.StatusBadGateway || msg == "" {
+		t.Errorf("with herdr not answering: %d %q, want 502 with an error", code, msg)
 	}
 }
 

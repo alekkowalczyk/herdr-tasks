@@ -408,6 +408,34 @@ func TestTypeTextSendKeysPaste(t *testing.T) {
 	}
 }
 
+// ZoomPane sets the zoom rather than toggling it, so two clicks on the same
+// button can't undo each other.
+func TestZoomPaneSetsTheZoom(t *testing.T) {
+	f := newFake(t, func(req request, conn net.Conn) {
+		send(conn, `{"id":"herdr-tasks","result":{"type":"pane_zoom","zoom":{"changed":true,"zoom_changed":true,"focus_changed":false,
+			"pane_id":"w1:p4","focused_pane_id":"w1:p4","zoomed":true,"layout":{}}}}`)
+	})
+	if err := f.client.ZoomPane("w1:p4", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.client.ZoomPane("w1:p4", false); err != nil {
+		t.Fatal(err)
+	}
+	reqs := f.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("got %d requests, want 2: %+v", len(reqs), reqs)
+	}
+	for i, mode := range []string{"on", "off"} {
+		var params map[string]any
+		if err := json.Unmarshal(reqs[i].Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if want := map[string]any{"pane_id": "w1:p4", "mode": mode}; reqs[i].Method != "pane.zoom" || !reflect.DeepEqual(params, want) {
+			t.Errorf("request %d = %s %v, want pane.zoom %v", i, reqs[i].Method, params, want)
+		}
+	}
+}
+
 func TestTabLayoutDecodesFocusedAndRects(t *testing.T) {
 	f := newFake(t, func(req request, conn net.Conn) {
 		send(conn, `{"id":"herdr-tasks","result":{"type":"pane_layout","layout":{"workspace_id":"w1","tab_id":"w1:t2",

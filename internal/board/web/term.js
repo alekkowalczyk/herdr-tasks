@@ -244,7 +244,13 @@
         p.agent.textContent = info.agent || '';
         p.agent.hidden = !info.agent;
         p.title.textContent = info.title || (info.agent || info.name ? '' : 'Shell');
-        p.el.setAttribute('aria-label', [info.name, info.agent, info.title].filter(Boolean).join(': ') || 'Terminal');
+        const label = [info.name, info.agent, info.title].filter(Boolean).join(': ') || 'Terminal';
+        p.el.setAttribute('aria-label', label);
+        // A tab of one pane has nothing to zoom.
+        p.zoom.hidden = !l.zoomed && l.panes.length < 2;
+        p.zoom.textContent = l.zoomed ? '⤡' : '⤢';
+        p.zoom.setAttribute('title', l.zoomed ? "Show all the tab's panes again, in herdr too" : 'Zoom this pane to the whole tab, in herdr too');
+        p.zoom.setAttribute('aria-label', (l.zoomed ? 'Unzoom ' : 'Zoom ') + label);
       }
       setStatus(l.panes.length ? '' : 'This tab has no panes to show. It may have closed.');
       place();
@@ -274,10 +280,15 @@
       p.title = el('span', 'term-title');
       p.badge = el('span', 'term-badge', 'scrolled back in herdr');
       p.badge.hidden = true;
+      p.zoom = el('button', 'term-zoom');
+      p.zoom.setAttribute('type', 'button');
+      p.zoom.addEventListener('click', () => zoom(p));
+      // Two clicks on the header zoom too, as the button is small.
+      head.addEventListener('dblclick', () => zoom(p));
       head.append(p.name, p.agent, p.title, p.badge);
       p.head = head;
       p.screen = el('div', 'term-screen');
-      p.el.append(head, p.screen);
+      p.el.append(head, p.screen, p.zoom);
       stage.append(p.el);
 
       const term = new window.Terminal({
@@ -358,6 +369,26 @@
       p.el.addEventListener('focusin', () => p.el.classList.add('focused'));
       p.el.addEventListener('focusout', () => p.el.classList.remove('focused'));
       return p;
+    }
+
+    // zoom zooms a pane to the whole tab in herdr, or shows all the tab's
+    // panes again. The next layout shows it.
+    async function zoom(p) {
+      const k = opts.key();
+      try {
+        const res = await fetch('/api/pane/zoom', {
+          method: 'POST',
+          headers: {Authorization: 'Bearer ' + k, 'Content-Type': 'application/json'},
+          body: JSON.stringify({session: opts.session, pane: p.id, zoom: !(layout && layout.zoomed)}),
+        });
+        if (res.status === 401) {
+          if (!opts.signOut(k)) opts.toast('Signed in again. Try that again.');
+        } else if (!res.ok) {
+          opts.toast((await message(res)) || 'herdr didn’t zoom the pane.');
+        }
+      } catch (e) {
+        opts.toast('The board server isn’t answering.');
+      }
     }
 
     function gotScreen(s) {

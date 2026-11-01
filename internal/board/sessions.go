@@ -65,6 +65,9 @@ type SessionConn interface {
 	TypeText(paneID, text string) error
 	SendKeys(paneID string, keys ...string) error
 	Paste(paneID, text string) error
+	// ZoomPane zooms a pane to its whole tab in herdr, or shows all the
+	// tab's panes again.
+	ZoomPane(paneID string, on bool) error
 }
 
 // HerdrSessions is every herdr session of this user whose server is
@@ -127,6 +130,9 @@ func (s herdrSession) SendKeys(paneID string, keys ...string) error {
 	return s.c.SendKeys(paneID, keys...)
 }
 func (s herdrSession) Paste(paneID, text string) error { return s.c.Paste(paneID, text) }
+func (s herdrSession) ZoomPane(paneID string, on bool) error {
+	return s.c.ZoomPane(paneID, on)
+}
 
 // Ended: herdr may also leave its socket when it ends. That one is left out
 // of the list for a few ticks before it goes.

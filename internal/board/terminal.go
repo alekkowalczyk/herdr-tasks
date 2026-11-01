@@ -636,6 +636,43 @@ func (s *Server) paneInput(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// paneZoom zooms a pane of a task's tab to the whole tab in herdr, or shows
+// all the tab's panes again. The tab's pages see it in the next layout.
+func (s *Server) paneZoom(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Session string `json:"session"`
+		Pane    string `json:"pane"`
+		Zoom    bool   `json:"zoom"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "That isn't a zoom request.")
+		return
+	}
+	if req.Session == "" || req.Pane == "" {
+		writeError(w, http.StatusBadRequest, "A zoom request needs a session and a pane.")
+		return
+	}
+	conn, ok := s.hub.conn(req.Session)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session))
+		return
+	}
+	tab, err := s.paneTab(req.Session, conn, req.Pane)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, herdrMessage(err))
+		return
+	}
+	if tab == "" || !s.onBoard(req.Session, tab) {
+		writeError(w, http.StatusForbidden, "You can only zoom the panes of a task's tab.")
+		return
+	}
+	if err := conn.ZoomPane(req.Pane, req.Zoom); err != nil {
+		writeError(w, http.StatusBadGateway, herdrMessage(err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // paneTab is the tab a pane is in, or "" when there's no such pane or it's
 // the task strip. A tab's poller knows its panes; for others, it asks herdr.
 func (s *Server) paneTab(session string, conn SessionConn, pane string) (string, error) {
