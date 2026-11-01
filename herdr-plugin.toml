@@ -1,6 +1,6 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.9.0"
+version = "0.10.0"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
@@ -43,6 +43,11 @@ command = ["bin/herdr-tasks", "sync"]
 id = "board"
 title = "Open task board"
 command = ["bin/herdr-tasks", "board"]
+
+[[actions]]
+id = "slack-fetch"
+title = "Fetch Slack asks"
+command = ["bin/herdr-tasks", "slack", "fetch"]
 
 [[events]]
 on = "tab.created"

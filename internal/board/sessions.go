@@ -6,11 +6,15 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
+	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
@@ -38,6 +42,16 @@ type SessionConn interface {
 	Change(tabID string, fn func(*task.Task) error) error
 	// Focus shows the tab in herdr.
 	Focus(tabID string) error
+	// Move moves a tab's task, with its panes, to another workspace, by ID
+	// or label, and returns its new tab. A move that went wrong partway
+	// returns the new tab and the error.
+	Move(tabID, workspace string) (string, error)
+	// Research starts a Slack task's research session. It waits for Claude
+	// to be ready, which can take a few minutes.
+	Research(tabID string) error
+	// Continue ends a Slack task's locked research session and resumes it
+	// with your own tools.
+	Continue(tabID string) error
 	// Subscribe calls fn for herdr events that can change the board, until
 	// ctx ends or herdr closes the connection.
 	Subscribe(ctx context.Context, fn func(herdr.Event)) error
@@ -130,6 +144,45 @@ func (s herdrSession) Change(tabID string, fn func(*task.Task) error) error {
 	}
 	_, err = reconcile.ChangeTask(strip.Host{Client: s.c}, s.st, opts, time.Now(), tabID, fn)
 	return err
+}
+
+// Move, Research and Continue do what the strip's keys do, through herdr
+// and the state in s's folder, with the settings read each time.
+func (s herdrSession) Move(tabID, workspace string) (string, error) {
+	opts, err := reconcile.LoadOptions()
+	if err != nil {
+		return "", fmt.Errorf("reading config: %w", err)
+	}
+	return move.Task(strip.Host{Client: s.c}, s.st, opts, time.Now(), tabID, workspace)
+}
+
+func (s herdrSession) Research(tabID string) error {
+	opts, err := reconcile.LoadOptions()
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	home, _ := os.UserHomeDir()
+	set, err := slack.SettingsFrom(opts, home)
+	if err != nil {
+		return err
+	}
+	// The guard's hook runs this binary.
+	exe, err := os.Executable()
+	if err == nil {
+		exe, err = filepath.EvalSymlinks(exe)
+	}
+	if err != nil {
+		return err
+	}
+	return slack.StartResearch(strip.Host{Client: s.c}, s.st, opts, set, tabID, exe, s.st.Dir, time.Now())
+}
+
+func (s herdrSession) Continue(tabID string) error {
+	opts, err := reconcile.LoadOptions()
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	return slack.Continue(strip.Host{Client: s.c}, s.st, opts, tabID, syscall.Kill, time.Now())
 }
 
 func (s herdrSession) Subscribe(ctx context.Context, fn func(herdr.Event)) error {

@@ -2,16 +2,79 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
+
+// mainArgs is set in a child test process that runs main with these
+// arguments, as JSON. See runMain.
+const mainArgs = "HERDR_TASKS_TEST_MAIN_ARGS"
+
+func TestMain(m *testing.M) {
+	if v, ok := os.LookupEnv(mainArgs); ok {
+		var args []string
+		if err := json.Unmarshal([]byte(v), &args); err != nil {
+			fmt.Fprintln(os.Stderr, "bad", mainArgs, err)
+			os.Exit(100)
+		}
+		os.Args = append([]string{"herdr-tasks"}, args...)
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+
+// runMain runs herdr-tasks with args and stdin in a child process, the test
+// binary, and returns how it exited and what it printed.
+func runMain(t *testing.T, stdin string, args ...string) (code int, stdout, stderr string) {
+	t.Helper()
+	b, err := json.Marshal(args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), mainArgs+"="+string(b), "HOME="+t.TempDir(),
+		"HERDR_PLUGIN_STATE_DIR="+t.TempDir(), "HERDR_PLUGIN_CONFIG_DIR="+t.TempDir())
+	cmd.Stdin = strings.NewReader(stdin)
+	var out, errOut bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errOut
+	err = cmd.Run()
+	var exit *exec.ExitError
+	if err != nil && !errors.As(err, &exit) {
+		t.Fatal(err)
+	}
+	return cmd.ProcessState.ExitCode(), out.String(), errOut.String()
+}
+
+func TestSlackGuardCommandExitsTwo(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "acme-harness")
+	code, stdout, stderr := runMain(t, "not json", "slack-guard", "research", dir)
+	if code != 2 || stdout != "" || !strings.HasPrefix(stderr, "herdr-tasks: ") {
+		t.Errorf("bad input: exit %d, stdout %q, stderr %q; want exit 2 and the error on stderr", code, stdout, stderr)
+	}
+	code, _, stderr = runMain(t, `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "slack-guard", "research")
+	if code != 2 || stderr == "" {
+		t.Errorf("no folder: exit %d, stderr %q; want exit 2 and the error", code, stderr)
+	}
+
+	// A call it can read is decided, and the command succeeds.
+	code, stdout, _ = runMain(t, `{"tool_name":"Bash","tool_input":{"command":"ls"}}`, "slack-guard", "research", dir)
+	if code != 0 || !strings.Contains(stdout, `"permissionDecision":"deny"`) {
+		t.Errorf("Bash: exit %d, stdout %q; want 0 and a deny", code, stdout)
+	}
+}
 
 // onTask returns a change func that edits tk, as a.change edits the target
 // tab's task.
@@ -137,6 +200,21 @@ func TestShowPrintsAgentTextCleaned(t *testing.T) {
 	}
 }
 
+func TestShowNumbersLinksAsLinkRmTakesThem(t *testing.T) {
+	tk := &task.Task{TabID: "w1:t1", Stage: task.Active, Since: time.Now(), Links: []task.Link{
+		{URL: "http://localhost:4100/showcase"},
+		{URL: "https://linear.app/acme/issue/ABC-12"},
+	}}
+	var out bytes.Buffer
+	printTask(&out, tk, tk.TabID, "", 1, time.Now())
+	if s := out.String(); !strings.Contains(s, "1. ABC-12  ") || !strings.Contains(s, "2. localhost:4100/showcase  ") {
+		t.Errorf("show numbers the links in stored order:\n%s", s)
+	}
+	if l, err := tk.RemoveLink("1"); err != nil || l.URL != "https://linear.app/acme/issue/ABC-12" {
+		t.Errorf("link rm 1 = %+v, %v; want ABC-12, shown as 1", l, err)
+	}
+}
+
 func TestLinkAddRefusesWhatItCantSave(t *testing.T) {
 	for _, target := range []string{"https://example.com/100%done", "https://example.com/a#100%", "https://example.com/%0A", "https://example.com/\x1b[2J", "foo bar"} {
 		for _, by := range []string{"", "claude"} {
@@ -157,5 +235,70 @@ func TestLinkAddRefusesWhatItCantSave(t *testing.T) {
 	tk := &task.Task{}
 	if err := linkAdd(onTask(tk), io.Discard, "https://example.com/?q=50%off", "", "", ""); err != nil || len(tk.Links) != 1 {
 		t.Errorf("link add with a %% in the query = %v, links %+v; want it added", err, tk.Links)
+	}
+}
+
+// A command in a moved pane has the pane's and tab's IDs from before the
+// move; it applies to the tab the pane is in now.
+func TestTargetTabFollowsAMovedPane(t *testing.T) {
+	tab, st, c := movedTask(t, &task.Task{TabID: "w1:t1", Workspace: "infra", Title: "Reply to Dana"})
+	t.Setenv("HERDR_PANE_ID", "w1:p2")
+	t.Setenv("HERDR_TAB_ID", "w1:t1")
+	t.Setenv("HERDR_ACTIVE_TAB_ID", "")
+	a := &app{client: c, store: st}
+	if got, err := a.targetTab(); err != nil || got != tab {
+		t.Errorf("targetTab = %q, %v; want %s", got, err, tab)
+	}
+}
+
+// The tab bar previews the link the strip and show list first: an issue
+// before a page added earlier.
+func TestStatusLinePreviewsTheFirstLinkShown(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	t.Setenv("HERDR_ACTIVE_TAB_ID", "w1:t1")
+	st := seed(t, map[string]*task.Task{"w1:t1": {TabID: "w1:t1", Stage: task.Active, Links: []task.Link{
+		{URL: "http://localhost:4100/demo", Label: "Demo", By: "claude"},
+		{URL: "https://linear.app/acme/issue/ABC-12/fix-login"},
+	}}})
+	a := &app{store: st}
+	line, err := a.statusLine()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(line, "↗ ABC-12") {
+		t.Errorf("status line = %q, want it to end in ↗ ABC-12", line)
+	}
+}
+
+func TestMoveCommand(t *testing.T) {
+	code, stdout, stderr := runMain(t, "", "move")
+	if code == 0 || stdout != "" || !strings.Contains(stderr, "move <workspace>") {
+		t.Errorf("move with no name: exit %d, stdout %q, stderr %q; want a failure naming move <workspace>", code, stdout, stderr)
+	}
+}
+
+func TestMoveSaysWhereItWent(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	st := store.New("test")
+	if err := st.Update(func(s *store.State) error {
+		s.Tasks = map[string]*task.Task{"w2:n1": {TabID: "w2:n1", Workspace: "billing"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := moveAndSay(&out, st, "BILLING", func() (string, error) { return "w2:n1", nil }); err != nil || out.String() != "herdr-tasks: moved to billing\n" {
+		t.Errorf("said %q, err %v; want the confirmation with the stored label", out.String(), err)
+	}
+	// A partial move still says where it went, then returns the error.
+	out.Reset()
+	boom := errors.New("Moved 1 of 2 panes")
+	if err := moveAndSay(&out, st, "billing", func() (string, error) { return "w2:n1", boom }); err != boom || out.Len() == 0 {
+		t.Errorf("said %q, err %v; want the confirmation and the error", out.String(), err)
+	}
+	// Nothing moved: no confirmation.
+	out.Reset()
+	if err := moveAndSay(&out, st, "billing", func() (string, error) { return "", boom }); err != boom || out.Len() != 0 {
+		t.Errorf("said %q, err %v; want only the error", out.String(), err)
 	}
 }

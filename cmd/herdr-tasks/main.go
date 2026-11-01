@@ -18,15 +18,17 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudehook"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.9.0"
+const version = "0.10.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -46,6 +48,7 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks link rm <number|url|issue ID>
   herdr-tasks show [--json]                               this tab's task
   herdr-tasks list [--json]                               every task
+  herdr-tasks move <workspace>                            move this task, with its panes, to another workspace
   herdr-tasks rename <name>                               name the task (empty: tab number)
 
   herdr-tasks setup [--no-config]   put herdr-tasks on PATH, add herdr config, sync
@@ -73,6 +76,21 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks claude-hook   run by Claude Code on prompts, replies, and tool
                             calls, to link the Linear issues, Slack links, and
                             pages they name to the task (claude_links = true)
+  herdr-tasks slack-guard   run by Claude Code before each tool call in a Slack
+                            check, topic check, or research session, to keep
+                            it to reading and answering
+  herdr-tasks slack status          the Slack watcher: its settings, last check, and any
+                                    problem (slack_watch = true)
+  herdr-tasks slack fetch           check Slack for asks now, even with the watcher off
+  herdr-tasks slack skipped         the asks that made no task: off-topic, or maybe
+                                    answered already
+  herdr-tasks slack take <n>        make the task for a skipped ask, by its number
+                                    or its link
+  herdr-tasks slack mutes           the channels it ignores
+  herdr-tasks slack unmute <channel>  stop ignoring a channel you muted from a card
+  herdr-tasks slack research        start research for this tab's Slack ask
+  herdr-tasks slack continue        end its research session and resume it with your
+                                    own settings and tools
   herdr-tasks config        print the herdr config lines setup adds
   herdr-tasks config --merge     read a herdr config on stdin, print it with the
                                  herdr-tasks lines added (for a config on another
@@ -86,9 +104,23 @@ func main() {
 		if !errors.Is(err, errShown) {
 			fmt.Fprintln(os.Stderr, "herdr-tasks:", err)
 		}
-		os.Exit(1)
+		code := 1
+		var e exitError
+		if errors.As(err, &e) {
+			code = e.code
+		}
+		os.Exit(code)
 	}
 }
+
+// exitError makes main exit with code instead of 1.
+type exitError struct {
+	code int
+	err  error
+}
+
+func (e exitError) Error() string { return e.err.Error() }
+func (e exitError) Unwrap() error { return e.err }
 
 type app struct {
 	client *herdr.Client
@@ -170,6 +202,12 @@ func run(args []string) error {
 		return configCmd(rest)
 	case "claude-hook":
 		return runClaudeHook()
+	case "slack-guard":
+		// Claude Code blocks a tool call when its PreToolUse hook exits 2.
+		if err := slack.Guard(rest, os.Stdin, os.Stdout); err != nil {
+			return exitError{code: 2, err: err}
+		}
+		return nil
 	case "linear-key":
 		return linearKey(rest, os.Stdin, os.Stdout, linear.SaveKey, linear.DeleteKey, store.Dir())
 	}
@@ -222,6 +260,10 @@ func run(args []string) error {
 		return a.note()
 	case "link":
 		return a.link()
+	case "move":
+		return a.move()
+	case "slack":
+		return a.slack()
 	case "rename":
 		title := task.CleanLabel(a.flags.text())
 		return a.change(func(t *task.Task) error { t.Title = title; return nil })
@@ -241,7 +283,7 @@ func (a *app) targetTab() (string, error) {
 	}
 	if p := os.Getenv("HERDR_PANE_ID"); p != "" {
 		// Ask herdr, since the pane may have moved since it started.
-		if id, err := a.client.PaneTab(p); err == nil && id != "" {
+		if id, err := paneTab(a.client, a.store, p); err == nil {
 			return id, nil
 		}
 	}
@@ -258,6 +300,38 @@ func (a *app) targetTab() (string, error) {
 		return t.ID, nil
 	}
 	return "", errors.New("no tab to apply this to; pass --tab ID")
+}
+
+// maxAliasHops is how many of a move's pane aliases paneTab follows.
+const maxAliasHops = 5
+
+// paneTab is the tab pane is in now. A process knows its pane by the ID it
+// had when it started, and a move gives a pane a new one: when herdr doesn't
+// know pane, the IDs moves gave it, kept in st, lead to the pane it is now.
+func paneTab(c *herdr.Client, st *store.Store, pane string) (string, error) {
+	tab, err := c.PaneTab(pane)
+	if err == nil && tab != "" {
+		return tab, nil
+	}
+	if err == nil {
+		err = fmt.Errorf("no tab for pane %s", pane)
+	}
+	s, lerr := st.Load()
+	if lerr != nil {
+		return "", err
+	}
+	p := pane
+	for range maxAliasHops {
+		next, ok := s.PaneAliases[p]
+		if !ok {
+			break
+		}
+		p = next
+		if tab, aerr := c.PaneTab(p); aerr == nil && tab != "" {
+			return tab, nil
+		}
+	}
+	return "", err
 }
 
 // change edits the target tab's task and syncs herdr.
@@ -448,8 +522,9 @@ func printTask(w io.Writer, t *task.Task, id, agentStatus string, pos int, now t
 		}
 	}
 	if len(t.Links) > 0 {
+		// Numbered as `link rm` takes them.
 		fmt.Fprintln(w, "\nLinks:")
-		for i, l := range t.Links {
+		for i, l := range task.Grouped(t.Links) {
 			line := task.CleanLabel(l.Display()) + "  " + l.URL
 			if !task.SafeURL(l.URL) {
 				// Not the URL itself: a terminal could still find a link in it.
@@ -497,7 +572,7 @@ func (a *app) list() error {
 				info = "waiting for " + reason
 			}
 		} else if len(t.Links) > 0 {
-			info = "↗ " + task.CleanLabel(t.Links[0].Display())
+			info = linkPreview(t)
 		}
 		pri := " "
 		if t.Priority {
@@ -508,13 +583,28 @@ func (a *app) list() error {
 	return nil
 }
 
+// linkPreview is "↗" and t's first link, cleaned, in the order show and
+// the strip list them. t has links.
+func linkPreview(t *task.Task) string {
+	return "↗ " + task.CleanLabel(task.Grouped(t.Links)[0].Display())
+}
+
 // status prints one line for herdr's tab bar: the current space's stage
 // counts, then the current task's pause reason or first link. It only reads
 // the state file, since herdr runs it every few seconds.
 func (a *app) status() error {
-	st, err := a.store.Load()
+	line, err := a.statusLine()
 	if err != nil {
 		return err
+	}
+	fmt.Println(line)
+	return nil
+}
+
+func (a *app) statusLine() (string, error) {
+	st, err := a.store.Load()
+	if err != nil {
+		return "", err
 	}
 	ws := os.Getenv("HERDR_ACTIVE_WORKSPACE_ID")
 	tab := os.Getenv("HERDR_ACTIVE_TAB_ID")
@@ -546,14 +636,16 @@ func (a *app) status() error {
 		case t.Stage.TakesReason() && reason != "":
 			extra = t.Stage.Glyph() + " " + reason
 		case len(t.Links) > 0:
-			extra = "↗ " + task.CleanLabel(t.Links[0].Display())
+			extra = linkPreview(t)
 		}
 		if extra != "" {
 			line += "  " + extra
 		}
 	}
-	fmt.Println(line)
-	return nil
+	if slackTrouble(a.opts, a.store.Session, a.store.Dir) {
+		line += "  Slack ⚠"
+	}
+	return line, nil
 }
 
 // hook runs on herdr startup and tab or space events.
@@ -573,7 +665,7 @@ func (a *app) hook() error {
 	}
 	if ev != nil && ev.Name == "startup" {
 		a.opts.Startup = true
-		if a.opts.Board {
+		if a.opts.Board || a.opts.SlackWatch {
 			a.startBoard()
 		}
 	}
@@ -840,6 +932,37 @@ func (a *app) stripToggle() error {
 		t.SetStrip(true) // reconciliation adds it
 		return nil
 	})
+	return err
+}
+
+// move moves the target tab's task, with its panes, to another workspace.
+func (a *app) move() error {
+	to := strings.TrimSpace(a.flags.text())
+	if to == "" {
+		return errors.New("move <workspace>")
+	}
+	id, err := a.targetTab()
+	if err != nil {
+		return err
+	}
+	return moveAndSay(os.Stdout, a.store, to, func() (string, error) {
+		return move.Task(a.host(), a.store, a.opts, time.Now(), id, to)
+	})
+}
+
+// moveAndSay runs a move and confirms it, even when only some panes moved.
+// The workspace label comes from the moved task, else it's what you typed.
+func moveAndSay(w io.Writer, st *store.Store, to string, do func() (string, error)) error {
+	tab, err := do()
+	if tab == "" {
+		return err
+	}
+	if s, lerr := st.Load(); lerr == nil {
+		if t, ok := s.Tasks[tab]; ok && t.Workspace != "" {
+			to = t.Workspace
+		}
+	}
+	fmt.Fprintln(w, "herdr-tasks: moved to "+to)
 	return err
 }
 

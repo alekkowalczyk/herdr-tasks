@@ -19,11 +19,13 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -45,8 +47,9 @@ var pageTypes = map[string]string{
 }
 
 // Config is what the server knows about itself, and where the board comes
-// from. Sessions, Linear, Options, Claude and Now may be nil: no sessions,
-// no Linear key, settings never checked, no recaps, and time.Now.
+// from. Sessions, Linear, Options, Claude, Slack, SlackFetch, SlackTake and
+// Now may be nil: no sessions, no Linear key, settings never checked, no
+// recaps, no Slack line, no fetch, no take, and time.Now.
 type Config struct {
 	StateDir string // the plugin's state dir; board.json goes in its board folder
 	Port     int
@@ -60,11 +63,21 @@ type Config struct {
 	// may keep the key between refreshes.
 	Linear func() (*linear.Client, bool)
 	// Options reads the settings. The server shuts down when they turn the
-	// board off or move it to another port.
+	// board and the Slack watcher off, or move the board to another port.
 	Options func() (reconcile.Options, error)
 	// Claude reads the session logs of Claude panes.
 	Claude *claudelog.Cache
-	Now    func() time.Time
+	// Slack is the Slack watcher's status. The board shows it while it's on
+	// or offers a fetch.
+	Slack func() slack.Status
+	// SlackFetch checks Slack for asks now, as `slack fetch` does, and says
+	// what it did.
+	SlackFetch func(ctx context.Context) (string, error)
+	// SlackTake makes the task for a skipped ask, by its message ID, and
+	// says where it went, as `slack take` does. An ask that isn't on the
+	// list is slack.ErrNoSkippedAsk.
+	SlackTake func(ctx context.Context, id string) (string, error)
+	Now       func() time.Time
 }
 
 // Server is the board's web server, for every running herdr session.
@@ -81,9 +94,10 @@ type Server struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	handler http.Handler
-	hub     *hub
-	terms   terminals
+	handler  http.Handler
+	hub      *hub
+	terms    terminals
+	fetching atomic.Bool // a fetch from the board runs
 
 	// How often things happen and how long they may take. Tests shorten them.
 	tick        time.Duration // look for sessions and read the settings
@@ -132,6 +146,8 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("POST /api/task", s.changeTask)
 	mux.HandleFunc("POST /api/open", s.openLink)
+	mux.HandleFunc("POST /api/slack/fetch", s.slackFetch)
+	mux.HandleFunc("POST /api/slack/take", s.slackTake)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
 	mux.HandleFunc("POST /api/pane/input", s.paneInput)
 	s.handler = auth.Wrap(mux, adminOnly)
@@ -161,6 +177,10 @@ func files(page fs.FS) http.Handler {
 func (s *Server) meta() Meta {
 	return Meta{PID: os.Getpid(), Port: s.cfg.Port, Version: s.cfg.Version, Build: s.cfg.Build, Exe: s.cfg.Exe}
 }
+
+// Refresh has the board built again, so it shows what changed outside the
+// sessions, such as the Slack watcher's status.
+func (s *Server) Refresh() { signal(s.hub.dirty) }
 
 func (s *Server) now() time.Time {
 	if s.cfg.Now != nil {
@@ -297,13 +317,21 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 
 // taskRequest is what POST /api/task takes.
 type taskRequest struct {
-	Session string `json:"session"`
-	Tab     string `json:"tab"`
-	Action  string `json:"action"` // stage, priority, focus or unlink
-	Stage   string `json:"stage"`  // stage: the column the card goes to
-	Reason  string `json:"reason"` // stage: what an In review or Paused task waits for; empty keeps it
-	On      bool   `json:"on"`     // priority
-	URL     string `json:"url"`    // unlink
+	Session   string `json:"session"`
+	Tab       string `json:"tab"`
+	Action    string `json:"action"`    // stage, priority, focus, unlink, move, research, continue or mute
+	Stage     string `json:"stage"`     // stage: the column the card goes to
+	Reason    string `json:"reason"`    // stage: what an In review or Paused task waits for; empty keeps it
+	On        bool   `json:"on"`        // priority
+	URL       string `json:"url"`       // unlink
+	Workspace string `json:"workspace"` // move: the workspace's ID or label
+}
+
+// moveReply is what POST /api/task answers a move with: the task's new tab,
+// and, when the move went wrong partway, what went wrong.
+type moveReply struct {
+	Tab   string `json:"tab"`
+	Error string `json:"error,omitempty"`
 }
 
 // taskError is a task request that can't be done, with the status to answer.
@@ -322,18 +350,29 @@ var columnStages = map[task.Group]task.Stage{
 }
 
 // changeTask changes a task or shows its tab in herdr, and has the session
-// read again, so the board shows the change at once.
+// read again, so the board shows the change at once. A move answers with
+// the task's new tab.
+//
+// Starting research waits for Claude to be ready, a few minutes at most,
+// and the request waits with it: the server has no write timeout, as its
+// streams stay open.
 func (s *Server) changeTask(w http.ResponseWriter, r *http.Request) {
 	var req taskRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "That isn't a task request.")
 		return
 	}
-	err := s.doTask(req)
+	tab, err := s.doTask(r.Context(), req)
 	var te *taskError
 	switch {
+	case err == nil && tab != "":
+		writeJSON(w, http.StatusOK, moveReply{Tab: tab})
 	case err == nil:
 		w.WriteHeader(http.StatusNoContent)
+	case tab != "":
+		// The task moved, but not all of it went well. The page follows it
+		// all the same.
+		writeJSON(w, http.StatusInternalServerError, moveReply{Tab: tab, Error: err.Error()})
 	case errors.As(err, &te):
 		writeError(w, te.status, te.msg)
 	case errors.Is(err, reconcile.ErrNoTab):
@@ -343,26 +382,102 @@ func (s *Server) changeTask(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) doTask(req taskRequest) error {
+// doTask does a task request. A move returns the task's new tab.
+func (s *Server) doTask(ctx context.Context, req taskRequest) (string, error) {
 	if req.Session == "" || req.Tab == "" {
-		return &taskError{http.StatusBadRequest, "A task request needs a session and a tab."}
+		return "", &taskError{http.StatusBadRequest, "A task request needs a session and a tab."}
 	}
 	var change func(*task.Task) error
-	if req.Action != "focus" {
+	switch req.Action {
+	case "focus", "research", "continue", "mute":
+	case "move":
+		if strings.TrimSpace(req.Workspace) == "" {
+			return "", &taskError{http.StatusBadRequest, "A move needs a workspace."}
+		}
+	default:
 		var err error
 		if change, err = s.taskChange(req); err != nil {
-			return err
+			return "", err
 		}
 	}
 	conn, ok := s.hub.conn(req.Session)
 	if !ok {
-		return &taskError{http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session)}
+		return "", &taskError{http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session)}
 	}
 	defer s.hub.refresh(req.Session)
-	if change == nil {
-		return conn.Focus(req.Tab)
+	switch req.Action {
+	case "focus":
+		return "", conn.Focus(req.Tab)
+	case "move", "research", "continue", "mute":
+		return s.taskAction(ctx, conn, req)
 	}
-	return conn.Change(req.Tab, change)
+	return "", conn.Change(req.Tab, change)
+}
+
+// taskAction moves a task to another workspace, or does one of a Slack
+// task's actions. It reads the task as saved now first, as the page's copy
+// may be out of date, and refuses an action the task can't take with what
+// the strip says.
+func (s *Server) taskAction(ctx context.Context, conn SessionConn, req taskRequest) (string, error) {
+	tasks, err := s.loadTasks(ctx, conn)
+	if err != nil {
+		return "", err
+	}
+	t := tasks[req.Tab]
+	if t == nil {
+		return "", &taskError{http.StatusNotFound, "That tab is gone."}
+	}
+	a := t.Slack
+	switch req.Action {
+	case "move":
+		return conn.Move(req.Tab, strings.TrimSpace(req.Workspace))
+	case "research":
+		switch {
+		case a == nil:
+			return "", &taskError{http.StatusConflict, "Only a Slack task has research."}
+		case !a.CanStart():
+			return "", &taskError{http.StatusConflict, "Research already started."}
+		}
+		return "", conn.Research(req.Tab)
+	case "continue":
+		if a == nil || !a.CanContinue() {
+			return "", &taskError{http.StatusConflict, "No locked research session in this tab."}
+		}
+		return "", conn.Continue(req.Tab)
+	}
+	// mute: the watcher keeps muted channels in the state folder.
+	if a == nil || a.Channel == "" {
+		return "", &taskError{http.StatusConflict, "Only a Slack task's channel can be muted."}
+	}
+	err = slack.Update(s.cfg.StateDir, func(st *slack.State) error {
+		st.Mute(a.Channel, a.Place)
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("Couldn't mute: %w", err)
+	}
+	s.Refresh()
+	return "", nil
+}
+
+// loadTasks reads a session's tasks as saved now: not the board's copy,
+// which may be a few seconds old. A session whose tasks stay locked gets
+// s.timeout, as the hub's reads do, and the wait ends with the request:
+// nothing is left waiting on the lock.
+func (s *Server) loadTasks(ctx context.Context, conn SessionConn) (map[string]*task.Task, error) {
+	ctx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	st, err := conn.Store().LoadContext(ctx)
+	if err != nil {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			err = fmt.Errorf("no answer within %v", s.timeout)
+		case s.ctx.Err() != nil:
+			err = errors.New("the board is shutting down")
+		}
+		return nil, errors.New("Couldn't read the task: " + err.Error())
+	}
+	return st.Tasks, nil
 }
 
 // taskChange is what an action other than focus does to the task.
@@ -388,9 +503,9 @@ func (s *Server) taskChange(req taskRequest) (func(*task.Task) error, error) {
 	case "unlink":
 		return func(t *task.Task) error {
 			// By its URL only: the page's list of links may be out of date.
-			// RemoveLink is given its number, as a URL could also read as
-			// a number or an issue ID.
-			i := slices.IndexFunc(t.Links, func(l task.Link) bool { return l.URL == req.URL })
+			// RemoveLink is given its number, in task.Grouped order, as a
+			// URL could also read as a number or an issue ID.
+			i := slices.IndexFunc(task.Grouped(t.Links), func(l task.Link) bool { return l.URL == req.URL })
 			if i < 0 {
 				return &taskError{http.StatusNotFound, "That link isn't on the task."}
 			}
@@ -399,6 +514,78 @@ func (s *Server) taskChange(req taskRequest) (func(*task.Task) error, error) {
 		}, nil
 	}
 	return nil, &taskError{http.StatusBadRequest, fmt.Sprintf("There's no action %q.", req.Action)}
+}
+
+// fetchTimeout is how long a fetch or a take from the board may take, as
+// long as `slack fetch` waits: it waits for a check under way, and with
+// slack_topic, a check runs a topic check for each of up to 20 asks.
+const fetchTimeout = 15 * time.Minute
+
+// errTooLong is why a fetch or a take ran out of time: it took over
+// fetchTimeout.
+var errTooLong = fmt.Errorf("it took over %d minutes", fetchTimeout/time.Minute)
+
+// slackFetch checks Slack for asks now, and answers with what the fetch did,
+// or why it failed. One runs at a time. It runs on the server's context,
+// not the request's, so closing the page doesn't stop it; the request
+// waits for it.
+func (s *Server) slackFetch(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.SlackFetch == nil {
+		writeError(w, http.StatusNotFound, "This board doesn't fetch from Slack.")
+		return
+	}
+	if !s.fetching.CompareAndSwap(false, true) {
+		writeError(w, http.StatusConflict, "A fetch is already running.")
+		return
+	}
+	text, err := s.fetch()
+	s.Refresh()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"text": text})
+}
+
+// fetch runs SlackFetch, and lets another start once it's done.
+func (s *Server) fetch() (string, error) {
+	defer s.fetching.Store(false)
+	ctx, cancel := context.WithTimeoutCause(s.ctx, fetchTimeout, errTooLong)
+	defer cancel()
+	return s.cfg.SlackFetch(ctx)
+}
+
+// takeRequest is what POST /api/slack/take takes.
+type takeRequest struct {
+	ID string `json:"id"` // the skipped ask's message ID
+}
+
+// slackTake makes the task for a skipped ask, and answers
+// with where it went, or why it didn't. Like a fetch, it waits for a check
+// under way, and runs on the server's context, so closing the page doesn't
+// stop it.
+func (s *Server) slackTake(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.SlackTake == nil {
+		writeError(w, http.StatusNotFound, "This board doesn't take Slack asks.")
+		return
+	}
+	var req takeRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil || strings.TrimSpace(req.ID) == "" {
+		writeError(w, http.StatusBadRequest, "A take needs the ask's message ID.")
+		return
+	}
+	ctx, cancel := context.WithTimeoutCause(s.ctx, fetchTimeout, errTooLong)
+	defer cancel()
+	text, err := s.cfg.SlackTake(ctx, strings.TrimSpace(req.ID))
+	s.Refresh()
+	switch {
+	case errors.Is(err, slack.ErrNoSkippedAsk):
+		writeError(w, http.StatusNotFound, "That ask isn't on the skipped list any more.")
+	case err != nil:
+		writeError(w, http.StatusBadGateway, err.Error())
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"text": text})
+	}
 }
 
 // openRequest is what POST /api/open takes.
@@ -427,23 +614,12 @@ func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session))
 		return
 	}
-	// Not the board's copy, which may be a few seconds old. A session whose
-	// tasks stay locked gets s.timeout, as the hub's reads do, and the wait
-	// ends with the request: nothing is left waiting on the lock.
-	ctx, cancel := context.WithTimeout(r.Context(), s.timeout)
-	defer cancel()
-	st, err := conn.Store().LoadContext(ctx)
+	tasks, err := s.loadTasks(r.Context(), conn)
 	if err != nil {
-		switch {
-		case errors.Is(err, context.DeadlineExceeded):
-			err = fmt.Errorf("no answer within %v", s.timeout)
-		case s.ctx.Err() != nil:
-			err = errors.New("the board is shutting down")
-		}
-		writeError(w, http.StatusInternalServerError, "Couldn't read the task: "+err.Error())
+		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	t := st.Tasks[req.Tab]
+	t := tasks[req.Tab]
 	if t == nil || !slices.ContainsFunc(t.Links, func(l task.Link) bool { return l.URL == req.URL }) {
 		writeError(w, http.StatusNotFound, "That link isn't on the task.")
 		return

@@ -41,3 +41,33 @@ func TestSettingsTurnOn(t *testing.T) {
 		t.Fatalf("port = %d, want 7777", opt.Port())
 	}
 }
+
+func TestSlackDefaults(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	opt, err := LoadOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opt.SlackWatch || opt.SlackWorkspace != "Slack inbox" || !opt.SlackDMs ||
+		opt.SlackEvery != "5m" || opt.SlackHours != "Mon-Fri 08:00-18:00" || opt.SlackMaxNew != 4 || opt.SlackTopic != "" {
+		t.Fatalf("slack defaults wrong: %+v", opt)
+	}
+}
+
+func TestSlackOverrides(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", dir)
+	conf := "slack_watch = true\nslack_dms = false\nslack_skip_channels = [\"random\", \"C0123ABCD\"]\nslack_max_new = 0\n" +
+		"slack_topic = \"the acme billing service\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(conf), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	opt, err := LoadOptions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opt.SlackWatch || opt.SlackDMs || opt.SlackMaxNew != 0 ||
+		len(opt.SlackSkipChannels) != 2 || opt.SlackSkipChannels[1] != "C0123ABCD" || opt.SlackTopic != "the acme billing service" {
+		t.Fatalf("slack overrides not read: %+v", opt)
+	}
+}

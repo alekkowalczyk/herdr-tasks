@@ -33,8 +33,8 @@ const LinearTools = `^mcp__.*[Ll]inear.*__(get_issue|save_issue|save_comment|cre
 
 // Matcher picks the tool calls the PostToolUse hook runs for: the Linear
 // tools, publishing an artifact, writing or editing a file, sending a Slack
-// message, and opening a page in a browser.
-const Matcher = `^(Artifact|Write|Edit|MultiEdit|mcp__.*[Ll]inear.*__(get_issue|save_issue|save_comment|create_attachment|create_attachment_from_upload)|mcp__.*[Ss]lack.*__slack_send_message|mcp__.*__(browser_)?navigate)$`
+// message, searching Slack's messages, and opening a page in a browser.
+const Matcher = `^(Artifact|Write|Edit|MultiEdit|mcp__.*[Ll]inear.*__(get_issue|save_issue|save_comment|create_attachment|create_attachment_from_upload)|mcp__.*[Ss]lack.*__slack_send_message|mcp__.*[Ss]lack.*__slack_search_(public|public_and_private)|mcp__.*__(browser_)?navigate)$`
 
 var linearTool = regexp.MustCompile(LinearTools)
 

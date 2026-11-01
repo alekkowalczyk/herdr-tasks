@@ -1,9 +1,11 @@
 package ui
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -155,5 +157,241 @@ func TestOverviewSaysWhenALinkIsntAdded(t *testing.T) {
 	}
 	if m.msg != "Already linked to Acme" {
 		t.Errorf("message = %q, want Already linked to Acme", m.msg)
+	}
+}
+
+func TestOverviewMoveAndMute(t *testing.T) {
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	setTask(t, st, &task.Task{Stage: task.Active, Slack: dana(task.ResearchLocked)})
+	m, err := newModel(Env{Client: fakeHerdr(t, others...), Store: st, CurrentTab: "w1:t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	var moves, mutes [][2]string
+	m.act.move = func(tab, ws string) (string, error) {
+		moves = append(moves, [2]string{tab, ws})
+		return "w4:t9", nil
+	}
+	m.act.mute = func(channel, place string) (bool, error) {
+		mutes = append(mutes, [2]string{channel, place})
+		return len(mutes) == 1, nil
+	}
+	press := func(key string) tea.Cmd {
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		return cmd
+	}
+
+	// m mutes the selected task's channel.
+	press("m")
+	if want := "Muted #billing. Undo: herdr-tasks slack unmute C0123ABCD"; m.msg != want {
+		t.Errorf("message = %q, want %q", m.msg, want)
+	}
+	press("m")
+	if m.msg != "#billing is muted already" {
+		t.Errorf("message = %q, want #billing is muted already", m.msg)
+	}
+	if want := [][2]string{{"C0123ABCD", "#billing"}, {"C0123ABCD", "#billing"}}; !slices.Equal(mutes, want) {
+		t.Errorf("mutes = %v, want %v", mutes, want)
+	}
+
+	// w asks for a workspace number, as L asks for a link's; another key cancels.
+	press("w")
+	if want := "Move to workspace: 1 billing  2 infra  3 Slack"; m.msg != want || m.mode != modeMove {
+		t.Fatalf("mode %v message %q, want the picker and %q", m.mode, m.msg, want)
+	}
+	press("x")
+	if m.mode != modeList || len(moves) != 0 {
+		t.Errorf("x: mode %v moves %v, want it cancelled", m.mode, moves)
+	}
+	press("w")
+	cmd := press("3")
+	if m.msg != "Moving Acme to Slack…" || cmd == nil {
+		t.Fatalf("message = %q, want Moving Acme to Slack… and a command", m.msg)
+	}
+	m.Update(cmd())
+	if want := [][2]string{{"w1:t1", "w4"}}; !slices.Equal(moves, want) {
+		t.Errorf("moves = %v, want %v", moves, want)
+	}
+	if m.msg != "Moved Acme to Slack" {
+		t.Errorf("message = %q, want Moved Acme to Slack", m.msg)
+	}
+	press("w")
+	press("7")
+	if m.msg != "No workspace 7" || len(moves) != 1 {
+		t.Errorf("7: message %q moves %v", m.msg, moves)
+	}
+
+	// A plain task's channel can't be muted.
+	setTask(t, st, &task.Task{Stage: task.Active})
+	m.Update(refreshMsg{})
+	press("m")
+	if m.msg != "Only a Slack task's channel can be muted." || len(mutes) != 2 {
+		t.Errorf("plain task: message %q mutes %v", m.msg, mutes)
+	}
+
+	// The help lists both keys.
+	press("?")
+	if view := plain(m.View()); !strings.Contains(view, "w move to workspace") || !strings.Contains(view, "m mute channel") {
+		t.Errorf("help doesn't list w and m:\n%s", view)
+	}
+}
+
+// Quitting while a move the overview started runs would cut the move
+// short: the overview quits once the move is done, or at a second ctrl+c.
+func TestOverviewQuitsOnceItsMoveIsDone(t *testing.T) {
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	setTask(t, st, &task.Task{Stage: task.Active})
+	overview := func() *model {
+		m, err := newModel(Env{Client: fakeHerdr(t, others...), Store: st, CurrentTab: "w1:t1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+		m.act.move = func(string, string) (string, error) { return "w1:t1", nil }
+		return m
+	}
+	runes := func(k string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)} }
+	ctrlC := tea.KeyMsg{Type: tea.KeyCtrlC}
+	quits := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		_, ok := cmd().(tea.QuitMsg)
+		return ok
+	}
+	send := func(m *model, msg tea.Msg) tea.Cmd {
+		_, cmd := m.Update(msg)
+		return cmd
+	}
+
+	m := overview()
+	if !quits(send(m, runes("q"))) {
+		t.Fatal("q didn't quit with no move running")
+	}
+	moving := func() (*model, tea.Cmd) {
+		m := overview()
+		send(m, runes("w"))
+		move := send(m, runes("3"))
+		if move == nil {
+			t.Fatalf("no move: %q", m.msg)
+		}
+		return m, move
+	}
+
+	// A move with no quit asked for doesn't quit.
+	m, move := moving()
+	if quits(send(m, move())) {
+		t.Error("the overview quit after a move nobody asked it to quit after")
+	}
+
+	// Each way to quit waits for the move.
+	for _, k := range []tea.KeyMsg{runes("q"), {Type: tea.KeyEsc}, runes("t"), ctrlC, {Type: tea.KeyEnter}} {
+		m, move := moving()
+		if cmd := send(m, k); quits(cmd) || m.msg != "Moving… quit when it's done" {
+			t.Errorf("%s while moving: quit %v, message %q; want Moving… quit when it's done", k, quits(cmd), m.msg)
+		}
+		if !quits(send(m, move())) {
+			t.Errorf("%s: the overview didn't quit once the move was done", k)
+		}
+	}
+
+	// A second ctrl+c quits at once.
+	m, _ = moving()
+	send(m, ctrlC)
+	if !quits(send(m, ctrlC)) {
+		t.Error("a second ctrl+c didn't quit")
+	}
+
+	// A move that fails doesn't quit: its error needs to be seen. The next
+	// q quits.
+	m = overview()
+	m.act.move = func(string, string) (string, error) {
+		return "w4:t9", errors.New("Moved 1 of 2 panes; the rest are still in the old tab: refused")
+	}
+	send(m, runes("w"))
+	move = send(m, runes("3"))
+	send(m, runes("q"))
+	if quits(send(m, move())) || m.msg != "Moved 1 of 2 panes; the rest are still in the old tab: refused" {
+		t.Errorf("a failed move: message %q; want no quit, and the error", m.msg)
+	}
+	if !quits(send(m, runes("q"))) {
+		t.Error("q didn't quit after the failed move")
+	}
+}
+
+func TestOverviewGroupsLinks(t *testing.T) {
+	local := time.Local
+	time.Local = time.FixedZone("UTC+3", 3*60*60)
+	t.Cleanup(func() { time.Local = local })
+
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	page := task.Link{URL: "http://localhost:4100/demo", Label: "Demo", By: "claude"}
+	pr := task.Link{URL: otherLink}
+	slack := task.Link{URL: slackMsg, Label: "#billing · Dana Reed: hi"}
+	issue := task.Link{URL: linearIssue}
+	setLinks(t, st, page, pr, slack, issue)
+	m, err := newModel(Env{Client: fakeHerdr(t), Store: st, CurrentTab: "w1:t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 40})
+
+	// The task's row previews the first of them.
+	if view := plain(m.View()); !strings.Contains(view, "↗ ABC-12 +3") {
+		t.Errorf("the row doesn't preview ↗ ABC-12 +3:\n%s", view)
+	}
+
+	// The LINKS list as it shows on the right.
+	m.View()
+	lines := m.detailLines(detailWidth-2, m.bodyHeight())
+	start := slices.IndexFunc(lines, func(l string) bool { return strings.HasPrefix(plain(l), "LINKS") })
+	if start < 0 {
+		t.Fatalf("no LINKS:\n%s", plain(strings.Join(lines, "\n")))
+	}
+	var got []string
+	for _, l := range lines[start+1:] {
+		got = append(got, plain(l))
+	}
+	want := []string{
+		"Linear",
+		"1 ABC-12 linear.app/acme/issue/ABC-12 ×",
+		"Slack",
+		"2 Nov 15 01:13 #billing · Dana Reed: hi ×",
+		"Pages",
+		"3 Demo localhost:4100/demo via claude ×",
+		"Links",
+		"4 PR #1 github.com/acme/x/pull/1 ×",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("LINKS:\n%q\nwant\n%q", got, want)
+	}
+
+	// Each × removes the link on its line.
+	var ys []int
+	for y := range m.linkAt {
+		ys = append(ys, y)
+	}
+	slices.Sort(ys)
+	var order []string
+	for _, y := range ys {
+		order = append(order, m.linkAt[y].URL)
+	}
+	if want := []string{issue.URL, slack.URL, page.URL, pr.URL}; !slices.Equal(order, want) {
+		t.Errorf("× lines remove %q, want %q", order, want)
+	}
+
+	// Unlink numbers count the same way: 1 is the first link shown.
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
+	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
+	var left []string
+	for _, l := range linksOfTab(t, st) {
+		left = append(left, l.URL)
+	}
+	if want := []string{page.URL, pr.URL, slack.URL}; !slices.Equal(left, want) {
+		t.Errorf("links = %q, want %q", left, want)
+	}
+	if m.msg != "Removed ABC-12" {
+		t.Errorf("message = %q, want Removed ABC-12", m.msg)
 	}
 }

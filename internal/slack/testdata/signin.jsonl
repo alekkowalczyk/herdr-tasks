@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"s1","mcp_servers":[{"name":"plugin:slack:slack","status":"needs-auth"},{"name":"other","status":"connected"}]}
+{"type":"result","subtype":"success","is_error":false,"result":"Slack needs you to sign in.","total_cost_usd":0.0006}

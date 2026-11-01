@@ -52,6 +52,8 @@ const (
 	modeNote
 	modeInput
 	modeUnlink
+	modeMove
+	modeLinks // the strip's list of every link
 )
 
 type inputKind int
@@ -83,6 +85,7 @@ type hit struct {
 
 type model struct {
 	env   Env
+	act   taskActions
 	live  *herdr.Live
 	state *store.State
 	rows  []row
@@ -101,6 +104,14 @@ type model struct {
 	// list or the selection meanwhile.
 	unlinkTab   string
 	unlinkLinks []task.Link
+	// The same for w: the task, its name, and the workspaces you were offered.
+	moveTab  string
+	moveName string
+	moveTo   []herdr.Workspace
+	// How many moves started here still run, and whether you asked to quit
+	// meanwhile: quitting would cut a move short.
+	moving    int
+	quitMoved bool
 
 	// Hit areas from the last render, for the mouse.
 	rowAt      map[int]string
@@ -119,7 +130,7 @@ type model struct {
 }
 
 func newModel(env Env) (*model, error) {
-	m := &model{env: env, rowAt: map[int]string{}, linkAt: map[int]task.Link{}, alertY: -1}
+	m := &model{env: env, act: realActions(env.Client, env.Store, env.Opts), rowAt: map[int]string{}, linkAt: map[int]task.Link{}, alertY: -1}
 	// Track any tabs created since the last sync before showing them.
 	live, err := reconcile.Run(env.host(), env.Store, env.Opts, time.Now(), nil)
 	if err != nil {
@@ -425,6 +436,34 @@ func (m *model) closeSelected() {
 	m.msg = "Closed " + name
 }
 
+// startMove asks which workspace to move the selected task to.
+func (m *model) startMove() {
+	r := m.selected()
+	if r == nil {
+		return
+	}
+	wss := otherWorkspaces(m.live, r.tab.WorkspaceID)
+	if len(wss) == 0 {
+		m.msg = "No other workspace to move to."
+		return
+	}
+	m.mode = modeMove
+	m.moveTab, m.moveName, m.moveTo = r.tab.ID, r.task.Name(r.pos), wss
+	m.msg = movePrompt(wss)
+}
+
+// moveTask moves the task of tab, named name, to ws, as a command.
+func (m *model) moveTask(tab, name string, ws herdr.Workspace) tea.Cmd {
+	to := task.CleanLabel(ws.Label)
+	m.msg = "Moving " + name + " to " + to + "…"
+	m.moving++
+	mv := m.act.move
+	return func() tea.Msg {
+		newTab, err := mv(tab, ws.ID)
+		return actionDone{done: "Moved " + name + " to " + to, tab: newTab, err: err}
+	}
+}
+
 func (m *model) jump() tea.Cmd {
 	r := m.selected()
 	if r == nil {
@@ -434,7 +473,19 @@ func (m *model) jump() tea.Cmd {
 		m.msg = "Couldn't open the tab: " + err.Error()
 		return nil
 	}
-	return tea.Quit
+	return m.quit("enter")
+}
+
+// quit ends the overview, pressing k. While a move started here runs, it
+// waits for the move, which quitting would cut short; a ctrl+c once you've
+// asked to quit doesn't wait.
+func (m *model) quit(k string) tea.Cmd {
+	if m.moving == 0 || k == "ctrl+c" && m.quitMoved {
+		return tea.Quit
+	}
+	m.quitMoved = true
+	m.msg = "Moving… quit when it's done"
+	return nil
 }
 
 // Update.
@@ -447,10 +498,30 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sizeNote()
 		return m, nil
 	case refreshMsg:
-		if m.mode == modeList || m.mode == modeUnlink {
+		if m.mode == modeList || m.mode == modeUnlink || m.mode == modeMove {
 			m.refresh()
 		}
 		return m, tick()
+	case actionDone:
+		// Only a move ends with this. One that failed cancels a quit you
+		// asked for meanwhile, so you see why.
+		m.moving = max(0, m.moving-1)
+		if msg.err != nil {
+			m.quitMoved = false
+		}
+		if m.moving == 0 && m.quitMoved {
+			return m, tea.Quit
+		}
+		// The selection follows the task to its new tab.
+		if msg.tab != "" {
+			m.sel = msg.tab
+		}
+		m.refresh()
+		m.msg = msg.done
+		if msg.err != nil {
+			m.msg = msg.err.Error()
+		}
+		return m, nil
 	case tea.MouseMsg:
 		return m, m.mouse(msg)
 	case tea.KeyMsg:
@@ -496,6 +567,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case modeMove:
+			m.mode = modeList
+			tab, name, wss := m.moveTab, m.moveName, m.moveTo
+			m.moveTab, m.moveName, m.moveTo = "", "", nil
+			n, err := strconv.Atoi(msg.String())
+			switch {
+			case err != nil:
+				m.msg = ""
+			case n < 1 || n > len(wss):
+				m.msg = fmt.Sprintf("No workspace %d", n)
+			default:
+				return m, m.moveTask(tab, name, wss[n-1])
+			}
+			return m, nil
 		}
 		return m, m.key(msg.String())
 	}
@@ -525,7 +610,7 @@ func (m *model) key(k string) tea.Cmd {
 	}
 	switch k {
 	case "ctrl+c", "esc", "q", "t":
-		return tea.Quit
+		return m.quit(k)
 	case "up", "k":
 		m.move(-1)
 	case "down", "j":
@@ -567,12 +652,18 @@ func (m *model) key(k string) tea.Cmd {
 	case "L":
 		if r := m.selected(); r != nil && len(r.task.Links) > 0 {
 			m.mode = modeUnlink
-			m.unlinkTab, m.unlinkLinks = r.tab.ID, slices.Clone(r.task.Links)
+			m.unlinkTab, m.unlinkLinks = r.tab.ID, task.Grouped(r.task.Links)
 			m.msg = fmt.Sprintf("Remove which link? 1–%d", len(m.unlinkLinks))
 		}
 	case "r":
 		if r := m.selected(); r != nil {
 			m.startInput(inputRename, r.task.Title, "task name (empty uses the tab number)")
+		}
+	case "w":
+		m.startMove()
+	case "m":
+		if r := m.selected(); r != nil {
+			m.msg = muteChannel(m.act.mute, r.task.Slack)
 		}
 	case "x":
 		m.closeSelected()
@@ -590,9 +681,9 @@ func (m *model) removeLink(tab string, l task.Link) {
 	done := "Removed " + label
 	gone := false
 	m.changeTab(tab, func(t *task.Task) {
-		// RemoveLink is given its number, as a URL could also read as a
-		// number or an issue ID.
-		i := slices.IndexFunc(t.Links, func(o task.Link) bool { return o.URL == l.URL })
+		// RemoveLink is given its number, in task.Grouped order, as a URL
+		// could also read as a number or an issue ID.
+		i := slices.IndexFunc(task.Grouped(t.Links), func(o task.Link) bool { return o.URL == l.URL })
 		if i < 0 {
 			gone = true
 			return
@@ -913,7 +1004,8 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 	case r.task.Stage.TakesReason() && r.task.Reason != "":
 		info, infoColor = task.CleanLabel(r.task.Reason), stageColor(r.task.Stage)
 	case len(r.task.Links) > 0:
-		info, infoColor = "↗ "+task.CleanLabel(r.task.Links[0].Display()), cLink
+		// The first of them as the strip and the LINKS list show them.
+		info, infoColor = "↗ "+task.CleanLabel(task.Grouped(r.task.Links)[0].Display()), cLink
 		if n := len(r.task.Links); n > 1 {
 			info += fmt.Sprintf(" +%d", n-1)
 		}
@@ -997,7 +1089,7 @@ func (m *model) detailLines(w, h int) []string {
 	add("")
 
 	add(sDim.Render("LINKS") + strings.Repeat(" ", max(1, w-12)) + sDim.Render("l add"))
-	links := t.Links
+	links := task.Grouped(t.Links)
 	if m.mode == modeUnlink && r.tab.ID == m.unlinkTab {
 		// The numbers you're choosing from don't move.
 		links = m.unlinkLinks
@@ -1006,11 +1098,21 @@ func (m *model) detailLines(w, h int) []string {
 		add(sDim.Render("No links yet."))
 	}
 	m.linkTab = r.tab.ID
+	section := ""
 	for i, l := range links {
+		// Each section's name heads its links. They're grouped, so each
+		// shows once.
+		if s := task.KindOf(l.URL).Section(); s != section {
+			section = s
+			add(sectionName(s))
+		}
 		// Everything here can come from a hand-edited state file, so it's
 		// cleaned before it's measured or printed. An unsafe URL isn't shown
 		// at all: a terminal could still find a link in its text.
 		label := task.CleanLabel(l.Display())
+		if section == "Slack" {
+			label = linkItem(l) // the date, then the label, as on the strip
+		}
 		url := "unsafe link"
 		if task.SafeURL(l.URL) {
 			url = task.CleanLabel(strings.TrimPrefix(strings.TrimPrefix(l.URL, "https://"), "http://"))
@@ -1043,12 +1145,14 @@ func (m *model) footer() string {
 		return fit(sDim.Render(" Editing the note · ctrl+s save · esc cancel"), m.width)
 	case modeUnlink:
 		return fit(sDim.Render(" Press a link number to remove it, any other key to cancel"), m.width)
+	case modeMove:
+		return fit(sDim.Render(" Press a workspace number to move the task there, any other key to cancel"), m.width)
 	}
 	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
-			{"L", "L remove link"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
+			{"L", "L remove link"}, {"w", "w move to workspace"}, {"m", "m mute channel"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
 	}
 	var b strings.Builder
 	x := 1

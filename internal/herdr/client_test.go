@@ -436,3 +436,135 @@ func TestTabLayoutDecodesFocusedAndRects(t *testing.T) {
 		t.Errorf("requests = %+v, want one pane.layout for w1:p4", reqs)
 	}
 }
+
+func TestCreateCallsDontFocus(t *testing.T) {
+	f := newFake(t, func(req request, conn net.Conn) {
+		switch req.Method {
+		case "workspace.create":
+			send(conn, `{"result":{"workspace":{"workspace_id":"w2"},"tab":{"tab_id":"w2:t1","workspace_id":"w2"},"root_pane":{"pane_id":"w2:p1"}}}`)
+		case "tab.create":
+			send(conn, `{"result":{"tab":{"tab_id":"w2:t2","workspace_id":"w2"},"root_pane":{"pane_id":"w2:p4"}}}`)
+		}
+	})
+	ws, err := f.client.CreateWorkspace("Slack", "/home/u/acme-harness")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Created{WorkspaceID: "w2", TabID: "w2:t1", PaneID: "w2:p1"}); ws != want {
+		t.Errorf("workspace = %+v, want %+v", ws, want)
+	}
+	tab, err := f.client.CreateTab("w2", "Dana", "/home/u/acme-harness")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Created{WorkspaceID: "w2", TabID: "w2:t2", PaneID: "w2:p4"}); tab != want {
+		t.Errorf("tab = %+v, want %+v", tab, want)
+	}
+	reqs := f.requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if got, want := string(reqs[0].Params), `{"cwd":"/home/u/acme-harness","focus":false,"label":"Slack"}`; got != want {
+		t.Errorf("workspace.create params = %s, want %s", got, want)
+	}
+	if got, want := string(reqs[1].Params), `{"cwd":"/home/u/acme-harness","focus":false,"label":"Dana","workspace_id":"w2"}`; got != want {
+		t.Errorf("tab.create params = %s, want %s", got, want)
+	}
+}
+
+func TestStartAgentSendsArgsAndWaits(t *testing.T) {
+	old := callDeadline
+	callDeadline = 50 * time.Millisecond
+	t.Cleanup(func() { callDeadline = old })
+
+	f := newFake(t, func(req request, conn net.Conn) {
+		var p struct {
+			Name string `json:"name"`
+		}
+		json.Unmarshal(req.Params, &p)
+		if p.Name == "slack-notready" {
+			send(conn, `{"error":{"code":"agent_not_ready","message":"blocked by a dialog"}}`)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+		send(conn, `{"result":{"agent":{"name":"slack-1a2b3c4d"},"argv":["claude"]}}`)
+	})
+	args := []string{"--permission-mode", "plan", "hello"}
+	if err := f.client.StartAgent("slack-1a2b3c4d", "claude", "w2:p1", args, time.Second); err != nil {
+		t.Fatalf("StartAgent after a delay longer than the default deadline: %v", err)
+	}
+	reqs := f.requests()
+	if reqs[0].Method != "agent.start" {
+		t.Fatalf("method = %s", reqs[0].Method)
+	}
+	want := `{"args":["--permission-mode","plan","hello"],"kind":"claude","name":"slack-1a2b3c4d","pane_id":"w2:p1","timeout_ms":1000}`
+	if got := string(reqs[0].Params); got != want {
+		t.Errorf("params = %s, want %s", got, want)
+	}
+	// A plain Call still obeys the default deadline.
+	if err := f.client.Call("pane.list", nil, nil); err == nil {
+		t.Error("Call outlived the default deadline")
+	}
+
+	err := f.client.StartAgent("slack-notready", "claude", "w2:p1", nil, time.Second)
+	var he *Error
+	if !errors.As(err, &he) || he.Code != "agent_not_ready" {
+		t.Errorf("err = %v, want *Error agent_not_ready", err)
+	}
+}
+
+func TestProcessesDecodesArgv(t *testing.T) {
+	f := newFake(t, func(req request, conn net.Conn) {
+		send(conn, `{"result":{"process_info":{"foreground_processes":[
+			{"pid":4242,"name":"claude","argv":["claude","--permission-mode","plan"],"cmdline":"claude --permission-mode plan","cwd":"/home/u/acme-harness"},
+			{"pid":4300,"name":"node","argv":["node","x.js"]}]}}}`)
+	})
+	got, err := f.client.Processes("w2:p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Process{
+		{PID: 4242, Name: "claude", Argv: []string{"claude", "--permission-mode", "plan"}},
+		{PID: 4300, Name: "node", Argv: []string{"node", "x.js"}},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("processes = %+v, want %+v", got, want)
+	}
+	if p := string(f.requests()[0].Params); p != `{"pane_id":"w2:p1"}` {
+		t.Errorf("params = %s", p)
+	}
+}
+
+func TestMoveToNewTabInAWorkspace(t *testing.T) {
+	changed := true
+	f := newFake(t, func(req request, conn net.Conn) {
+		if changed {
+			send(conn, `{"result":{"move_result":{"changed":true,"pane":{"pane_id":"w3:p7","tab_id":"w3:t2"},"created_tab":true}}}`)
+		} else {
+			send(conn, `{"result":{"move_result":{"changed":false,"reason":"already there"}}}`)
+		}
+	})
+	m, err := f.client.MovePaneToNewTab("w2:p1", "w3", "Dana: ship Friday?")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (Moved{PaneID: "w3:p7", TabID: "w3:t2"}); m != want {
+		t.Errorf("moved = %+v, want %+v", m, want)
+	}
+	want := `{"destination":{"label":"Dana: ship Friday?","type":"new_tab","workspace_id":"w3"},"focus":false,"pane_id":"w2:p1"}`
+	if got := string(f.requests()[0].Params); got != want {
+		t.Errorf("params = %s, want %s", got, want)
+	}
+
+	m, err = f.client.MovePaneNextTo("w2:p1", "w3:t2", "w3:p7", "right", 0.5)
+	if err != nil || m.PaneID != "w3:p7" {
+		t.Errorf("MovePaneNextTo = %+v, %v", m, err)
+	}
+
+	changed = false
+	_, err = f.client.MovePaneToNewTab("w2:p1", "w3", "x")
+	var nm *ErrNotMoved
+	if !errors.As(err, &nm) {
+		t.Errorf("err = %v, want *ErrNotMoved", err)
+	}
+}

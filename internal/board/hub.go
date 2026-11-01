@@ -14,6 +14,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -206,8 +207,9 @@ func (s *Server) runHub(ctx context.Context) {
 }
 
 // watch looks for herdr sessions that started or ended, now and every
-// s.tick. It shuts the server down when the board is turned off or moved to
-// another port, or when no session has run for s.idle.
+// s.tick. It shuts the server down when the board and the Slack watcher are
+// turned off, when the board is moved to another port, or when no session
+// has run for s.idle.
 func (s *Server) watch(ctx context.Context) {
 	t := time.NewTicker(s.tick)
 	defer t.Stop()
@@ -235,8 +237,8 @@ func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) st
 		switch {
 		case err != nil:
 			logOnce(problem, fmt.Sprintf("reading config: %v", err))
-		case !opts.Board:
-			return "the board is turned off"
+		case !opts.Board && !opts.SlackWatch:
+			return "the board and the Slack watcher are turned off"
 		case opts.Port() != s.cfg.Port:
 			return fmt.Sprintf("the board moved to port %d", opts.Port())
 		default:
@@ -452,7 +454,67 @@ func (s *Server) builder(ctx context.Context) {
 		}
 		issues, key := h.issues, h.linearKey
 		h.mu.Unlock()
-		h.publish(Build(snaps, s.summary, issues, key, s.cfg.Version))
+		b := Build(snaps, s.summary, issues, key, s.cfg.Version)
+		s.addSlack(&b)
+		h.publish(b)
+	}
+}
+
+// addSlack adds the Slack line to the board, and marks the cards from Slack
+// whose channel you muted. Both come from the watcher's state, which is read
+// once, and only while the line shows or a card is from Slack. Reading it
+// makes no file: there's none until the watcher saves it. When it can't be
+// read, the line lists no asks and no card shows muted: the watcher reports
+// that.
+func (s *Server) addSlack(b *Board) {
+	saved := sync.OnceValue(func() slack.State { return slack.OnDisk(s.cfg.StateDir) })
+	b.Slack = s.slackLine(saved)
+	s.markMuted(b, saved)
+}
+
+// slackLine is the Slack watcher's status for the header, while it's on or
+// offers a fetch, with the skipped asks, from saved.
+func (s *Server) slackLine(saved func() slack.State) *SlackLine {
+	if s.cfg.Slack == nil {
+		return nil
+	}
+	st := s.cfg.Slack()
+	if !st.On && !st.Fetch {
+		return nil
+	}
+	return &SlackLine{Text: st.Text, Problem: st.Problem, Fetch: st.Fetch, Skipped: skipped(saved(), s.now())}
+}
+
+// skipped is the skipped asks, newest first, as `slack skipped` lists them:
+// those over 7 days old, which the watcher drops when it next saves, are
+// left out. It changes nothing in st, which markMuted reads too.
+func skipped(st slack.State, now time.Time) []SkippedAsk {
+	kept := slack.State{Skipped: slices.Clone(st.Skipped)}
+	kept.Prune(now)
+	var asks []SkippedAsk
+	for _, k := range kept.SkippedList() {
+		asks = append(asks, SkippedAsk{ID: k.Ask.ID(), Label: k.Label(now.Location()), Why: k.Reason(), Link: k.Ask.Permalink})
+	}
+	return asks
+}
+
+// markMuted marks the cards from Slack whose channel you muted, as saved
+// says.
+func (s *Server) markMuted(b *Board, saved func() slack.State) {
+	var cards []*CardSlack
+	for _, sess := range b.Sessions {
+		for _, c := range sess.Cards {
+			if c.Slack != nil {
+				cards = append(cards, c.Slack)
+			}
+		}
+	}
+	if len(cards) == 0 {
+		return
+	}
+	st := saved()
+	for _, c := range cards {
+		c.Muted = st.IsMuted(c.Channel, "", nil)
 	}
 }
 

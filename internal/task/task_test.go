@@ -1,7 +1,9 @@
 package task
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -11,7 +13,7 @@ func TestLinkLabel(t *testing.T) {
 		"https://github.com/acme/api/pull/431":           "PR #431",
 		"https://github.com/acme/api/issues/12":          "issue #12",
 		"https://github.com/acme/api":                    "acme/api",
-		"https://linear.app/acme/issue/MWP-418/fix-it":   "MWP-418",
+		"https://linear.app/acme/issue/ABC-418/fix-it":   "ABC-418",
 		"https://acme.atlassian.net/browse/OPS-7":        "OPS-7",
 		"https://www.figma.com/file/abc/Checkout":        "Figma",
 		"https://www.notion.so/acme/Onboarding-API":      "Notion page",
@@ -100,6 +102,42 @@ func TestSetStage(t *testing.T) {
 	}
 }
 
+func TestGrouped(t *testing.T) {
+	page1 := Link{URL: localPage + "/one"}
+	linear := Link{URL: "https://linear.app/acme/issue/ABC-12"}
+	slack := Link{URL: slackMsg, Label: "#billing · Dana Reed: can you check…"}
+	page2 := Link{URL: artifact}
+	other := Link{URL: "https://github.com/acme/web/pull/7"}
+	in := []Link{page1, linear, slack, page2, other}
+	got := Grouped(in)
+	if want := []Link{linear, slack, page1, page2, other}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Grouped = %+v, want %+v", got, want)
+	}
+	if want := []Link{page1, linear, slack, page2, other}; !reflect.DeepEqual(in, want) {
+		t.Errorf("Grouped changed its input: %+v", in)
+	}
+	got[0] = other
+	if in[1] != linear {
+		t.Error("Grouped's result shares its input's array")
+	}
+}
+
+func TestRemoveLinkByGroupedNumber(t *testing.T) {
+	page1 := Link{URL: localPage + "/one"}
+	linear := Link{URL: "https://linear.app/acme/issue/ABC-12"}
+	tk := &Task{Links: []Link{page1, linear}}
+	l, err := tk.RemoveLink("1")
+	if err != nil || l.URL != linear.URL {
+		t.Fatalf("RemoveLink(1) = %+v, %v; want the Linear issue, shown first", l, err)
+	}
+	if !reflect.DeepEqual(tk.Links, []Link{page1}) {
+		t.Errorf("links = %+v, want the page alone", tk.Links)
+	}
+	if _, err := tk.RemoveLink("2"); err == nil {
+		t.Error("RemoveLink(2) of one link: no error")
+	}
+}
+
 func TestLinks(t *testing.T) {
 	tk := &Task{}
 	now := time.Now()
@@ -118,8 +156,9 @@ func TestLinks(t *testing.T) {
 	if _, err := tk.RemoveLink("3"); err == nil {
 		t.Fatal("removing a missing link should fail")
 	}
-	if l, err := tk.RemoveLink("1"); err != nil || l.By != "claude" {
-		t.Fatalf("RemoveLink(1) = %+v, %v", l, err)
+	// Numbers count in Grouped order: the Linear issue is 1, the PR 2.
+	if l, err := tk.RemoveLink("2"); err != nil || l.By != "claude" {
+		t.Fatalf("RemoveLink(2) = %+v, %v", l, err)
 	}
 	if _, err := tk.RemoveLink("https://linear.app/a/issue/X-2"); err != nil || len(tk.Links) != 0 {
 		t.Fatalf("RemoveLink by URL: %v, %d left", err, len(tk.Links))
@@ -490,5 +529,47 @@ func TestPriority(t *testing.T) {
 	}
 	if err := tk.SetPriority(false); err != nil {
 		t.Fatalf("turning priority off should always work: %v", err)
+	}
+}
+
+func TestTaskSlackRoundTrips(t *testing.T) {
+	in := Task{TabID: "t1", Workspace: "Slack", Stage: Active, Slack: &SlackAsk{
+		Key: "C0123ABCD/1793450000.000100", Channel: "C0123ABCD", Place: "#billing",
+		Author: "Dana Reed", TS: "1793450000.000100", ThreadTS: "1793450000.000100",
+		At:        time.Date(2026, 11, 2, 9, 0, 0, 0, time.UTC),
+		Permalink: "https://acme.slack.com/archives/C0123ABCD/p1793450000000100",
+		SessionID: "abc", Research: ResearchLocked,
+	}}
+	b, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out Task
+	if err := json.Unmarshal(b, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Slack == nil || *out.Slack != *in.Slack {
+		t.Fatalf("round trip: %+v", out.Slack)
+	}
+	plain, _ := json.Marshal(Task{TabID: "t2"})
+	if strings.Contains(string(plain), `"slack"`) {
+		t.Fatalf("slack key in %s", plain)
+	}
+}
+
+func TestSlackAskCanStartAndContinue(t *testing.T) {
+	for r, want := range map[Research]bool{"": true, ResearchHeld: true, ResearchFailed: true, ResearchLocked: false, ResearchOpen: false} {
+		if got := (&SlackAsk{Research: r}).CanStart(); got != want {
+			t.Errorf("CanStart(%q) = %v", r, got)
+		}
+	}
+	if (&SlackAsk{Research: ResearchLocked}).CanContinue() {
+		t.Error("locked without a session can't continue")
+	}
+	if !(&SlackAsk{Research: ResearchLocked, SessionID: "abc"}).CanContinue() {
+		t.Error("locked with a session can continue")
+	}
+	if (&SlackAsk{Research: ResearchOpen, SessionID: "abc"}).CanContinue() {
+		t.Error("open can't continue")
 	}
 }

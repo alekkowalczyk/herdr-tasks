@@ -143,6 +143,16 @@ func SlackTime(raw string) (time.Time, bool) {
 	return time.Unix(sec, usec*1000), true
 }
 
+// SlackStamp is when the Slack message raw links to was posted, in loc, as
+// the strip shows it before the link's label: "Oct 28 12:59". It's "" when
+// raw isn't a message's link.
+func SlackStamp(raw string, loc *time.Location) string {
+	if at, ok := SlackTime(raw); ok {
+		return at.In(loc).Format("Jan 2 15:04")
+	}
+	return ""
+}
+
 // FileURL is the file:// URL of an absolute path.
 func FileURL(path string) string {
 	return (&url.URL{Scheme: "file", Path: filepath.Clean(path)}).String()

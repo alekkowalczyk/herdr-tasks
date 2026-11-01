@@ -106,7 +106,7 @@ func (l Link) Display() string {
 
 var ticketID = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-\d+$`)
 
-// LinkLabel names a link by what it points at: "PR #431", "MWP-418",
+// LinkLabel names a link by what it points at: "PR #431", "ABC-418",
 // "Slack message", "plan.html", "localhost:4100/showcase".
 func LinkLabel(raw string) string {
 	switch KindOf(raw) {
@@ -241,6 +241,48 @@ type Task struct {
 	StripPane string `json:"strip_pane,omitempty"`
 	StripOff  bool   `json:"strip_off,omitempty"`
 	StripOn   bool   `json:"strip_on,omitempty"`
+	// Set on a task made from a Slack message.
+	Slack *SlackAsk `json:"slack,omitempty"`
+}
+
+// SlackAsk is what a task made from a Slack message keeps about it. It
+// moves with the task.
+type SlackAsk struct {
+	// The conversation: "C0123ABCD/1793450000.000100" for a channel thread,
+	// "D0RUI0001" for a DM or group DM.
+	Key       string    `json:"key"`
+	Channel   string    `json:"channel"`
+	Place     string    `json:"place"`               // "#billing", "a DM" or "a group DM"
+	Author    string    `json:"author"`              // cleaned name
+	TS        string    `json:"ts"`                  // the first message's ts
+	ThreadTS  string    `json:"thread_ts,omitempty"` // its thread's ts; "" for a top-level message or a DM
+	At        time.Time `json:"at"`                  // when the first message was posted
+	Permalink string    `json:"permalink"`
+	// The research session's Claude session ID.
+	SessionID string   `json:"session_id,omitempty"`
+	Research  Research `json:"research,omitempty"`
+}
+
+// Research is where a Slack ask's research session stands.
+type Research string
+
+const (
+	ResearchHeld   Research = "held"   // not started: over the hourly limit, or slack_max_new = 0
+	ResearchFailed Research = "failed" // starting it failed; the task's log says why
+	ResearchLocked Research = "locked" // running with the research tools only
+	ResearchOpen   Research = "open"   // continued with your tools
+)
+
+// CanStart reports whether research can be started: it hasn't been, or it
+// was held or failed.
+func (a *SlackAsk) CanStart() bool {
+	return a.Research == "" || a.Research == ResearchHeld || a.Research == ResearchFailed
+}
+
+// CanContinue reports whether the locked session can be continued with your
+// tools.
+func (a *SlackAsk) CanContinue() bool {
+	return a.Research == ResearchLocked && a.SessionID != ""
 }
 
 // WantsStrip reports whether the tab should show a strip.
@@ -383,7 +425,31 @@ func (t *Task) undismiss(raw string) {
 	t.DismissedLinks = slices.DeleteFunc(t.DismissedLinks, func(d string) bool { return d == key })
 }
 
-// RemoveLink removes a link by 1-based number, by URL, or by Linear issue ID.
+// Grouped is links in Sections order, as the strip, the overview and the
+// board show them, in a new slice. Links keep their order within a section.
+// A link's number, wherever one is shown or taken, is its place here.
+func Grouped(links []Link) []Link {
+	out := make([]Link, 0, len(links))
+	for _, i := range groupedOrder(links) {
+		out = append(out, links[i])
+	}
+	return out
+}
+
+// groupedOrder is the indexes of links in Grouped order.
+func groupedOrder(links []Link) []int {
+	order := make([]int, len(links))
+	section := make([]int, len(links))
+	for i, l := range links {
+		order[i] = i
+		section[i] = slices.Index(Sections, KindOf(l.URL).Section())
+	}
+	slices.SortStableFunc(order, func(a, b int) int { return section[a] - section[b] })
+	return order
+}
+
+// RemoveLink removes a link by its 1-based number in Grouped order, by URL,
+// or by Linear issue ID.
 // The link goes under all its URLs, and is dismissed, so agents don't add it
 // back. A page published from a file dismisses that file too, and removing
 // a file removes and dismisses the artifacts an agent published from it.
@@ -422,14 +488,14 @@ func (t *Task) RemoveLink(which string) (Link, error) {
 	return l, nil
 }
 
-// findLink finds a link by number, by its exact URL, by another URL for the
-// same link, then by Linear issue ID.
+// findLink finds a link's index in t.Links by its number in Grouped order,
+// by its exact URL, by another URL for the same link, then by Linear issue ID.
 func (t *Task) findLink(which string) (int, error) {
 	if n, err := strconv.Atoi(which); err == nil {
 		if n < 1 || n > len(t.Links) {
 			return 0, fmt.Errorf("no link %d (this task has %d)", n, len(t.Links))
 		}
-		return n - 1, nil
+		return groupedOrder(t.Links)[n-1], nil
 	}
 	for i, l := range t.Links {
 		if l.URL == which {

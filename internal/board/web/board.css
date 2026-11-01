@@ -193,6 +193,62 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .space-filter[aria-pressed="true"] { background: var(--fg); border-color: var(--fg); color: var(--bg); }
 .space-filter .n { font-variant-numeric: tabular-nums; opacity: 0.7; }
 
+/* The Slack watcher's line: its status, Fetch and what the last fetch or
+   take said, and the skipped asks. */
+.slack-bar { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.slack-line {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.slack-line::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--slack);
+  vertical-align: 1px;
+}
+.slack-line.problem { color: var(--ink-ask); }
+.slack-line.problem::before { background: var(--ask); }
+.slack-button {
+  flex: none;
+  height: 22px;
+  padding: 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.slack-button:hover:not(:disabled), .slack-button[aria-expanded="true"] { border-color: var(--faint); color: var(--fg); }
+.slack-button:disabled { cursor: progress; opacity: 0.7; }
+.slack-skipped { color: var(--ink-slack); }
+/* What a fetch or take said takes the room left, in up to three lines, and
+   none of the room the line needs: it goes to a row of its own first. */
+.slack-said {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  flex: 1 1 0;
+  min-width: 14em;
+  overflow: hidden;
+  contain: inline-size;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.slack-said.problem { color: var(--ink-ask); }
+
 .top-end { display: flex; align-items: center; gap: 12px; margin-left: auto; color: var(--faint); font-size: 12px; }
 .conn:not(:empty)::before {
   content: "";
@@ -471,6 +527,8 @@ a.chip.page:hover, button.chip.page:hover { border-color: color-mix(in srgb, var
   position: fixed;
   z-index: 30;
   min-width: 190px;
+  max-width: calc(100vw - 16px);
+  overflow-y: auto;
   padding: 4px;
   border: 1px solid var(--line-strong);
   border-radius: 10px;
@@ -496,6 +554,18 @@ a.chip.page:hover, button.chip.page:hover { border-color: color-mix(in srgb, var
 .menu-item[aria-disabled="true"] { color: var(--faint); cursor: default; }
 .menu-item[aria-disabled="true"]:hover { background: none; }
 .menu-item .check { margin-left: auto; color: var(--faint); }
+.menu-item.slack-act { --accent: var(--slack); }
+.menu-sep { height: 1px; margin: 4px 6px; background: var(--line); }
+a.menu-item { color: inherit; text-decoration: none; }
+
+/* The skipped list: each ask, why it was skipped, and what to do. */
+.menu-ask { display: grid; gap: 2px; width: min(420px, calc(100vw - 26px)); padding: 6px 0 2px; border-top: 1px solid var(--line); }
+.menu-label + .menu-ask { border-top: 0; }
+.ask-label, .ask-why { padding: 0 10px; overflow-wrap: anywhere; }
+.ask-label { font-size: 13px; }
+.ask-why { color: var(--muted); font-size: 12px; }
+.ask-acts { display: flex; gap: 2px; }
+.ask-acts .menu-item { width: auto; }
 
 /* Dialogs */
 

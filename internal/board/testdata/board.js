@@ -235,6 +235,21 @@ function card(more) {
 
 const board = c => ({version: '0.8.0', linearKey: false, sessions: [{name: 'work', stale: false, spaces: [{id: 's1', label: 'acme'}], cards: [c]}]});
 
+// slacked is a board with a card and the Slack line.
+const slacked = line => Object.assign(board(card()), {slack: line});
+
+// slackPart is the part of the Slack line with class cls.
+const slackPart = (pg, cls) => pg.$('slack-bar').querySelector('.' + cls);
+
+// Two spaces, and a card from a message in #billing in the first.
+const SPACES = [
+  {id: 'w1', label: 'billing'},
+  {id: 'w2', label: 'infra'},
+];
+const spaced = (cards, spaces) => ({version: '0.10.0', linearKey: false, sessions: [{name: 'work', stale: false, spaces, cards}]});
+const slackCard = more =>
+  card({space: 'w1', spaceLabel: 'billing', slack: Object.assign({place: '#billing', channel: 'C0123ABCD', research: '', muted: false}, more)});
+
 // page runs the script as a tab opened at /, signed in with stored. The
 // server takes only the key in pg.good.
 function page(stored) {
@@ -298,8 +313,13 @@ function page(stored) {
     };
   }
 
-  const reply = status =>
-    status < 300 ? {ok: true, status} : {ok: false, status, json: async () => ({error: status === 401 ? 'Sign in again.' : 'No.'})};
+  // reply is an answer with status. A 204 has no body; others have body,
+  // or an error that says no.
+  const reply = (status, body) => {
+    if (status === 204) return {ok: true, status};
+    const json = async () => body || {error: status === 401 ? 'Sign in again.' : 'No.'};
+    return {ok: status < 300, status, json};
+  };
 
   async function fetch(url, opts) {
     const k = ((opts.headers || {}).Authorization || '').replace(/^Bearer /, '');
@@ -309,7 +329,9 @@ function page(stored) {
       return k === pg.good ? openStream(s) : reply(401);
     }
     // A change is answered when the test says.
-    return new Promise(resolve => pg.posts.push({url, key: k, body: JSON.parse(opts.body), answer: status => resolve(reply(status))}));
+    return new Promise(resolve =>
+      pg.posts.push({url, key: k, body: JSON.parse(opts.body), answer: (status, body) => resolve(reply(status, body))}),
+    );
   }
 
   // Timers run when the test says, and the clock moves on with them.
@@ -331,6 +353,14 @@ function page(stored) {
     }
   };
 
+  // The address: pushState and replaceState change its hash.
+  const location = {search: '', hash: '', pathname: '/'};
+  pg.location = location;
+  const go = url => {
+    const i = String(url).indexOf('#');
+    location.hash = i < 0 ? '' : String(url).slice(i);
+  };
+
   const ctx = {
     window: {
       addEventListener: (type, fn) => (windowListeners[type] = windowListeners[type] || []).push(fn),
@@ -338,8 +368,19 @@ function page(stored) {
     },
     document,
     Element,
-    location: {search: '', hash: '', pathname: '/'},
-    history: {state: null, replaceState() {}, pushState() {}, back() {}},
+    location,
+    history: {
+      state: null,
+      replaceState(state, title, url) {
+        this.state = state;
+        go(url);
+      },
+      pushState(state, title, url) {
+        this.state = state;
+        go(url);
+      },
+      back() {},
+    },
     localStorage: {
       getItem: k => (storage.has(k) ? storage.get(k) : null),
       setItem: (k, v) => storage.set(k, String(v)),
@@ -375,6 +416,18 @@ function page(stored) {
   // button is the card's button for act, as it shows now.
   pg.button = act => pg.$('board').querySelector('.card').querySelector('[data-act="' + act + '"]');
   pg.priority = () => pg.button('priority').getAttribute('aria-pressed');
+  // menu opens the card's Move to menu, and returns what it offers after
+  // the stages, by text. close closes it again.
+  pg.menu = () => {
+    pg.button('move').click();
+    return pg
+      .$('menu')
+      .querySelectorAll('.menu-item')
+      .filter(i => !i.hasAttribute('data-stage'))
+      .map(i => i.textContent);
+  };
+  pg.close = () => pg.button('move').click();
+  pg.item = act => pg.$('menu').querySelector('[data-act="' + act + '"]');
   pg.toasts = () => pg.$('toasts').children.map(t => t.textContent);
   return pg;
 }
@@ -456,6 +509,338 @@ const tests = {
     assert.ok(pg.streams[1].signal.aborted, 'signed out, the stream is still open');
     assert.equal(pg.$('board').hidden, true, 'signed out, the board still shows');
     assert.match(pg.$('empty-text').textContent, /^Sign in again/);
+  },
+
+  // After the stages, the menu offers a move to another workspace, and a
+  // Slack task's research and mute, as its research and channel allow. So
+  // does the tab's view.
+  async 'a Slack card’s menu has its actions'() {
+    const pg = page('k1');
+    await settle();
+    const offers = (c, spaces, want) => {
+      pg.send(spaced([c], spaces || SPACES));
+      return settle().then(() => {
+        assert.deepEqual(pg.menu(), want, JSON.stringify(c.slack));
+        const sep = pg.$('menu').querySelector('[role="separator"]');
+        assert.equal(Boolean(sep), want.length > 0, 'a separator only before more items');
+        pg.close();
+        assert.equal(pg.$('menu').hidden, true);
+      });
+    };
+    await offers(slackCard({research: ''}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
+    await offers(slackCard({research: 'held'}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
+    await offers(slackCard({research: 'failed'}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
+    await offers(slackCard({research: 'locked'}), null, ['Move to workspace…', 'Continue with my tools', 'Mute #billing']);
+    await offers(slackCard({research: 'open'}), null, ['Move to workspace…', 'Mute #billing']);
+    await offers(slackCard({research: 'locked', muted: true}), null, ['Move to workspace…', 'Continue with my tools']);
+    // A plain card: only the move, and nothing in a session of one space.
+    await offers(card({space: 'w1', spaceLabel: 'billing'}), null, ['Move to workspace…']);
+    await offers(card({space: 'w1', spaceLabel: 'billing'}), [SPACES[0]], []);
+
+    // The tab's view has the same buttons.
+    pg.send(spaced([slackCard({research: 'locked'})], SPACES));
+    await settle();
+    pg.$('board').querySelector('.card').click();
+    const acts = pg
+      .$('detail-body')
+      .querySelector('.detail-actions')
+      .querySelectorAll('button')
+      .map(b => b.textContent);
+    assert.deepEqual(acts.slice(-3), ['Move to workspace…', 'Continue with my tools', 'Mute #billing']);
+  },
+
+  // Picking a workspace moves the card there. An open view follows it to
+  // its new tab.
+  async 'picking a workspace moves the card'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced([card({space: 'w1', spaceLabel: 'billing'})], SPACES));
+    await settle();
+    pg.menu();
+    pg.item('spaces').click();
+    const items = pg.$('menu').querySelectorAll('.menu-item');
+    assert.deepEqual(
+      items.map(i => i.textContent),
+      ['infra'],
+    );
+    items[0].click();
+    await settle();
+    assert.equal(pg.$('menu').hidden, true);
+    assert.deepEqual(pg.posts.map(p => p.body), [{session: 'work', tab: 'w1:t1', action: 'move', workspace: 'w2'}]);
+    assert.deepEqual(pg.toasts(), ['Moving to infra…']);
+    pg.posts[0].answer(200, {tab: 'w2:t4'});
+    await settle();
+    assert.deepEqual(pg.toasts(), ['Moving to infra…', 'Moved to infra']);
+
+    // From the tab's view, which then shows the new tab.
+    pg.$('board').querySelector('.card').click();
+    assert.equal(pg.location.hash, '#tab=work/w1%3At1');
+    pg.$('detail-body').querySelector('[data-act="spaces"]').click();
+    pg.$('menu').querySelector('.menu-item').click();
+    await settle();
+    assert.deepEqual(pg.posts[1].body, {session: 'work', tab: 'w1:t1', action: 'move', workspace: 'w2'});
+    pg.posts[1].answer(200, {tab: 'w2:t5'});
+    await settle();
+    assert.equal(pg.location.hash, '#tab=work/w2%3At5', 'the view stayed on the old tab');
+
+    // A move that went wrong partway is followed too, and says why.
+    pg.send(spaced([card({tab: 'w2:t5', space: 'w2', spaceLabel: 'infra'})], SPACES));
+    await settle();
+    pg.$('detail-body').querySelector('[data-act="spaces"]').click();
+    assert.deepEqual(
+      pg.$('menu').querySelectorAll('.menu-item').map(i => i.textContent),
+      ['billing'],
+    );
+    pg.$('menu').querySelector('.menu-item').click();
+    await settle();
+    pg.posts[2].answer(500, {tab: 'w1:t6', error: 'Moved 1 of 2 panes; the rest are still in the old tab'});
+    await settle();
+    assert.equal(pg.location.hash, '#tab=work/w1%3At6');
+    assert.equal(pg.toasts().pop(), 'Moved 1 of 2 panes; the rest are still in the old tab');
+  },
+
+  // Research and continue say what they're doing, as they can take a
+  // while; the card offers neither again until they're answered. Mute says
+  // how to undo it.
+  async 'Slack actions say how they went'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced([slackCard({research: ''})], SPACES));
+    await settle();
+    pg.menu();
+    pg.item('research').click();
+    await settle();
+    assert.deepEqual(pg.posts.map(p => p.body), [{session: 'work', tab: 'w1:t1', action: 'research'}]);
+    assert.deepEqual(pg.toasts(), ['Starting research…']);
+    assert.deepEqual(pg.menu(), ['Mute #billing'], 'a second start was offered');
+    pg.close();
+    pg.posts[0].answer(409, {error: 'Research already started.'});
+    await settle();
+    assert.deepEqual(pg.toasts(), ['Starting research…', 'Research already started.']);
+    assert.deepEqual(pg.menu(), ['Move to workspace…', 'Start research', 'Mute #billing']);
+    pg.close();
+
+    pg.send(spaced([slackCard({research: 'locked'})], SPACES));
+    await settle();
+    pg.menu();
+    pg.item('continue').click();
+    await settle();
+    assert.deepEqual(pg.posts[1].body, {session: 'work', tab: 'w1:t1', action: 'continue'});
+    pg.posts[1].answer(204);
+    await settle();
+    assert.deepEqual(pg.toasts().slice(-2), ['Continuing with your tools…', 'Continued with your tools']);
+
+    pg.menu();
+    pg.item('mute').click();
+    await settle();
+    assert.deepEqual(pg.posts[2].body, {session: 'work', tab: 'w1:t1', action: 'mute'});
+    pg.posts[2].answer(204);
+    await settle();
+    assert.equal(pg.toasts().pop(), 'Muted #billing. Undo: herdr-tasks slack unmute C0123ABCD');
+  },
+
+  // The header shows the Slack watcher's line while the board has one.
+  async 'the header shows the Slack line'() {
+    const pg = page('k1');
+    await settle();
+    const bar = pg.$('slack-bar');
+    const line = pg.$('slack');
+    pg.send(Object.assign(board(card()), {slack: {text: 'Slack: can’t reach Slack since 14:20', problem: true}}));
+    await settle();
+    assert.equal(bar.hidden, false);
+    assert.equal(line.textContent, 'Slack: can’t reach Slack since 14:20');
+    assert.ok(line.classList.contains('problem'), 'a problem shows as one');
+    assert.equal(slackPart(pg, 'slack-fetch').hidden, true, 'Fetch showed with none offered');
+    assert.equal(slackPart(pg, 'slack-skipped').hidden, true, 'the skipped list showed with none');
+    pg.send(Object.assign(board(card()), {slack: {text: 'Slack: last check 14:32', problem: false}}));
+    await settle();
+    assert.equal(line.textContent, 'Slack: last check 14:32');
+    assert.ok(!line.classList.contains('problem'), 'the problem stayed');
+    pg.send(board(card()));
+    await settle();
+    assert.equal(bar.hidden, true, 'the line stayed with the watcher off');
+  },
+
+  // Fetch fetches, one at a time, and the reply shows next to it for 15 s,
+  // or the error, as a problem.
+  async 'the Slack line fetches and says what it did'() {
+    const pg = page('k1');
+    await settle();
+    const fetch = slackPart(pg, 'slack-fetch');
+    const said = slackPart(pg, 'slack-said');
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true}));
+    await settle();
+    assert.equal(fetch.hidden, false, 'no Fetch with one offered');
+    assert.equal(fetch.textContent, 'Fetch');
+    fetch.click();
+    fetch.click();
+    await settle();
+    assert.deepEqual(
+      pg.posts.map(p => [p.url, p.body]),
+      [['/api/slack/fetch', {}]],
+      'a second fetch was posted while one ran',
+    );
+    assert.equal(fetch.textContent, 'Fetching…');
+    assert.equal(fetch.disabled, true);
+    // A new board meanwhile keeps it.
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true}));
+    await settle();
+    assert.equal(fetch.textContent, 'Fetching…', 'a new board forgot the fetch');
+    pg.posts[0].answer(200, {text: 'Fetched from 08:30: 2 new tasks, 2 with research.'});
+    await settle();
+    assert.equal(fetch.textContent, 'Fetch');
+    assert.equal(fetch.disabled, false);
+    assert.equal(said.hidden, false);
+    assert.equal(said.textContent, 'Fetched from 08:30: 2 new tasks, 2 with research.');
+    assert.ok(!said.classList.contains('problem'));
+    pg.runTimers(14000);
+    assert.equal(said.hidden, false, 'the reply went before 15 s');
+    pg.runTimers(16000);
+    assert.equal(said.hidden, true, 'the reply stayed after 15 s');
+
+    fetch.click();
+    await settle();
+    pg.posts[1].answer(502, {error: 'can’t fetch: waiting for a herdr session'});
+    await settle();
+    assert.equal(said.textContent, 'can’t fetch: waiting for a herdr session');
+    assert.ok(said.classList.contains('problem'), 'the error isn’t a problem');
+    fetch.click();
+    await settle();
+    assert.equal(said.hidden, true, 'the last reply showed during a new fetch');
+    pg.posts[2].answer(409, {error: 'A fetch is already running.'});
+    await settle();
+    assert.equal(said.textContent, 'A fetch is already running.');
+
+    // Not offered, there's no Fetch.
+    pg.send(slacked({text: 'Slack: last check 14:32', problem: false, fetch: false}));
+    await settle();
+    assert.equal(fetch.hidden, true);
+  },
+
+  // "n skipped" opens the skipped asks, each with its label and why as
+  // text, Take and Open in Slack.
+  async 'the skipped list takes an ask'() {
+    const pg = page('k1');
+    await settle();
+    const off = slackPart(pg, 'slack-skipped');
+    const said = slackPart(pg, 'slack-said');
+    const asks = [
+      {id: 'D0RUI0001/1793370600.000100', label: 'Oct 30 14:30 DM · Rui Costa: <b>book club</b> tonight?', why: 'off-topic: a book club', link: 'https://acme.slack.com/archives/D0RUI0001/p1793370600000100'},
+      {id: 'C0123ABCD/1793192340.000100', label: 'Oct 28 12:59 #billing · Dana Reed: lunch on Friday', why: '<img src=x>', link: 'javascript:alert(1)'},
+    ];
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true, skipped: asks}));
+    await settle();
+    assert.equal(off.hidden, false);
+    assert.equal(off.textContent, '2 skipped');
+    off.click();
+    const menu = pg.$('menu');
+    assert.equal(menu.hidden, false, 'the list didn’t open');
+    assert.equal(off.getAttribute('aria-expanded'), 'true');
+    assert.equal(menu.getAttribute('aria-label'), 'Skipped asks');
+    assert.equal(menu.querySelector('.menu-label').textContent, 'Skipped asks');
+    const rows = menu.querySelectorAll('.menu-ask');
+    assert.deepEqual(
+      rows.map(r => [r.querySelector('.ask-label').textContent, r.querySelector('.ask-why').textContent]),
+      asks.map(a => [a.label, a.why]),
+    );
+    assert.equal(rows[0].querySelector('.ask-label').children.length, 0, 'a label made elements');
+    const open = rows[0].querySelector('a');
+    assert.equal(open.textContent, 'Open in Slack');
+    assert.equal(open.getAttribute('href'), asks[0].link);
+    assert.equal(open.getAttribute('target'), '_blank');
+    assert.equal(open.getAttribute('rel'), 'noopener noreferrer');
+    assert.equal(rows[1].querySelector('a'), null, 'a link that isn’t http opens');
+    assert.equal(doc.activeElement && doc.activeElement.textContent, 'Take', 'the first Take has no focus');
+
+    // A new board waits while the list is open.
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true, skipped: asks.slice(1)}));
+    await settle();
+    assert.equal(menu.querySelectorAll('.menu-ask').length, 2);
+
+    rows[0].querySelector('[data-act="take"]').click();
+    await settle();
+    assert.equal(menu.hidden, true, 'the list stayed open');
+    assert.equal(off.textContent, '1 skipped', 'the board waiting was never drawn');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/slack/take', {id: asks[0].id}]]);
+    assert.equal(said.textContent, 'Taking it…');
+    pg.posts[0].answer(200, {text: 'Took it: new tab w2:t1, with research'});
+    await settle();
+    assert.equal(said.textContent, 'Took it: new tab w2:t1, with research');
+    assert.ok(!said.classList.contains('problem'));
+
+    off.click();
+    pg.$('menu').querySelector('[data-act="take"]').click();
+    await settle();
+    pg.posts[1].answer(404, {error: 'That ask isn’t on the skipped list any more.'});
+    await settle();
+    assert.equal(said.textContent, 'That ask isn’t on the skipped list any more.');
+    assert.ok(said.classList.contains('problem'));
+
+    // Open in Slack closes the list, and leaves the link to the browser.
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true, skipped: asks}));
+    await settle();
+    off.click();
+    let prevented = false;
+    pg.$('menu')
+      .querySelector('[data-act="openslack"]')
+      .dispatch('click', {preventDefault: () => (prevented = true)});
+    assert.equal(pg.$('menu').hidden, true, 'Open in Slack left the list open');
+    assert.equal(prevented, false, 'Open in Slack didn’t leave the link to the browser');
+    assert.equal(pg.posts.length, 2);
+
+    // Space opens it too, as Enter does: a link opens on Enter only. Take
+    // is a button, which Space clicks by itself.
+    off.click();
+    const link = pg.$('menu').querySelector('[data-act="openslack"]');
+    let opened = 0;
+    link.addEventListener('click', () => opened++);
+    const take = pg.$('menu').querySelector('[data-act="take"]');
+    let spaced = false;
+    take.dispatch('keydown', {key: ' ', preventDefault: () => (spaced = true)});
+    assert.equal(spaced, false, 'Space on Take was kept from the button');
+    assert.equal(pg.posts.length, 2, 'Space on Take took it twice');
+    link.focus();
+    link.dispatch('keydown', {key: ' ', preventDefault: () => (spaced = true)});
+    assert.equal(opened, 1, 'Space didn’t open the link');
+    assert.equal(spaced, true, 'Space on the link scrolled the page');
+    assert.equal(pg.$('menu').hidden, true, 'Space on the link left the list open');
+
+    // With none, there's no list.
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true}));
+    await settle();
+    assert.equal(off.hidden, true, 'the list showed with none');
+  },
+
+  // A fetch while a take is under way leaves its Taking it…, and the
+  // fetch's reply gives way to it again after 15 s.
+  async 'a fetch leaves the take under way showing'() {
+    const pg = page('k1');
+    await settle();
+    const fetch = slackPart(pg, 'slack-fetch');
+    const said = slackPart(pg, 'slack-said');
+    const ask = {id: 'D0RUI0001/1793370600.000100', label: 'Oct 30 14:30 DM · Rui Costa: book club tonight?', why: 'off-topic: a book club', link: 'https://acme.slack.com/archives/D0RUI0001/p1793370600000100'};
+    pg.send(slacked({text: 'Slack: off', problem: false, fetch: true, skipped: [ask]}));
+    await settle();
+    slackPart(pg, 'slack-skipped').click();
+    pg.$('menu').querySelector('[data-act="take"]').click();
+    await settle();
+    assert.equal(said.textContent, 'Taking it…');
+    fetch.click();
+    await settle();
+    assert.deepEqual(pg.posts.map(p => p.url), ['/api/slack/take', '/api/slack/fetch']);
+    assert.equal(said.hidden, false, 'the fetch hid the take under way');
+    assert.equal(said.textContent, 'Taking it…', 'the fetch wiped the take under way');
+    pg.posts[1].answer(200, {text: 'Fetched from 08:30: nothing new.'});
+    await settle();
+    assert.equal(said.textContent, 'Fetched from 08:30: nothing new.');
+    pg.runTimers(16000);
+    assert.equal(said.hidden, false, 'the take under way went with the fetch’s reply');
+    assert.equal(said.textContent, 'Taking it…');
+    pg.posts[0].answer(200, {text: 'Took it: new tab w2:t1, with research'});
+    await settle();
+    assert.equal(said.textContent, 'Took it: new tab w2:t1, with research');
+    pg.runTimers(16000);
+    assert.equal(said.hidden, true, 'the take’s reply stayed after 15 s');
   },
 
   // A change the board doesn't have yet shows for 5 s after it's answered.

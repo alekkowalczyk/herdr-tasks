@@ -14,6 +14,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudehook"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -42,7 +43,8 @@ var errNoOrg = errors.New("no Linear URL seen yet")
 // hook prints and how it exits, so this prints nothing and always succeeds.
 // Problems go to claude-hook.log in the state directory.
 func runClaudeHook() error {
-	quietly(store.Dir(), func() error { return claudeHook(os.Stdin, os.Getenv, linkFound) })
+	dir := store.Dir()
+	quietly(dir, func() error { return claudeHook(os.Stdin, os.Getenv, dir, linkFound) })
 	return nil
 }
 
@@ -106,16 +108,19 @@ func logHookError(dir string, problem error) {
 }
 
 // found is what a hook call found: the Linear issue a tool call worked on,
-// and the links a prompt, reply or tool call named.
+// the links a prompt, reply or tool call named, and the labels a Slack
+// search gives the messages it found, by claudehook.SlackMessage.
 type found struct {
-	issue *claudehook.Issue
-	links []claudehook.Link
+	issue  *claudehook.Issue
+	links  []claudehook.Link
+	labels map[string]claudehook.SearchLabel
 }
 
 // claudeHook reads a Claude Code hook's input from in and links what it found
 // to the task Claude runs in. It does nothing outside herdr, while
-// claude_links is off, or when the call names nothing.
-func claudeHook(in io.Reader, env func(string) string, link func(paneID string, f found) error) error {
+// claude_links is off, or when the call names nothing. dir is the state
+// folder, where the Slack channels' names are kept.
+func claudeHook(in io.Reader, env func(string) string, dir string, link func(paneID string, f found) error) error {
 	pane := env("HERDR_PANE_ID")
 	if pane == "" {
 		return nil
@@ -138,29 +143,33 @@ func claudeHook(in io.Reader, env func(string) string, link func(paneID string, 
 	if err := json.Unmarshal(b, &p); err != nil {
 		return fmt.Errorf("reading the hook input (%d bytes): %w", len(b), err)
 	}
-	f := found{links: claudehook.Links(p)}
+	f := found{links: claudehook.Links(p, dir)}
 	if issue, ok := claudehook.Find(p); ok {
 		f.issue = &issue
 	}
-	if f.issue == nil && len(f.links) == 0 {
-		return nil
+	labels, channels := claudehook.SearchLabels(p)
+	f.labels = labels
+	var linkErr error
+	if f.issue != nil || len(f.links) > 0 || len(f.labels) > 0 {
+		linkErr = link(pane, f)
 	}
-	return link(pane, f)
+	// Then the channels' names, which wait on their file's lock. Those that
+	// aren't saved only leave later links without them.
+	return errors.Join(linkErr, slack.LearnChannels(dir, channels))
 }
 
 // linkFound links f to the task of the tab paneID is in. It asks herdr only
 // for the tab: the pane's tab may have changed since Claude started, and
-// guessing another tab would put the links on the wrong task.
+// guessing another tab would put the links on the wrong task. A move gives
+// the pane a new ID, which the state keeps.
 func linkFound(paneID string, f found) error {
 	c := herdr.New()
-	tab, err := c.PaneTab(paneID)
+	st := store.New(herdr.SessionKey(c.SocketPath))
+	tab, err := paneTab(c, st, paneID)
 	if err != nil {
 		return err
 	}
-	if tab == "" {
-		return fmt.Errorf("no tab for pane %s", paneID)
-	}
-	return addFound(store.New(herdr.SessionKey(c.SocketPath)), tab, f)
+	return addFound(st, tab, f)
 }
 
 // addFound links f to the task of tab, as added by claude. It edits the state
@@ -208,7 +217,8 @@ func addFound(st *store.Store, tab string, f found) error {
 			links = append([]claudehook.Link{{URL: url}}, links...)
 		}
 		before := len(t.Links)
-		if !merge(t, links, time.Now()) {
+		merged := merge(t, links, time.Now())
+		if labelled := label(t, f.labels); !merged && !labelled {
 			return errNothingToSave
 		}
 		full = before < maxClaudeLinks && len(t.Links) >= maxClaudeLinks
@@ -233,7 +243,32 @@ func changes(t *task.Task, f found) bool {
 	c.Links = slices.Clone(t.Links)
 	c.DismissedLinks = slices.Clone(t.DismissedLinks)
 	c.DismissedIssues = slices.Clone(t.DismissedIssues)
-	return merge(&c, f.links, time.Time{})
+	merged := merge(&c, f.links, time.Time{})
+	return label(&c, f.labels) || merged
+}
+
+// label gives the Slack messages linked on t the label a search found for
+// them, and reports whether t changed. It matches a link by its message,
+// whatever its workspace or query. Only a link with no label, or with only
+// the message's place as a link from your prompt gets it ("#billing"),
+// takes the search's; any other label stays as it is, yours too.
+func label(t *task.Task, labels map[string]claudehook.SearchLabel) bool {
+	changed := false
+	for i := range t.Links {
+		o := &t.Links[i]
+		key, ok := claudehook.SlackMessage(o.URL)
+		if !ok {
+			continue
+		}
+		found, ok := labels[key]
+		if !ok || o.Label != "" && o.Label != found.Place {
+			continue
+		}
+		if l := task.CleanLabel(found.Label); l != "" && l != o.Label {
+			o.Label, changed = l, true
+		}
+	}
+	return changed
 }
 
 // merge adds links to t as found by claude, and reports whether t changed.

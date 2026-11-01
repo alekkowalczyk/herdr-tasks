@@ -19,11 +19,11 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 
 ## What it adds to herdr
 
-- **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, close done tabs.
-- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Links show in one row per kind: Linear, Slack, Pages, and Links for the rest. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), make it a priority or not (`f`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add a link (`l`), remove one (`L`, the strip grows and numbers every link; type the number and press `↵`), or rename the task (`r`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
+- **Task overview** (`ctrl+b t`): a popup listing every tab, grouped by stage, with the selected task's note and links. Filter by space, jump to a tab, change stages, edit the note, add links, move a task to another workspace, close done tabs. Its LINKS are grouped under Linear, Slack, Pages and Links headings.
+- **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Links sit in a column that uses the space the note leaves, grouped as Linear, Slack, Pages, and Links for the rest; a section spills onto spare rows, and a "+N" says how many more there are. `+` (or a click on the "+N") shows every link, grouped and numbered; when they don't all fit, `↑`/`↓` (or `k`/`j`) scroll it, and `+` or `esc` closes it. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), make it a priority or not (`f`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add a link (`l`), remove one (`L`, the strip grows and numbers every link; type the number and press `↵`), rename the task (`r`), move it to another workspace (`w`), or, for a Slack task, continue or start its research (`c`, `s`) and mute its channel (`m`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
 - **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
-- **Task board** (off by default, see [Settings](#settings)): every task of every running herdr session on one page in your browser, in columns by stage and by what the agent is doing. Cards show each agent's state and Claude's latest recap, and the task's links in a row per kind: Linear issues with their status, Slack messages with their date, pages marked web, file or local, and other links. A local `.html` page opens in your browser from the board. Drag a card to another column to change its stage. Open a card to see its tab's terminals, live, and type into them (see [Terminals on the board](#terminals-on-the-board)). The **Open task board** action in herdr opens it, and so does `herdr-tasks board`.
+- **Task board** (off by default, see [Settings](#settings)): every task of every running herdr session on one page in your browser, in columns by stage and by what the agent is doing. Cards show each agent's state and Claude's latest recap, and the task's links grouped by kind: Linear issues with their status, Slack messages with their date, pages marked web, file or local, and other links. A local `.html` page opens in your browser from the board. Drag a card to another column to change its stage. Open a card to see its tab's terminals, live, and type into them (see [Terminals on the board](#terminals-on-the-board)). The **Open task board** action in herdr opens it, and so does `herdr-tasks board`. The card menu and the tab's view also have **Move to workspace…** and, for [Slack asks](#slack-asks), **Start research**, **Continue with my tools** and **Mute #channel** (**Mute this channel** for a DM).
 - **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then agents working (`↻`, blue) and in review. Priority tasks come before all of them, in red with a `!` in front, even when paused or parked. Other paused, parked, done, and tool tabs stay out of the list; a line under it counts the hidden ones by stage (`2 paused 1 parked`). `ctrl+b a` switches to plain stage counts and back.
 
 The Agents list is left alone.
@@ -91,8 +91,10 @@ Stops the task board, gives tabs their plain names back, clears the sidebar coun
 | `a` `v` `p` `z` `d` `o` | | set Active, In review (asks what for), Paused (asks why), Parked, Done, Tool |
 | `f` | | make it a priority, or not (Done and Tool end it) |
 | `n` | | edit the note (`ctrl+s` saves, `esc` cancels) |
-| `l` / `L` | `×` next to a link | add a link / remove one |
+| `l` / `L` | `×` next to a link | add a link / remove one (by its number: links are numbered in the grouped order everywhere) |
 | `r` | | rename the task (also renames the tab) |
+| `w` | | move the task to another workspace of the same herdr session |
+| `m` | | mute the channel of a Slack task |
 | `x` | | close the tab (Done tasks only) |
 | `1`–`9` | click a space chip | hide or show that space |
 | `shift`+`1`–`9` | double-click a chip | show only that space |
@@ -131,13 +133,22 @@ herdr-tasks note set "Old endpoint stays behind a flag until mobile ships."
 herdr-tasks note add "Opened draft PR #431."          # a line with your name, or the agent's
 herdr-tasks link add https://github.com/acme/api/pull/431
 herdr-tasks link add docs/plan.html                    # a file, as a file:// link
-herdr-tasks link rm 1
+herdr-tasks link rm 1                                  # by the number show gives it
+herdr-tasks move Backend                               # move the tab and its task to another workspace
 herdr-tasks show
 herdr-tasks list
 herdr-tasks board                                      # open the task board in your browser
 herdr-tasks board --print                              # print its address instead (it works once, for a minute)
 herdr-tasks board --new-token                          # sign every browser out of the board
 herdr-tasks linear-key                                 # save a Linear API key, for issue status on the board
+herdr-tasks slack status                               # the Slack watcher's state; starts the server if it isn't running (while slack_watch is on)
+herdr-tasks slack fetch                                # check Slack for asks now, even with the watcher off
+herdr-tasks slack skipped                              # the asks that made no task: off-topic, or maybe answered
+herdr-tasks slack take 1                               # make the task for one of them
+herdr-tasks slack mutes                                # the muted channels
+herdr-tasks slack unmute billing                       # take one off the list
+herdr-tasks slack research                             # start research in this tab, if it hasn't run
+herdr-tasks slack continue                             # continue this tab's research with your own tools
 ```
 
 ### Letting agents add notes and links
@@ -158,6 +169,7 @@ With `claude_links = true` in the [settings](#settings), what Claude Code works 
 
 - **Linear issues** Claude opens, creates, updates, comments on, or attaches a file to (`get_issue`, `save_issue`, `save_comment`, `create_attachment`), from any Linear MCP server, and issue links you paste into a prompt. Searches and lists don't count, and neither do issues that another issue only mentions.
 - **Slack links** you paste into a prompt: messages, threads and channels on `*.slack.com/archives/…`, Enterprise Grid included. Also the messages Claude posts with a Slack MCP `slack_send_message`. Slack links in Claude's replies don't count, since digest and summary skills reply with lists of them.
+  A Slack link says where, who and what, as far as it's known: `Oct 28 12:59 #billing · Dana Reed: can you check…`. The labels come from the ask itself, from the messages Claude sends, from channel names the watcher and Claude sessions' Slack searches have seen, and from Slack search results in a session that match a link already on the task. A search never adds a link.
 - **Pages**: HTML artifacts, visualizations, explainers and showcases.
   - Artifacts Claude publishes with the Artifact tool, labeled with the page's title. When it publishes a local file, the task shows the artifact instead of the file.
   - localhost URLs, claude.ai artifacts, and pages on static hosts (`*.github.io`, `*.gitlab.io`, `*.vercel.app`, `*.netlify.app`, `*.pages.dev`, `*.web.app`, `*.firebaseapp.com`, `*.surge.sh`) in your prompt or Claude's reply. Other web links don't count.
@@ -176,7 +188,158 @@ Limits:
 
 Comments and attachments name only the issue's ID, and so does a `get_issue` call whose result leaves out the URL (Claude asks for a few fields only). Their links are built from the Linear workspace of an issue link seen before, in any herdr session. Until one has been seen, those calls are skipped and noted in `claude-hook.log`.
 
-`herdr-tasks setup` adds the hook to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) for tool calls (`PostToolUse`), your prompts (`UserPromptSubmit`) and Claude's replies (`Stop`). It runs in the background, so it never holds Claude up. Setup leaves everything else in that file as it was. Your previous settings are saved once as `settings.json.before-herdr-tasks`. If the file doesn't parse, setup leaves it alone and says so. Turning `claude_links` off and running setup takes the hook out again, and so does `herdr-tasks remove`. Restart Claude Code sessions that are already running to pick up the change. The hook never prints anything to Claude; problems go to `claude-hook.log` in `~/.local/state/herdr/plugins/herdr-tasks`.
+`herdr-tasks setup` adds the hook to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`) for tool calls (`PostToolUse`), your prompts (`UserPromptSubmit`) and Claude's replies (`Stop`). It runs in the background, so it never holds Claude up. Setup leaves everything else in that file as it was. Your previous settings are saved once as `settings.json.before-herdr-tasks`. If the file doesn't parse, setup leaves it alone and says so. Turning `claude_links` off and running setup takes the hook out again, and so does `herdr-tasks remove`. Restart Claude Code sessions that are already running to pick up the change. That includes after a plugin update, which runs setup: 0.10.0 adds Slack searches to the tool calls the hook runs for, so it needs `herdr-tasks setup` (an update runs it) and a restart of running sessions. The hook never prints anything to Claude; problems go to `claude-hook.log` in `~/.local/state/herdr/plugins/herdr-tasks`.
+
+Channel names seen in Slack searches and by the watcher are kept in `slack/channels.json` in that folder (at most 1,000), for labeling later links. This happens under `claude_links`, even while `slack_watch` is off.
+
+## Slack asks
+
+With `slack_watch = true`, herdr-tasks turns each Slack message that needs your answer into a task, without you opening Slack:
+
+- A new tab in a workspace called "Slack inbox", in the background: no focus change, nothing typed into the tab you're in. The tab is named `<person>: <gist>`, and its note says who, where, when, and the message's first 500 characters, quoted. The task is Active and links to the message.
+- A **research session** in that tab: Claude Code, started in `slack_cwd`, locked to reading. It reads the thread, looks for the facts, and ends with a write-up: the ask in one line, what it found with sources, what could be done, and a draft reply. It never posts, reacts or sends anything. You post.
+
+How it finds them: every `slack_every` (5 minutes), within `slack_hours` (Mon-Fri 08:00-18:00, local time; `always` checks around the clock), the server runs a short headless Claude on Haiku that searches Slack through its connector. Slack is signed in the way Claude Code's Slack connector is, with `/mcp`; there is no Slack token to give herdr-tasks. herdr-tasks reads the search results itself and checks each message before it counts. The check can only read your Slack profile and search Slack.
+
+### What counts
+
+- Mentions of you in any channel you can read, threads included.
+- DMs and group DMs. With `slack_dms = false`, those are skipped, and so are mentions inside them.
+- Not counted: `@here`, `@channel`, `@everyone`, user-group mentions, your own messages, and messages from bots and apps.
+- Already handled: a mention you replied to in the same thread, after it.
+- A thread that has a task doesn't get a second tab, and neither does a DM conversation that has a task that isn't Done. The new message adds its link and a line to the task's log, and the task goes back to Active. This works wherever the task was moved.
+- With `slack_topic`, only asks about that topic (see [Only asks about a topic](#only-asks-about-a-topic)).
+- No backlog: the first check after turning it on starts from about that moment (it looks back up to 10 minutes), unless Slack was checked or fetched, or one was tried, within 72 hours (see [Fetch on demand](#fetch-on-demand)). After a gap (a night, a closed laptop, no `slack_session` running), the next check goes back at most 72 hours and takes at most 20 messages per check, then continues. `slack.log` names when a skipped period started.
+
+Opt out of channels with `slack_skip_channels` (names or IDs), or from a task: **Mute #channel** on its board card or in its tab view (**Mute this channel** for a DM), or `m` in its strip or the overview, which confirms with the channel's name. Those mutes are kept in the plugin's state, not in your config file, which herdr-tasks never rewrites. `herdr-tasks slack mutes` lists both; `herdr-tasks slack unmute billing` takes one off the state's list. Muting a DM task mutes that conversation.
+
+### Fetch on demand
+
+A fetch checks Slack now, without waiting for the watcher, and takes what it finds into the "Slack inbox" workspace. It takes the asks the watcher would: mentions and DMs you haven't answered that don't have a task yet. That's what "unread" means here, since Slack's connector can't tell what you've read. There are three ways to fetch:
+
+- `herdr-tasks slack fetch`, in any terminal;
+- the **Fetch Slack asks** action in herdr;
+- **Fetch** in the board's Slack line.
+
+A fetch works while `slack_watch` is off, outside `slack_hours`, and before `slack_every` has passed. It delivers the way the watcher does: the same mutes, at most 20 asks, and at most `slack_max_new` research sessions an hour. It goes on from the last check. The first fetch, with no check before it, looks back 72 hours.
+
+A fetch is one check. When there's more than one check can take, it says so, and you fetch again:
+
+```
+Fetching Slack asks…
+Fetched from Fri 14:20: 3 new tasks, 2 with research; 1 added to a task. There's more: fetch again.
+```
+
+A fetch and the watcher never check at once, even from another terminal: the watcher skips its turn while a fetch runs, and a fetch waits for a check under way to end. `herdr-tasks slack fetch` gives up after 15 minutes (with `slack_topic`, one check can run 20 topic checks), and Ctrl-C stops it; a second Ctrl-C ends it at once. A fetch that fails says why, and `slack.log` has it; the watcher then backs off as after a failed check of its own.
+
+The board's Slack line shows while the watcher is on, and while it's off once Slack was checked or fetched. Its **Fetch** reads "Fetching…" while the fetch runs, then shows the summary next to it for 15 seconds, or why it failed. One fetch from the board runs at a time. Closing the page doesn't stop it, and it gives up after 15 minutes too.
+
+**Maybe answered.** A check sees only your newest 20 messages, so when you've written 20 since the check's start, it can't tell whether you answered an ask older than all of them. Such an ask gets no tab. It's marked seen, logged as "may be answered already", and goes on the [skipped list](#skipped-asks), without a topic check. One in a thread or DM that has a task still joins that task. A fetch that looks back 72 hours meets these most; its summary says how many there are. Taking one from the list says you haven't answered it: its task gets research as any other.
+
+Turning `slack_watch` on goes on from the last check or fetch, or one that was tried, when that was within 72 hours, so the asks in between aren't lost. Otherwise it starts fresh. While a fetch runs, the watcher turns on once it's done.
+
+### Only asks about a topic
+
+With `slack_topic` set, only the asks about that topic become tasks. Say what counts in your own words, in at most 1,000 characters:
+
+```toml
+slack_topic = "the acme billing service: its code, deploys, incidents, data and APIs"
+```
+
+Each ask that would make a new task, except one you may have answered already, gets a topic check of its own: one Haiku run, capped at $0.05, that reads the topic and that one message, and answers whether the message is about the topic, and why in a few words. When it's unsure, the ask counts. Mentions, DMs and group DMs are checked alike. A message that joins a task already there, in its thread or DM, isn't checked: that conversation is yours already.
+
+The topic check also reads the start of `CLAUDE.md` and `README.md` in `slack_cwd`, at most 4 KB in all, as background about the software. It skips them when `slack_cwd` is your home folder, and doesn't follow symlinks.
+
+The topic check has no tools and no MCP servers (`--tools ""` and `--strict-mcp-config`), and the guard's `judge` profile lets it give its answer and nothing else. Its prompt, with the message, goes to Claude on stdin, not on the command line, where other users of the machine could read it. It takes at most a minute. When it fails, for any reason, the ask gets its task as if there were no topic, and `slack.log` says the topic wasn't checked. A topic check cut short because the fetch was stopped, with Ctrl-C or at its time limit, or because the server stopped, delivers nothing: that ask and the ones after it are taken by the next check.
+
+An off-topic ask gets no tab. It's marked seen, logged as "off-topic (why)", and goes on the [skipped list](#skipped-asks).
+
+### Skipped asks
+
+An ask that's off-topic, or that you may have answered already, makes no task. It goes on a list of skipped asks: the newest 50, for 7 days. A fetch's summary and `herdr-tasks slack status` say how many there are. An ask that falls off the list, past 50 or after 7 days, is logged in `slack.log` as "dropped from the skipped list". It's marked seen, so no check finds it again: after that, only `slack.log` has it.
+
+```
+$ herdr-tasks slack skipped
+#2 Oct 29 09:00 #billing · Dana Reed: the refund? — may be answered already
+   https://acme.slack.com/archives/C0123ABCD/p1793264400000100
+#1 Oct 28 12:59 #billing · Dana Reed: lunch on Friday, the usual place before… — off-topic: lunch plans
+   https://acme.slack.com/archives/C0123ABCD/p1793192340000100
+herdr-tasks slack take <#> makes its task.
+$ herdr-tasks slack take 1
+Took it: new tab w2:t1, with research
+```
+
+`herdr-tasks slack take` takes the number from that list, with or without the `#`, or the message's link. An ask keeps its number while it's on the list, so a newer skip, or a take, doesn't change which ask a number means. It makes the task as a check would have, without a topic check, and starts its research within `slack_max_new`. The ask then leaves the list.
+
+On the board, the Slack line shows "2 skipped" while there are skipped asks. It opens the same list, newest first: each ask with why it was skipped, **Take**, which does what `slack take` does and says where the task went, and **Open in Slack**.
+
+### Read-only until you continue
+
+While the research session is locked, a hook (the guard) allows it only these:
+
+- `Read`, `Grep` and `Glob`, for files inside `slack_cwd`;
+- the Slack connector's read, search and list tools;
+- Linear's get, list and search tools.
+
+Everything else is refused: Bash, Edit and Write, web fetch and search, the harness's other MCP servers, Chrome, publishing artifacts, and every Slack and Linear tool that writes. It starts in plan mode, so it ends by presenting its write-up and waiting. Claude's own plan approval doesn't unlock anything.
+
+What that leaves, plainly:
+
+- The locked session can read every file under `slack_cwd`, and the default is your home folder. Point `slack_cwd` at a project folder without secrets.
+- The research profile refuses the common secret files by name: `.ssh`, `.aws`, `.gnupg`, `.kube`, `.docker` and `.config/gcloud`, `.env` and `.env.*`, `.secrets` and `.secrets.*` (a file or a folder), `.netrc`, `.npmrc`, `.pypirc`, `*.pem`, `*.key`, and `id_rsa`, `id_ed25519` and `id_ecdsa` keys. It won't read those files and folders, or Grep with a glob that names them or matches every file. But a Grep over a folder still reads the matching lines of the files in it that aren't hidden, `certs/server.key` among them, so `slack_cwd` should be a folder without secrets. That list isn't every secret there is, either.
+- A planted instruction could still put what the session reads into a Slack or Linear search query, which leaves your machine. So the folder matters.
+- Claude Code 2.1.295 or later is needed: the lock's hooks fail closed from that version, so a guard that can't run, or takes over 10 seconds, blocks the call too. With an older Claude Code, checks and research don't start, and the watcher says why.
+
+**Continue with my tools** ends the locked session and resumes the same conversation with none of the locks, so your own settings, permission mode and tools apply. It's the board's card menu and tab view, `c` in the strip, and `herdr-tasks slack continue` in the tab.
+
+**A Slack message is untrusted input.** Colleagues, bots and Slack Connect guests can write anything, including instructions. The research prompt doesn't paste the message, and tells the session to treat it as quoted data, but a hostile message can still make the write-up misleading. Read the write-up, and its sources, before you choose **Continue with my tools**: the message stays in the conversation, and from then on the session has your tools.
+
+### Your default model, and cost
+
+The research session uses your default model, with no `--model` flag, and counts against your Claude usage limits like any session of yours.
+
+The checks are Haiku runs capped at $0.05 each. Measured, they cost $0.001-$0.011 each, which is about $1 a working day at the defaults (a check every 5 minutes, 10 hours, 5 days a week). With `slack_topic`, each new ask adds a topic check, another Haiku run capped at $0.05. `herdr-tasks slack status` shows the last check's cost, its topic checks included.
+
+At most `slack_max_new` research sessions start per hour (4). Past that, the task and tab are still made, without Claude; the task's log says why. **Start research** on the board, or `s` in the strip, starts it later (so does `herdr-tasks slack research` in the tab).
+
+### Keys and commands
+
+| Where | Does |
+|---|---|
+| Strip `c`, board **Continue with my tools** | continue the locked session with your tools |
+| Strip `s`, board **Start research** | start research for a task that has none yet, or whose start was held or failed |
+| Strip and overview `m`, board **Mute #channel** (**Mute this channel** for a DM) | mute the task's channel |
+| Strip and overview `w`, board **Move to workspace…** | move the task to another workspace |
+
+```bash
+herdr-tasks slack status          # on or off, last check and its cost, any problem, muted channels, the topic
+herdr-tasks slack fetch           # check now, even with the watcher off
+herdr-tasks slack skipped         # the asks that made no task: off-topic, or maybe answered
+herdr-tasks slack take 1          # make the task for one of them
+herdr-tasks slack mutes
+herdr-tasks slack unmute billing
+herdr-tasks slack research        # for the tab you're in, or --tab ID
+herdr-tasks slack continue
+herdr-tasks move Backend          # any task, not only Slack ones
+```
+
+When a check fails (the connector isn't signed in, a usage limit, a timeout after 2 minutes), the watcher says so and backs off: 5, 10, 20 minutes, then every 30. The board's header shows "Slack: last check 14:32", or the problem and since when. The tab bar shows `Slack ⚠` while there's a problem, in the tabs of `slack_session` (in every session while that is unset). Everything skipped or failed goes to `slack.log`.
+
+### Moving tasks
+
+**Move to workspace…** (board), `w` (strip, overview) and `herdr-tasks move <workspace>` move a tab's panes, except the strip, to another workspace of the same herdr session, with their processes running, Claude included. The task keeps its stage, note, links, priority, and the Slack thread it answers. A tab with several panes comes back as side-by-side splits. herdr can't move panes between sessions, which are separate servers.
+
+herdr's own keys for moving panes don't know about tasks. A task moved that way starts empty in its new tab.
+
+### Turning it on
+
+```toml
+slack_watch = true
+slack_session = "work"      # the herdr session for the Slack tabs; needed when more than one runs
+slack_cwd = "~/acme-harness"
+```
+
+Then run `herdr-tasks slack status`. It prints the watcher's state, and starts the server if it isn't running (while `slack_watch` is on), even with `board = false`. Changes to the slack settings take effect within 30 seconds while the server runs. While `slack_session` is unset and more than one herdr session runs, the watcher doesn't start, and `status` and the board say why. Turning `slack_watch` on again within 72 hours of the last check or fetch, or one that was tried, goes on from there; after longer, it starts fresh, with no backlog, like the first time.
 
 ## Settings
 
@@ -189,9 +352,19 @@ strip = true         # a strip along the bottom of each tab
 claude_links = false # link the Linear issues, Slack links, and pages Claude works with to the task
 board = false        # serve the task board on 127.0.0.1
 board_port = 7391    # the board's port
+slack_watch = false        # check Slack for asks
+slack_session = ""         # the herdr session for Slack tabs
+slack_workspace = "Slack inbox"  # its workspace
+slack_cwd = ""             # where research sessions start; "" is the home folder
+slack_dms = true           # DMs and group DMs count
+slack_skip_channels = []   # channel names or IDs never to make tasks for
+slack_every = "5m"         # how often to check
+slack_hours = "Mon-Fri 08:00-18:00"  # when to check, local time; "always" checks around the clock
+slack_max_new = 4          # research sessions started per hour
+slack_topic = ""           # only asks about this make tasks; "" takes every ask
 ```
 
-Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `herdr-tasks setup` after changing `claude_links`. The board's server reads `board` and `board_port` every 10 seconds, and stops when the board is turned off or moved to another port. To start it after turning the board on or changing its port, run `herdr-tasks board`, or restart herdr.
+Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `herdr-tasks setup` after changing `claude_links`. The board's server reads `board` and `board_port` every 10 seconds, and stops when the board and `slack_watch` are both off, or the port moves. To start it after turning the board on or changing its port, run `herdr-tasks board`, or restart herdr.
 
 ## How it works
 
@@ -205,7 +378,9 @@ Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `h
 - Browsers won't open `file://` links from a web page, so a file link on the board is a button that asks the board's server to open it (`open` on macOS, `xdg-open` on Linux), with a **Copy path** button next to it in the card's view. The server opens a file only when it's one of that task's links, and still a regular `.html` or `.htm` file once symlinks are followed.
 - Signing in to the board: `herdr-tasks board` asks the server for a code that works once, within a minute, and opens the board with it. The page swaps the code for a key and keeps it. The key works until the server stops, so after a restart, as when no herdr session has run for 3 minutes or after an update, the board asks you to sign in again. The server's own token is `board-token` in `~/.local/state/herdr/plugins/herdr-tasks`. `herdr-tasks board --new-token` replaces it, which signs every browser out.
 - With a Linear API key, the board shows the status of linked issues; a read-only key is enough. `herdr-tasks linear-key` reads it from stdin, or asks for it without showing what you type. On macOS it's kept in your login keychain; on Linux, in `linear-api-key` in the state folder, readable only by you. `herdr-tasks linear-key --delete` removes it. The board's server reads the key once and keeps it, so it doesn't ask the keychain every minute; `herdr-tasks linear-key` tells it to read the key again. While the keychain can't be read, as when it's locked, the server asks it again after 5 minutes, then less often, up to once an hour.
-- herdr reads a plugin's actions when it's installed or linked. After updating herdr-tasks, run `herdr plugin link` again, or restart herdr, to get new actions such as Open task board.
+- The Slack watcher runs in the board's server, which now runs when `board` or `slack_watch` is on, and stops when both are off. Its state is `slack/state.json` in `~/.local/state/herdr/plugins/herdr-tasks`: your Slack ID, the last check and its cost, any problem, the backoff, the messages it has seen (for 96 hours), the muted channels, the hourly start count, and the skipped asks. `slack/check.lock` keeps the watcher and a fetch from checking at once. The thread a task answers is kept on the task, in the session's state file. `slack.log` is in that folder itself. Both are readable only by you.
+- Slack checks, topic checks and research sessions run Claude with `--settings` that add a PreToolUse hook, `herdr-tasks slack-guard`, with one of three profiles: `watch` (read your Slack profile, search Slack), `judge` (give the topic check's answer, nothing else) and `research` (read files inside `slack_cwd`, read Slack and Linear). Any error in the guard blocks the call. The settings are `slack/watch-settings.json`, `slack/judge-settings.json` and `slack/research.json` in the state folder.
+- herdr reads a plugin's actions when it's installed or linked. After updating herdr-tasks, run `herdr plugin link` again, or restart herdr, to get new actions such as Fetch Slack asks.
 
 ## Not yet
 

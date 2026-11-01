@@ -18,9 +18,28 @@ import (
 
 // Board is everything the page shows. The page reads these JSON names.
 type Board struct {
-	Version   string    `json:"version"`
-	LinearKey bool      `json:"linearKey"` // a Linear API key is set
-	Sessions  []Session `json:"sessions"`  // by name
+	Version   string     `json:"version"`
+	LinearKey bool       `json:"linearKey"`       // a Linear API key is set
+	Slack     *SlackLine `json:"slack,omitempty"` // the Slack watcher's status, while it's on or offers a fetch
+	Sessions  []Session  `json:"sessions"`        // by name
+}
+
+// SlackLine is the Slack watcher's status, as the header shows it, with
+// Fetch when it offers one, and the skipped asks.
+type SlackLine struct {
+	Text    string       `json:"text"`
+	Problem bool         `json:"problem"`
+	Fetch   bool         `json:"fetch"`
+	Skipped []SkippedAsk `json:"skipped,omitempty"` // newest first
+}
+
+// SkippedAsk is an ask that made no task, as off-topic or maybe answered
+// already, as the Slack line lists it.
+type SkippedAsk struct {
+	ID    string `json:"id"`    // its message ID, which POST /api/slack/take takes
+	Label string `json:"label"` // as `slack skipped` shows it, without the number
+	Why   string `json:"why"`   // "may be answered already", or "off-topic: lunch plans"
+	Link  string `json:"link"`  // its permalink
 }
 
 // Session is one herdr session's part of the board.
@@ -54,6 +73,18 @@ type Card struct {
 	Log         []task.Entry `json:"log,omitempty"`
 	Links       []LinkView   `json:"links"`
 	Agents      []Agent      `json:"agents"`
+	// Tasks made from a Slack message only.
+	Slack *CardSlack `json:"slack,omitempty"`
+}
+
+// CardSlack is what a card made from a Slack message shows of it.
+type CardSlack struct {
+	Place    string `json:"place"`    // "#billing", "a DM" or "a group DM"
+	Channel  string `json:"channel"`  // its ID, which slack unmute takes
+	Research string `json:"research"` // "", held, failed, locked or open
+	// You muted the channel. It comes from the watcher's state, which
+	// Build doesn't read: the server marks it.
+	Muted bool `json:"muted"`
 }
 
 // LinkView is a link as a card shows it.
@@ -155,6 +186,9 @@ func buildCard(session string, r view.Row, panes []herdr.Pane, summary func(herd
 	}
 	for _, l := range t.Links {
 		c.Links = append(c.Links, linkView(l, issues))
+	}
+	if a := t.Slack; a != nil {
+		c.Slack = &CardSlack{Place: task.CleanLabel(a.Place), Channel: task.CleanLabel(a.Channel), Research: string(a.Research)}
 	}
 	for _, p := range panes {
 		// Agent is empty once the agent exits, though herdr keeps its session.

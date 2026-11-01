@@ -101,6 +101,17 @@
   let detailKey = null; // the card the detail panel shows
   let detailSig = null;
   let viewing = null; // {session, tab, terms} while a tab's view is open
+  // Cards with a move, a research start or a continue under way. Each can
+  // take a while, so the card offers none of them again until it's answered.
+  const working = new Set();
+  // The Slack line: its buttons, the skipped asks, as the board has them, a
+  // fetch and takes under way, and what the last of them said, for 15 s.
+  let slackEls = null; // {fetch, said, skipped}
+  let skipped = [];
+  let fetching = false;
+  const taking = new Set(); // message IDs
+  let slackReply = null; // {text, problem}
+  let replyTimer = 0;
 
   const $ = id => document.getElementById(id);
   const keyOf = c => c.session + '\n' + c.tab;
@@ -344,8 +355,9 @@
     return true;
   }
 
-  // post sends a task request, to /api/task unless path says otherwise, and
-  // fails with the server's message.
+  // post sends a task request, to /api/task unless path says otherwise. It
+  // gives the server's answer, or null when there's none, and fails with
+  // the server's message, the answer in its reply.
   async function post(body, path) {
     const k = key();
     let res;
@@ -358,15 +370,18 @@
     } catch (e) {
       throw new Error('The board server isn’t answering.');
     }
-    if (res.ok) return;
-    let msg = '';
-    try {
-      msg = (await res.json()).error || '';
-    } catch (e) {
-      // not JSON
+    let reply = null;
+    if (res.status !== 204) {
+      try {
+        reply = await res.json();
+      } catch (e) {
+        // not JSON
+      }
     }
+    if (res.ok) return reply;
+    const msg = reply && typeof reply.error === 'string' ? reply.error : '';
     if (res.status === 401 && !signOut(k)) throw new Error('Signed in again. Try that again.');
-    throw new Error(msg || 'That didn’t work (' + res.status + ').');
+    throw Object.assign(new Error(msg || 'That didn’t work (' + res.status + ').'), {reply});
   }
 
   // ---- Changing tasks
@@ -475,6 +490,104 @@
     else failed();
   }
 
+  // otherSpaces are the spaces of c's session that c can move to.
+  function otherSpaces(c) {
+    const s = board ? board.sessions.find(x => x.name === c.session) : null;
+    return s ? s.spaces.filter(x => x.id !== c.space) : [];
+  }
+
+  // muteLabel names the mute of a's channel.
+  const muteLabel = a => (/^#/.test(a.place || '') ? 'Mute ' + a.place : 'Mute this channel');
+
+  // cardActions are what the Move to menu offers after the stages, and the
+  // tab's view next to its buttons: a move to another workspace, and a
+  // Slack task's research and mute, as its research and channel allow.
+  function cardActions(c) {
+    const busy = working.has(keyOf(c));
+    const out = [];
+    if (!busy && otherSpaces(c).length) out.push({act: 'spaces', label: 'Move to workspace…'});
+    const a = c.slack;
+    if (a) {
+      const research = a.research || '';
+      if (!busy && research === 'locked') out.push({act: 'continue', label: 'Continue with my tools'});
+      if (!busy && (research === '' || research === 'held' || research === 'failed')) out.push({act: 'research', label: 'Start research'});
+      if (!a.muted) out.push({act: 'mute', label: muteLabel(a)});
+    }
+    return out;
+  }
+
+  // work posts an action that can take a while, saying what it's doing
+  // meanwhile. Moving a task's panes takes a moment; starting research waits
+  // for Claude to be ready, which can take minutes.
+  function work(c, body, doing) {
+    const k = keyOf(c);
+    working.add(k);
+    toast(doing);
+    render();
+    const end = () => {
+      working.delete(k);
+      render();
+    };
+    return post(Object.assign({session: c.session, tab: c.tab}, body)).then(
+      reply => {
+        end();
+        return reply;
+      },
+      err => {
+        end();
+        throw err;
+      },
+    );
+  }
+
+  // moveToSpace moves a card's task, with its panes, to another workspace.
+  // An open view of its tab follows it to its new tab, also when the move
+  // went wrong partway.
+  function moveToSpace(k, id) {
+    const c = cardByKey(k);
+    if (!c || working.has(k)) return;
+    const space = otherSpaces(c).find(x => x.id === id);
+    const label = space ? space.label : id;
+    const follow = reply => {
+      const tab = reply && typeof reply.tab === 'string' ? reply.tab : '';
+      if (!tab || !viewing || viewing.session !== c.session || viewing.tab !== c.tab) return;
+      history.replaceState(history.state, '', viewHash(c.session, tab));
+      route();
+    };
+    work(c, {action: 'move', workspace: id}, 'Moving to ' + label + '…').then(
+      reply => {
+        follow(reply);
+        toast('Moved to ' + label);
+      },
+      err => {
+        follow(err.reply);
+        toast(err.message);
+      },
+    );
+  }
+
+  // slackAction starts a Slack task's research, continues it with your
+  // tools, or mutes its channel.
+  function slackAction(k, act) {
+    const c = cardByKey(k);
+    if (!c || !c.slack) return;
+    if (act === 'mute') {
+      const place = c.slack.place || c.slack.channel;
+      post({session: c.session, tab: c.tab, action: 'mute'}).then(
+        () => toast('Muted ' + place + '. Undo: herdr-tasks slack unmute ' + c.slack.channel),
+        err => toast(err.message),
+      );
+      return;
+    }
+    if (working.has(k)) return;
+    const [doing, done] =
+      act === 'research' ? ['Starting research…', 'Research started'] : ['Continuing with your tools…', 'Continued with your tools'];
+    work(c, {action: act}, doing).then(
+      () => toast(done),
+      err => toast(err.message),
+    );
+  }
+
   // moveTo moves a card to a stage. In review and Paused ask what they
   // wait for first.
   function moveTo(k, stage) {
@@ -538,7 +651,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['sessions', 'spaces', 'stale', 'hint']) $(id).hidden = true;
+      for (const id of ['sessions', 'spaces', 'slack-bar', 'stale', 'hint']) $(id).hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
         el('code', '', 'herdr-tasks board'),
@@ -549,6 +662,7 @@
     if (!board) return;
     prune();
     $('version').textContent = board.version ? 'v' + board.version : '';
+    renderSlack(board.slack);
     const sessions = board.sessions;
     $('hint').hidden = board.linearKey || !sessions.some(s => s.cards.some(c => c.links.some(l => l.kind === 'linear')));
     const s = sessions.find(x => x.name === load(SESSION)) || sessions[0];
@@ -566,6 +680,86 @@
       $('empty').hidden = true;
     }
     renderDetail();
+  }
+
+  // renderSlack shows the Slack watcher's line, while the board has one: its
+  // status, cut short when it's long (its title has all of it), Fetch when
+  // it offers one, and how many asks were skipped.
+  function renderSlack(line) {
+    $('slack-bar').hidden = !line;
+    const e = $('slack');
+    e.textContent = line ? line.text : '';
+    e.setAttribute('title', line ? line.text : '');
+    e.classList.toggle('problem', Boolean(line && line.problem));
+    skipped = line && Array.isArray(line.skipped) ? line.skipped : [];
+    slackEls.fetch.hidden = !(line && line.fetch);
+    slackEls.skipped.hidden = !skipped.length;
+    slackEls.skipped.textContent = skipped.length + ' skipped';
+    drawFetch();
+  }
+
+  // drawFetch shows Fetch as the fetch is, and what the last fetch or take
+  // said.
+  function drawFetch() {
+    const {fetch, said} = slackEls;
+    fetch.disabled = fetching;
+    fetch.textContent = fetching ? 'Fetching…' : 'Fetch';
+    // With no reply to show, it says a take is under way while one is.
+    const shown = slackReply || (taking.size ? {text: 'Taking it…', problem: false} : null);
+    said.hidden = !shown;
+    said.textContent = shown ? shown.text : '';
+    said.setAttribute('title', shown ? shown.text : '');
+    said.classList.toggle('problem', Boolean(shown && shown.problem));
+  }
+
+  // say shows a fetch's or take's reply next to Fetch, as a problem when it
+  // failed, for 15 s. No text clears it.
+  function say(text, problem) {
+    clearTimeout(replyTimer);
+    slackReply = text ? {text, problem: Boolean(problem)} : null;
+    if (slackReply) {
+      replyTimer = setTimeout(() => {
+        slackReply = null;
+        drawFetch();
+      }, 15e3);
+    }
+    drawFetch();
+  }
+
+  // replyText is the text of a fetch's or take's answer, or else fallback.
+  const replyText = (reply, fallback) => (reply && typeof reply.text === 'string' && reply.text ? reply.text : fallback);
+
+  // fetchSlack has the board server check Slack for asks now, and says what
+  // it found. It can take minutes: meanwhile Fetch reads Fetching…, and no
+  // other fetch starts.
+  function fetchSlack() {
+    if (fetching) return;
+    fetching = true;
+    say('');
+    const done = (text, problem) => {
+      fetching = false;
+      say(text, problem);
+    };
+    post({}, '/api/slack/fetch').then(
+      reply => done(replyText(reply, 'Fetched.'), false),
+      err => done(err.message, true),
+    );
+  }
+
+  // takeAsk has the board server make the task for a skipped ask, by its
+  // message ID, and says where it went. Until then, it says Taking it…
+  function takeAsk(id) {
+    if (!id || taking.has(id)) return;
+    taking.add(id);
+    say('');
+    const done = (text, problem) => {
+      taking.delete(id);
+      say(text, problem);
+    };
+    post({id}, '/api/slack/take').then(
+      reply => done(replyText(reply, 'Took it.'), false),
+      err => done(err.message, true),
+    );
   }
 
   function renderSessions(sessions) {
@@ -895,7 +1089,7 @@
   function renderDetail() {
     if (!detailKey) return;
     const c = board ? cardByKey(detailKey) : null;
-    const sig = !board ? 'loading' : c ? JSON.stringify(c) : '';
+    const sig = !board ? 'loading' : c ? JSON.stringify(c) + (working.has(detailKey) ? ' working' : '') : '';
     if (sig === detailSig) return;
     detailSig = sig;
 
@@ -959,6 +1153,10 @@
       );
     }
     acts.append(button('button', 'Show in herdr', 'focus'));
+    for (const a of cardActions(c)) {
+      const more = a.act === 'spaces' ? {'aria-haspopup': 'menu', 'aria-expanded': 'false'} : {};
+      acts.append(button('button', a.label, a.act, more));
+    }
     parts.push(acts);
 
     parts.push(detailSection('Note', c.note ? el('p', 'text', c.note) : el('p', 'empty-line', 'No note yet.')));
@@ -1033,10 +1231,92 @@
 
   // ---- The Move to menu
 
-  function openMenu(trigger, k) {
+  // openMenu opens the Move to menu of the card k under trigger: its stages
+  // and actions, or, when list is 'spaces', the workspaces it can move to.
+  function openMenu(trigger, k, list) {
     const c = cardByKey(k);
     if (!c) return;
+    menuFor = {key: k, trigger};
+    fillMenu(c, list);
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+
+  function fillMenu(c, list) {
+    const spaces = list === 'spaces';
+    showMenu(spaces ? 'Move to workspace' : 'Move to', spaces ? spaceItems(c) : stageItems(c));
+  }
+
+  // openSkipped opens the list of the skipped asks under trigger, the Slack
+  // line's "n skipped".
+  function openSkipped(trigger) {
+    menuFor = {key: '', trigger};
+    showMenu('Skipped asks', skippedItems());
+    trigger.setAttribute('aria-expanded', 'true');
+  }
+
+  // showMenu shows items in the menu, under the trigger it's open for. A
+  // long list scrolls, in the room below the trigger or above it, whichever
+  // is more.
+  function showMenu(label, items) {
     const menu = $('menu');
+    menu.setAttribute('aria-label', label);
+    menu.replaceChildren(...items);
+    menu.hidden = false;
+    const r = menuFor.trigger.getBoundingClientRect();
+    menu.style.maxHeight = Math.max(innerHeight - r.bottom, r.top) - 12 + 'px';
+    const left = Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8));
+    let top = r.bottom + 4;
+    if (top + menu.offsetHeight > innerHeight - 8) top = Math.max(8, r.top - menu.offsetHeight - 4);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    const first = menu.querySelector('.menu-item:not([aria-disabled])');
+    if (first) first.focus();
+  }
+
+  function menuItem(cls, label, more) {
+    const item = attrs(el('button', cls), Object.assign({type: 'button', role: 'menuitem', tabindex: '-1'}, more));
+    item.append(el('span', '', label));
+    return item;
+  }
+
+  // skippedItems are the skipped asks, newest first, each with its label,
+  // why it was skipped, Take, and Open in Slack, which opens as a card's
+  // links do. Their words come from Slack, so they're text.
+  function skippedItems() {
+    const items = [attrs(el('div', 'menu-label', 'Skipped asks'), {'aria-hidden': 'true'})];
+    for (const a of skipped) {
+      const row = attrs(el('div', 'menu-ask'), {role: 'group', 'aria-label': String(a.label)});
+      const acts = el('div', 'ask-acts');
+      const take = menuItem('menu-item slack-act', 'Take', {'data-act': 'take', 'data-id': String(a.id)});
+      if (taking.has(a.id)) take.setAttribute('aria-disabled', 'true');
+      acts.append(take);
+      if (linkable(a.link)) {
+        const open = attrs(el('a', 'menu-item slack-act'), {
+          role: 'menuitem',
+          tabindex: '-1',
+          href: a.link,
+          target: '_blank',
+          rel: 'noopener noreferrer',
+          'data-act': 'openslack',
+        });
+        open.append(el('span', '', 'Open in Slack'));
+        acts.append(open);
+      }
+      row.append(el('div', 'ask-label', a.label), el('div', 'ask-why', a.why), acts);
+      items.push(row);
+    }
+    return items;
+  }
+
+  // spaceItems are the workspaces c can move to.
+  function spaceItems(c) {
+    const items = [attrs(el('div', 'menu-label', 'Move to workspace'), {'aria-hidden': 'true'})];
+    for (const s of otherSpaces(c)) items.push(menuItem('menu-item', s.label, {'data-space': s.id}));
+    return items;
+  }
+
+  // stageItems are the stages c can move to, then its actions.
+  function stageItems(c) {
     const items = [attrs(el('div', 'menu-label', 'Move to'), {'aria-hidden': 'true'})];
     for (const m of MOVES) {
       const current = c.stage === m.stage;
@@ -1054,18 +1334,14 @@
       if (current && !REASONS[m.stage]) item.setAttribute('aria-disabled', 'true');
       items.push(item);
     }
-    menu.replaceChildren(...items);
-    menu.hidden = false;
-    const r = trigger.getBoundingClientRect();
-    const left = Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8));
-    let top = r.bottom + 4;
-    if (top + menu.offsetHeight > innerHeight - 8) top = Math.max(8, r.top - menu.offsetHeight - 4);
-    menu.style.left = left + 'px';
-    menu.style.top = top + 'px';
-    trigger.setAttribute('aria-expanded', 'true');
-    menuFor = {key: k, trigger};
-    const first = menu.querySelector('.menu-item:not([aria-disabled])');
-    if (first) first.focus();
+    const acts = cardActions(c);
+    if (acts.length) items.push(attrs(el('div', 'menu-sep'), {role: 'separator'}));
+    for (const a of acts) {
+      const more = {'data-act': a.act};
+      if (a.act === 'spaces') more['aria-haspopup'] = 'menu';
+      items.push(menuItem(a.act === 'spaces' ? 'menu-item' : 'menu-item slack-act', a.label, more));
+    }
+    return items;
   }
 
   function closeMenu(refocus) {
@@ -1099,6 +1375,18 @@
   }
 
   // ---- Setting up
+
+  // buildSlack makes the Slack line's parts after its status: Fetch, "n
+  // skipped", which opens the list, and what the last fetch or take said.
+  function buildSlack() {
+    slackEls = {
+      fetch: attrs(el('button', 'slack-button slack-fetch', 'Fetch'), {type: 'button', title: 'Check Slack for asks now'}),
+      said: attrs(el('span', 'slack-said'), {role: 'status'}),
+      skipped: attrs(el('button', 'slack-button slack-skipped'), {type: 'button', 'aria-haspopup': 'menu', 'aria-expanded': 'false'}),
+    };
+    for (const e of Object.values(slackEls)) e.hidden = true;
+    $('slack-bar').append(slackEls.fetch, slackEls.skipped, slackEls.said);
+  }
 
   function buildColumns() {
     const doneOpen = load(DONE_OPEN) === '1';
@@ -1201,8 +1489,19 @@
       const item = e.target instanceof Element ? e.target.closest('.menu-item') : null;
       if (!item || item.getAttribute('aria-disabled') === 'true' || !menuFor) return;
       const k = menuFor.key;
+      const act = item.getAttribute('data-act');
+      if (act === 'spaces') {
+        const c = cardByKey(k);
+        if (c) fillMenu(c, 'spaces');
+        return;
+      }
       closeMenu(true);
-      moveTo(k, item.getAttribute('data-stage'));
+      // Open in Slack is a link: the browser opens it.
+      if (act === 'openslack') return;
+      if (act === 'take') takeAsk(item.getAttribute('data-id'));
+      else if (item.hasAttribute('data-space')) moveToSpace(k, item.getAttribute('data-space'));
+      else if (act) slackAction(k, act);
+      else moveTo(k, item.getAttribute('data-stage'));
     });
     menu.addEventListener('keydown', e => {
       const items = [...menu.querySelectorAll('.menu-item:not([aria-disabled])')];
@@ -1216,6 +1515,11 @@
         e.preventDefault();
         closeMenu(true);
       } else if (e.key === 'Tab') closeMenu(false);
+      else if (e.key === ' ' && i >= 0 && items[i].matches('a')) {
+        // A link opens on Enter only: as a menu item, Space opens it too.
+        e.preventDefault();
+        items[i].click();
+      }
       if (next >= 0 && items[next]) {
         e.preventDefault();
         items[next].focus();
@@ -1236,6 +1540,16 @@
       },
       true,
     );
+
+    $('slack-bar').addEventListener('click', e => {
+      const b = e.target instanceof Element ? e.target.closest('button') : null;
+      if (!b) return;
+      if (b === slackEls.fetch) fetchSlack();
+      else if (b === slackEls.skipped && skipped.length) {
+        if (menuFor && menuFor.trigger === b) closeMenu(true);
+        else openSkipped(b);
+      }
+    });
 
     $('sessions').addEventListener('click', e => {
       const b = e.target instanceof Element ? e.target.closest('button') : null;
@@ -1270,11 +1584,12 @@
       const c = btn && detailKey ? cardByKey(detailKey) : null;
       if (!c) return;
       const act = btn.getAttribute('data-act');
-      if (act === 'move') {
+      if (act === 'move' || act === 'spaces') {
         if (menuFor && menuFor.trigger === btn) closeMenu(true);
-        else openMenu(btn, detailKey);
+        else openMenu(btn, detailKey, act === 'spaces' ? 'spaces' : '');
       } else if (act === 'priority') setPriority(c, !c.priority);
       else if (act === 'focus') showInHerdr(c);
+      else if (act === 'research' || act === 'continue' || act === 'mute') slackAction(detailKey, act);
       else if (act === 'unlink') unlink(c, btn.getAttribute('data-url'));
       else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
       else if (act === 'copypath') copyPath(c, btn.getAttribute('data-url'));
@@ -1308,6 +1623,7 @@
     });
   }
 
+  buildSlack();
   buildColumns();
   wire();
   setInterval(tickAges, 30e3);

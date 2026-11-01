@@ -261,3 +261,62 @@ func TestPageFollowsASignInInAnotherTab(t *testing.T) {
 		t.Fatalf("%v\n%s", err, out)
 	}
 }
+
+// jsFunction is the source of the function name in src, from "function
+// name(" to its closing brace. It skips braces in strings.
+func jsFunction(t *testing.T, src, name string) string {
+	t.Helper()
+	start := strings.Index(src, "function "+name+"(")
+	if start < 0 {
+		t.Fatalf("no function %s", name)
+	}
+	depth := 0
+	for i := start; i < len(src); i++ {
+		switch c := src[i]; c {
+		case '\'', '"', '`':
+			for i++; i < len(src) && src[i] != c; i++ {
+				if src[i] == '\\' {
+					i++
+				}
+			}
+		case '{':
+			depth++
+		case '}':
+			if depth--; depth == 0 {
+				return src[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("function %s doesn't end", name)
+	return ""
+}
+
+// The Slack line's Fetch button, and the skipped list with Take on each
+// ask, are built of elements and text, as Slack text is untrusted. They post
+// to the board's Slack endpoints.
+func TestPageHasFetchAndSkipped(t *testing.T) {
+	src := withoutComments(pageScripts(t)["web/app.js"])
+	if el := jsFunction(t, src, "el"); !strings.Contains(el, "document.createElement(") || !strings.Contains(el, ".textContent =") {
+		t.Errorf("el doesn't build with createElement and textContent:\n%s", el)
+	}
+	for name, wants := range map[string][]string{
+		"buildSlack":   {"el('button'", "'Fetch'"},
+		"drawFetch":    {"'Fetching…'", ".disabled =", ".textContent ="},
+		"fetchSlack":   {"'/api/slack/fetch'"},
+		"renderSlack":  {"' skipped'", ".textContent ="},
+		"skippedItems": {"el('div', 'ask-label', a.label)", "el('div', 'ask-why', a.why)", "'Take'", "'Open in Slack'", "linkable(a.link)", "'noopener noreferrer'"},
+		"takeAsk":      {"'/api/slack/take'"},
+	} {
+		body := jsFunction(t, src, name)
+		for _, want := range wants {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s has no %s", name, want)
+			}
+		}
+		for _, sink := range []string{"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "createContextualFragment", "setHTML"} {
+			if strings.Contains(body, sink) {
+				t.Errorf("%s uses %s", name, sink)
+			}
+		}
+	}
+}

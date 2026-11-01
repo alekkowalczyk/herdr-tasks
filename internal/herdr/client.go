@@ -101,14 +101,22 @@ type Client struct {
 
 func New() *Client { return &Client{SocketPath: SocketPath()} }
 
+// callDeadline is how long Call waits for an answer.
+var callDeadline = 10 * time.Second
+
 // Call sends a request and decodes its result into out (which may be nil).
 func (c *Client) Call(method string, params any, out any) error {
+	return c.callFor(callDeadline, method, params, out)
+}
+
+// callFor is Call with its own deadline, for requests herdr answers slowly.
+func (c *Client) callFor(d time.Duration, method string, params any, out any) error {
 	conn, err := net.DialTimeout("unix", c.SocketPath, 2*time.Second)
 	if err != nil {
 		return fmt.Errorf("can't reach herdr at %s (is it running?): %w", c.SocketPath, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(d))
 
 	if params == nil {
 		params = struct{}{}
@@ -447,32 +455,53 @@ func (e *ErrNotMoved) Error() string {
 
 // move sends pane.move and reports a move herdr declined as an error, since
 // herdr answers those with success and changed: false.
-func (c *Client) move(paneID string, destination map[string]any) error {
+func (c *Client) move(paneID string, destination map[string]any) (Moved, error) {
 	var r struct {
 		Result struct {
 			Changed bool   `json:"changed"`
 			Reason  string `json:"reason"`
+			Pane    struct {
+				ID    string `json:"pane_id"`
+				TabID string `json:"tab_id"`
+			} `json:"pane"`
 		} `json:"move_result"`
 	}
 	if err := c.Call("pane.move", map[string]any{"pane_id": paneID, "destination": destination, "focus": false}, &r); err != nil {
-		return err
+		return Moved{}, err
 	}
 	if !r.Result.Changed {
-		return &ErrNotMoved{Pane: paneID, Reason: r.Result.Reason}
+		return Moved{}, &ErrNotMoved{Pane: paneID, Reason: r.Result.Reason}
 	}
-	return nil
+	return Moved{PaneID: r.Result.Pane.ID, TabID: r.Result.Pane.TabID}, nil
+}
+
+// Moved is where a pane ended up. A pane moved to another workspace gets a
+// new ID.
+type Moved struct{ PaneID, TabID string }
+
+// MovePaneToNewTab moves a pane into a new tab of a workspace.
+func (c *Client) MovePaneToNewTab(paneID, workspaceID, label string) (Moved, error) {
+	return c.move(paneID, map[string]any{"type": "new_tab", "workspace_id": workspaceID, "label": label})
+}
+
+// MovePaneNextTo moves a pane next to target in tabID, which may be in
+// another workspace.
+func (c *Client) MovePaneNextTo(paneID, tabID, target, split string, ratio float64) (Moved, error) {
+	return c.move(paneID, map[string]any{
+		"type": "tab", "tab_id": tabID, "target_pane_id": target, "split": split, "ratio": ratio,
+	})
 }
 
 // ParkPane moves a pane out into a tab of its own.
 func (c *Client) ParkPane(paneID, label string) error {
-	return c.move(paneID, map[string]any{"type": "new_tab", "label": label})
+	_, err := c.move(paneID, map[string]any{"type": "new_tab", "label": label})
+	return err
 }
 
 // MovePane moves a pane next to target in tabID.
 func (c *Client) MovePane(paneID, tabID, target, split string, ratio float64) error {
-	return c.move(paneID, map[string]any{
-		"type": "tab", "tab_id": tabID, "target_pane_id": target, "split": split, "ratio": ratio,
-	})
+	_, err := c.MovePaneNextTo(paneID, tabID, target, split, ratio)
+	return err
 }
 
 // SetRootRatio sets the ratio of a tab's top-level split.

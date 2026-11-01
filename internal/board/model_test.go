@@ -3,6 +3,8 @@ package board
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -356,5 +359,196 @@ func TestBuildJSONFieldNames(t *testing.T) {
 	}
 	if want := `"priority":false,"agentStatus":"working","links":[],"agents":[]}`; !strings.HasSuffix(string(j), want) {
 		t.Errorf("json = %s, want it to end %s", j, want)
+	}
+}
+
+func TestCardCarriesSlack(t *testing.T) {
+	live := &herdr.Live{
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "Slack inbox"}},
+		Tabs:       []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1"}, {ID: "w1:t2", WorkspaceID: "w1"}},
+	}
+	state := &store.State{Tasks: map[string]*task.Task{
+		"w1:t1": {TabID: "w1:t1", Title: "Dana Reed: refund for ABC-12", Stage: task.Active, Since: now,
+			Slack: &task.SlackAsk{Key: "C0123ABCD/1793450000.000100", Channel: "C0123ABCD", Place: "#billing",
+				Author: "Dana Reed", TS: "1793450000.000100", At: now, Permalink: "https://acme.slack.com/archives/C0123ABCD/p1793450000000100",
+				SessionID: "0b5e1c2a-7d3f-4e8a-9c61-2f4d8a1b3c5e", Research: task.ResearchLocked}},
+		"w1:t2": {TabID: "w1:t2", Stage: task.Active, Since: now},
+	}}
+	cards := Build([]Snapshot{{Name: "work", State: state, Live: live}}, noSummary, nil, false, "").Sessions[0].Cards
+	if len(cards) != 2 {
+		t.Fatalf("cards = %+v", cards)
+	}
+	if got, want := cards[0].Slack, (&CardSlack{Place: "#billing", Channel: "C0123ABCD", Research: "locked"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("card.slack = %+v, want %+v", got, want)
+	}
+	j, err := json.Marshal(cards[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(j, &v); err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(t, v["slack"]); got != "channel muted place research" {
+		t.Errorf("card.slack keys = %s", got)
+	}
+
+	// Research that hasn't started is "", which the page reads.
+	state.Tasks["w1:t1"].Slack.Research = ""
+	cards = Build([]Snapshot{{Name: "work", State: state, Live: live}}, noSummary, nil, false, "").Sessions[0].Cards
+	if j, _ := json.Marshal(cards[0].Slack); string(j) != `{"place":"#billing","channel":"C0123ABCD","research":"","muted":false}` {
+		t.Errorf("card.slack = %s", j)
+	}
+
+	// A task that isn't from Slack has no slack.
+	if cards[1].Slack != nil {
+		t.Errorf("plain card.slack = %+v", cards[1].Slack)
+	}
+	if j, _ := json.Marshal(cards[1]); strings.Contains(string(j), `"slack"`) {
+		t.Errorf("plain card = %s", j)
+	}
+}
+
+// slackLineOf is the Slack line on a board s builds.
+func slackLineOf(s *Server) *SlackLine {
+	var b Board
+	s.addSlack(&b)
+	return b.Slack
+}
+
+// filesIn is what's in dir and below it, by path from dir.
+func filesIn(t *testing.T, dir string) []string {
+	t.Helper()
+	var got []string
+	err := filepath.WalkDir(dir, func(path string, _ os.DirEntry, err error) error {
+		if err == nil && path != dir {
+			rel, _ := filepath.Rel(dir, path)
+			got = append(got, filepath.ToSlash(rel))
+		}
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return got
+}
+
+// TestSlackLineShowsWhileFetchable: the header has the Slack line while the
+// watcher is on, or while it's off and offers a fetch. Otherwise there's
+// none. Reading the watcher's state for it makes no file: there's none
+// before the watcher saves it, and the board adds none after.
+func TestSlackLineShowsWhileFetchable(t *testing.T) {
+	dir := t.TempDir()
+	status := slack.Status{Text: "Slack: off", Fetch: true}
+	s := &Server{cfg: Config{StateDir: dir, Now: func() time.Time { return now }, Slack: func() slack.Status { return status }}}
+	check := func(name string, want *SlackLine, made []string) {
+		t.Helper()
+		if got := slackLineOf(s); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: %+v, want %+v", name, got, want)
+		}
+		if got := filesIn(t, dir); !reflect.DeepEqual(got, made) {
+			t.Errorf("%s: the state folder has %q, want %q", name, got, made)
+		}
+	}
+	check("off with a fetch", &SlackLine{Text: "Slack: off", Fetch: true}, nil)
+	status = slack.Status{On: true, Fetch: true, Text: "Slack: last check 08:55"}
+	check("on", &SlackLine{Text: "Slack: last check 08:55", Fetch: true}, nil)
+	status = slack.Status{Text: "Slack: off"}
+	check("off with no fetch", nil, nil)
+
+	// Once the watcher has saved its state, as it has when it offers a
+	// fetch, the line reads it and the folder has only what it saved.
+	if err := slack.Update(dir, func(s *slack.State) error { s.UserID = "U0ME00001"; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	saved := filesIn(t, dir)
+	if want := []string{"slack", "slack/state.json", "slack/state.lock"}; !reflect.DeepEqual(saved, want) {
+		t.Fatalf("the watcher saved %q, want %q", saved, want)
+	}
+	status = slack.Status{Text: "Slack: off", Fetch: true}
+	check("off with a fetch and a state", &SlackLine{Text: "Slack: off", Fetch: true}, saved)
+}
+
+// skippedAsk is an ask posted at, in #billing, or in a DM with Rui when dm.
+func skippedAsk(at time.Time, dm bool, text string) slack.Ask {
+	ts := fmt.Sprintf("%d.000100", at.Unix())
+	m := slack.Message{Channel: "C0123ABCD", Place: "#billing", AuthorID: "U0DANA001", Author: "Dana Reed", TS: ts, Text: text}
+	kind, key := slack.KindMention, "C0123ABCD/"+ts
+	if dm {
+		m.Channel, m.Place, m.AuthorID, m.Author = "D0RUI0001", "DM", "U0RUI0001", "Rui Costa"
+		kind, key = slack.KindDM, "D0RUI0001"
+	}
+	m.Permalink = "https://acme.slack.com/archives/" + m.Channel + "/p" + strings.Replace(ts, ".", "", 1)
+	return slack.Ask{Message: m, Kind: kind, Key: key, Gist: "lunch", At: at}
+}
+
+// TestSlackLineListsSkipped: the Slack line lists the skipped asks, newest
+// first, as `slack skipped` does, each with why, without those over 7 days
+// old. When the state can't be read, it lists none.
+func TestSlackLineListsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	dana := skippedAsk(time.Date(2026, 10, 28, 12, 59, 0, 0, time.UTC), false, "<@U0ME00001> lunch on Friday, the usual place before the invoice review?")
+	rui := skippedAsk(time.Date(2026, 10, 30, 14, 30, 0, 0, time.UTC), true, "book club tonight?")
+	refund := skippedAsk(time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC), false, "<@U0ME00001> the refund?")
+	err := slack.Update(dir, func(s *slack.State) error {
+		s.UserID = "U0ME00001"
+		s.Skip(dana, slack.Skip{Why: "lunch\nplans"}, now.Add(-time.Hour))
+		s.Skip(refund, slack.Skip{Answered: true}, now.Add(-30*time.Minute))
+		s.Skip(rui, slack.Skip{Why: "a book club"}, now.Add(-10*time.Minute))
+		s.Skip(skippedAsk(time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC), false, "old news"), slack.Skip{Why: "old news"}, now.Add(-8*24*time.Hour))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{cfg: Config{StateDir: dir, Now: func() time.Time { return now }, Slack: func() slack.Status {
+		return slack.Status{Text: "Slack: off", Fetch: true}
+	}}}
+	line := slackLineOf(s)
+	want := []SkippedAsk{
+		{ID: rui.ID(), Label: "Oct 30 14:30 DM · Rui Costa: book club tonight?", Why: "off-topic: a book club", Link: rui.Permalink},
+		{ID: refund.ID(), Label: "Oct 29 09:00 #billing · Dana Reed: the refund?", Why: "may be answered already", Link: refund.Permalink},
+		{ID: dana.ID(), Label: "Oct 28 12:59 #billing · Dana Reed: lunch on Friday, the usual place before…", Why: "off-topic: lunch plans", Link: dana.Permalink},
+	}
+	if line == nil || !reflect.DeepEqual(line.Skipped, want) {
+		t.Fatalf("line = %+v, want skipped %+v", line, want)
+	}
+	if want := "D0RUI0001/1793370600.000100"; rui.ID() != want {
+		t.Errorf("rui's ID = %s, want %s", rui.ID(), want)
+	}
+	j, err := json.Marshal(line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v map[string]any
+	if err := json.Unmarshal(j, &v); err != nil {
+		t.Fatal(err)
+	}
+	if got := keys(t, v); got != "fetch problem skipped text" {
+		t.Errorf("line keys = %s", got)
+	}
+	if got := keys(t, v["skipped"].([]any)[0]); got != "id label link why" {
+		t.Errorf("skipped ask keys = %s", got)
+	}
+	// The state on disk is as it was: the old one is the watcher's to drop.
+	if st, err := slack.Load(dir); err != nil || len(st.Skipped) != 4 {
+		t.Errorf("the state was changed: %v, %d skipped", err, len(st.Skipped))
+	}
+
+	// None skipped: none listed, and no list in the board's JSON.
+	if err := slack.Update(dir, func(s *slack.State) error { s.Skipped = nil; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	line = slackLineOf(s)
+	if j, _ := json.Marshal(line); line == nil || line.Skipped != nil || strings.Contains(string(j), "skipped") {
+		t.Errorf("line = %s, want no skipped asks", j)
+	}
+
+	// A state that can't be read lists none, and the line shows all the same.
+	if err := os.WriteFile(filepath.Join(dir, "slack", "state.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := slackLineOf(s), (&SlackLine{Text: "Slack: off", Fetch: true}); !reflect.DeepEqual(got, want) {
+		t.Errorf("with the state unreadable: %+v, want %+v", got, want)
 	}
 }

@@ -23,7 +23,7 @@ type fakeHerdr struct {
 
 func newFake() *fakeHerdr {
 	return &fakeHerdr{
-		ws: []herdr.Workspace{{ID: "w1", Label: "jam sql", Focused: true}, {ID: "w2", Label: "munu MWP"}},
+		ws: []herdr.Workspace{{ID: "w1", Label: "acme ops", Focused: true}, {ID: "w2", Label: "acme ABC"}},
 		tabs: []herdr.Tab{
 			{ID: "w1:t1", WorkspaceID: "w1", Label: "1"},
 			{ID: "w1:t2", WorkspaceID: "w1", Label: "arm CI runners"},

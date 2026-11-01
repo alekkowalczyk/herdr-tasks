@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -55,11 +56,14 @@ var (
 		defer f.Close()
 		return io.ReadAll(io.LimitReader(f, maxRead))
 	}
+	// readChannels reads the Slack channels' names, also one probe.
+	readChannels = slack.Channels
 )
 
 var (
-	slackSend = regexp.MustCompile(`^mcp__.*[Ss]lack.*__slack_send_message$`)
-	navigate  = regexp.MustCompile(`^mcp__.*__(browser_)?navigate$`)
+	slackSend   = regexp.MustCompile(`^mcp__.*[Ss]lack.*__slack_send_message$`)
+	slackSearch = regexp.MustCompile(`^mcp__.*[Ss]lack.*__slack_search_(public|public_and_private)$`)
+	navigate    = regexp.MustCompile(`^mcp__.*__(browser_)?navigate$`)
 )
 
 // Links returns the links in a hook call, in the order found, one per
@@ -68,9 +72,14 @@ var (
 //   - A reply gives pages only: Slack digests reply with lists of permalinks.
 //   - A tool call gives the artifact it published, the page it wrote, the
 //     Slack message it sent, or the local page it opened.
-func Links(p Payload) []Link {
+//
+// A Slack link is labelled with its channel's name when the state folder
+// dir has seen it ("" has seen none); a message Claude sent also says who
+// sent it and its first words.
+func Links(p Payload, dir string) []Link {
 	f := &finder{
 		cwd:      p.Cwd,
+		dir:      dir,
 		deadline: time.Now().Add(budget),
 		seen:     map[string]bool{},
 		tried:    map[string]bool{},
@@ -92,11 +101,13 @@ func Links(p Payload) []Link {
 // finder collects the links of one hook call.
 type finder struct {
 	cwd      string
+	dir      string // the state folder, for Slack channels' names
 	deadline time.Time
 	probes   int
-	out      bool            // out of probes or time
-	seen     map[string]bool // keys of the links found
-	tried    map[string]bool // paths of the files looked at
+	out      bool              // out of probes or time
+	seen     map[string]bool   // keys of the links found
+	tried    map[string]bool   // paths of the files looked at
+	channels map[string]string // Slack channels' names; nil until read
 	links    []Link
 }
 
@@ -161,6 +172,31 @@ func within[T any](f *finder, fn func() (T, error)) (T, error) {
 	}
 }
 
+// channel is the name of the Slack channel id, "#billing", or "" when it
+// isn't known. The names are read once, as one probe.
+func (f *finder) channel(id string) string {
+	if f.dir == "" || id == "" {
+		return ""
+	}
+	if f.channels == nil {
+		read := readChannels
+		names, err := within(f, func() (map[string]string, error) { return read(f.dir) })
+		if err != nil || names == nil {
+			names = map[string]string{}
+		}
+		f.channels = names
+	}
+	return task.CleanLabel(f.channels[id])
+}
+
+// addSlack adds a Slack link, then labels it: a read of the channels' names
+// that runs out the budget keeps the link.
+func (f *finder) addSlack(u string, label func() string) {
+	if f.add(Link{URL: u}) {
+		f.links[len(f.links)-1].Label = label()
+	}
+}
+
 // regular reports whether path is a regular file, following symlinks.
 func (f *finder) regular(path string) bool {
 	stat := statFile // read here: a call left running mustn't see a later one
@@ -221,7 +257,7 @@ func (f *finder) url(raw string, yours bool) {
 	switch task.KindOf(raw) {
 	case task.KindSlack:
 		if u, ok := slackURL(raw); ok && yours {
-			f.add(Link{URL: u})
+			f.addSlack(u, func() string { return f.channel(slackChannel(u)) })
 		}
 	case task.KindLinear:
 		if yours {
@@ -269,7 +305,7 @@ func (f *finder) tool(p Payload) {
 		}
 		f.page(f.abs(in.FilePath), true, written)
 	case slackSend.MatchString(name):
-		f.slackSent(p.ToolResponse)
+		f.slackSent(p.ToolInput, p.ToolResponse)
 	case navigate.MatchString(name):
 		var in struct {
 			URL string `json:"url"`
@@ -326,14 +362,28 @@ func (f *finder) artifact(input, response json.RawMessage) {
 	f.add(l)
 }
 
-// slackSent adds the message a Slack send call posted. Its result is MCP
-// content whose text is JSON with the message's link.
-func (f *finder) slackSent(response json.RawMessage) {
+// slackSent adds the message a Slack send call posted, labelled with its
+// channel's name, "you", and its first words. Its result is MCP content
+// whose text is JSON with the message's link. Its input has the channel's
+// ID, and the text as message, or else text; the channel's ID in the link
+// stands in for a missing one.
+func (f *finder) slackSent(input, response json.RawMessage) {
 	var content []struct {
 		Text string `json:"text"`
 	}
 	if json.Unmarshal(response, &content) != nil {
 		return
+	}
+	// Fields that don't decode stay empty.
+	var in struct {
+		ChannelID string `json:"channel_id"`
+		Message   string `json:"message"`
+		Text      string `json:"text"`
+	}
+	_ = json.Unmarshal(input, &in)
+	text := in.Message
+	if text == "" {
+		text = in.Text
 	}
 	for _, c := range content {
 		var res struct {
@@ -343,9 +393,58 @@ func (f *finder) slackSent(response json.RawMessage) {
 			continue
 		}
 		if u, ok := slackURL(res.MessageLink); ok {
-			f.add(Link{URL: u})
+			f.addSlack(u, func() string {
+				id := in.ChannelID
+				if id == "" {
+					id = slackChannel(u)
+				}
+				return slack.LinkLabel(f.channel(id), "you", text)
+			})
 		}
 	}
+}
+
+// SearchLabel is the label a Slack search gives a message's link, and Place,
+// the label with only where it is, "#billing", that it may take the place
+// of: a link from your prompt gets that.
+type SearchLabel struct{ Label, Place string }
+
+// SearchLabels returns the labels a Slack search's results give the
+// messages they found, by SlackMessage, and the names of their channels, as
+// slack.LearnChannels saves them for later links. A search adds no links.
+// Another call, or a result that isn't one, gives nothing.
+func SearchLabels(p Payload) (labels map[string]SearchLabel, channels map[string]string) {
+	if p.HookEventName != "" && p.HookEventName != "PostToolUse" || !slackSearch.MatchString(p.ToolName) {
+		return nil, nil
+	}
+	// MCP content whose text is a JSON object holding the results' markdown.
+	var content []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(p.ToolResponse, &content) != nil {
+		return nil, nil
+	}
+	var text strings.Builder
+	for _, c := range content {
+		text.WriteString(c.Text)
+	}
+	var body struct {
+		Results string `json:"results"`
+	}
+	if json.Unmarshal([]byte(text.String()), &body) != nil {
+		return nil, nil
+	}
+	msgs, _, err := slack.ParseResults(body.Results)
+	if err != nil || len(msgs) == 0 {
+		return nil, nil
+	}
+	labels = map[string]SearchLabel{}
+	for _, m := range msgs {
+		if key, ok := messageKey("/archives/" + m.Channel + "/p" + strings.Replace(m.TS, ".", "", 1)); ok {
+			labels[key] = SearchLabel{slack.MessageLabel(m), slack.PlaceLabel(m)}
+		}
+	}
+	return labels, slack.ChannelNames(msgs)
 }
 
 // page adds the HTML page at path, which must be absolute, and reports
@@ -426,8 +525,40 @@ func title(b []byte) string {
 // in it: /archives/<ID>[/p<16 digits>].
 var (
 	slackHost = regexp.MustCompile(`^([a-z0-9-]+\.)+slack\.com$`)
-	slackPath = regexp.MustCompile(`^/archives/[A-Za-z0-9]+(/p\d{16})?/?$`)
+	slackPath = regexp.MustCompile(`^/archives/([A-Za-z0-9]+)(/p\d{16})?/?$`)
 )
+
+// SlackMessage names the Slack message a link opens, "C0123ABCD/p<16
+// digits>", in any workspace, whatever its query. It's false for a channel
+// and for other links.
+func SlackMessage(raw string) (string, bool) {
+	if task.KindOf(raw) != task.KindSlack {
+		return "", false
+	}
+	u, _ := url.Parse(raw) // KindOf parsed it already.
+	return messageKey(u.EscapedPath())
+}
+
+// messageKey is SlackMessage of a link's path.
+func messageKey(path string) (string, bool) {
+	m := slackPath.FindStringSubmatch(path)
+	if m == nil || m[2] == "" {
+		return "", false
+	}
+	return m[1] + m[2], true
+}
+
+// slackChannel is the channel's ID in a link slackURL made.
+func slackChannel(u string) string {
+	p, err := url.Parse(u)
+	if err != nil {
+		return ""
+	}
+	if m := slackPath.FindStringSubmatch(p.EscapedPath()); m != nil {
+		return m[1]
+	}
+	return ""
+}
 
 // slackURL is a Slack link to a channel or a message, with only the query
 // parameters that open a thread reply: thread_ts and cid.

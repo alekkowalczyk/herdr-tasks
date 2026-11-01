@@ -28,6 +28,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -78,6 +79,14 @@ type fakeConn struct {
 	screens map[string]string
 	reads   map[string]int
 	typed   []string
+
+	// Moves and Slack actions: what was asked, as "<action> <tab>" and a
+	// move's workspace; the tab and error Move answers; and, when hold is
+	// set, Research waits until it's closed.
+	asked   []string
+	newTab  string
+	moveErr error
+	hold    chan struct{}
 }
 
 func newConn(t *testing.T, name string, live *herdr.Live, tasks ...*task.Task) *fakeConn {
@@ -141,6 +150,39 @@ func (c *fakeConn) Change(tabID string, fn func(*task.Task) error) error {
 		}
 		return fn(t)
 	})
+}
+
+func (c *fakeConn) Move(tabID, workspace string) (string, error) {
+	c.ask("move " + tabID + " " + workspace)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.newTab, c.moveErr
+}
+
+func (c *fakeConn) Research(tabID string) error {
+	c.ask("research " + tabID)
+	if c.hold != nil {
+		<-c.hold
+	}
+	return nil
+}
+
+func (c *fakeConn) Continue(tabID string) error {
+	c.ask("continue " + tabID)
+	return nil
+}
+
+func (c *fakeConn) ask(what string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.asked = append(c.asked, what)
+}
+
+// actions is what Move, Research and Continue were asked.
+func (c *fakeConn) actions() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.asked)
 }
 
 func (c *fakeConn) Focus(tabID string) error {
@@ -706,6 +748,254 @@ func TestFocusShowsTheTabInHerdr(t *testing.T) {
 	}
 }
 
+// actReply asks for a task action, and returns the status and the answer.
+func (ts *testServer) actReply(t *testing.T, req map[string]any) (int, map[string]string) {
+	t.Helper()
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := http.NewRequest("POST", ts.url("/api/task"), bytes.NewReader(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Header.Set("Authorization", "Bearer "+ts.key)
+	r.Header.Set("Content-Type", "application/json")
+	resp, err := plain.Do(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	reply := map[string]string{}
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, &reply); err != nil {
+			t.Fatalf("answer %d %q: %v", resp.StatusCode, raw, err)
+		}
+	}
+	return resp.StatusCode, reply
+}
+
+// slackTask is a task made from Dana Reed's message in #billing, with its
+// research where research says.
+func slackTask(tab string, research task.Research) *task.Task {
+	a := &task.SlackAsk{Key: "C0123ABCD/1793450000.000100", Channel: "C0123ABCD", Place: "#billing", Author: "Dana Reed",
+		TS: "1793450000.000100", At: now, Permalink: "https://acme.slack.com/archives/C0123ABCD/p1793450000000100", Research: research}
+	if research == task.ResearchLocked || research == task.ResearchOpen {
+		a.SessionID = "0b5e1c2a-7d3f-4e8a-9c61-2f4d8a1b3c5e"
+	}
+	return &task.Task{TabID: tab, Title: "Dana Reed: refund for ABC-12", Stage: task.Active, Since: now, Slack: a}
+}
+
+func TestMoveAction(t *testing.T) {
+	live := &herdr.Live{
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "billing"}, {ID: "w2", Label: "infra"}},
+		Tabs:       []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1"}},
+	}
+	work := newConn(t, "work", live, &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	work.newTab = "w2:t4"
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	move := map[string]any{"session": "work", "tab": "w1:t1", "action": "move", "workspace": "w2"}
+
+	code, reply := ts.actReply(t, move)
+	if code != http.StatusOK || !reflect.DeepEqual(reply, map[string]string{"tab": "w2:t4"}) {
+		t.Fatalf("move: %d %v, want 200 with the new tab", code, reply)
+	}
+	if got := work.actions(); !reflect.DeepEqual(got, []string{"move w1:t1 w2"}) {
+		t.Fatalf("asked %v", got)
+	}
+
+	// A move that went wrong partway answers with the new tab all the same,
+	// so the page follows the card there.
+	partway := "Moved 1 of 2 panes; the rest are still in the old tab: no pane w1:p2"
+	work.mu.Lock()
+	work.moveErr = errors.New(partway)
+	work.mu.Unlock()
+	code, reply = ts.actReply(t, move)
+	if code != http.StatusInternalServerError || !reflect.DeepEqual(reply, map[string]string{"tab": "w2:t4", "error": partway}) {
+		t.Errorf("move partway: %d %v", code, reply)
+	}
+	// One that moved nothing has no tab.
+	work.mu.Lock()
+	work.newTab, work.moveErr = "", errors.New(`No workspace "docs"; there are: billing, infra`)
+	work.mu.Unlock()
+	code, reply = ts.actReply(t, move)
+	if code != http.StatusInternalServerError || !reflect.DeepEqual(reply, map[string]string{"error": `No workspace "docs"; there are: billing, infra`}) {
+		t.Errorf("move nowhere: %d %v", code, reply)
+	}
+
+	// A move needs a workspace, and a task in the tab.
+	for _, c := range []struct {
+		req  map[string]any
+		want int
+	}{
+		{map[string]any{"session": "work", "tab": "w1:t1", "action": "move"}, http.StatusBadRequest},
+		{map[string]any{"session": "work", "tab": "w1:t1", "action": "move", "workspace": " "}, http.StatusBadRequest},
+		{map[string]any{"session": "work", "tab": "w1:t9", "action": "move", "workspace": "w2"}, http.StatusNotFound},
+	} {
+		if code, msg := ts.act(t, c.req); code != c.want || msg == "" {
+			t.Errorf("%v: %d %q, want %d with an error", c.req, code, msg, c.want)
+		}
+	}
+	if got := work.actions(); len(got) != 3 {
+		t.Errorf("asked %v, want three moves", got)
+	}
+}
+
+func TestSlackActionsNeedASlackTask(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	for _, c := range []struct{ action, want string }{
+		{"research", "Only a Slack task has research."},
+		{"continue", "No locked research session in this tab."},
+		{"mute", "Only a Slack task's channel can be muted."},
+	} {
+		if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": c.action}); code != http.StatusConflict || msg != c.want {
+			t.Errorf("%s on a plain task: %d %q, want 409 %q", c.action, code, msg, c.want)
+		}
+		if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t9", "action": c.action}); code != http.StatusNotFound || msg == "" {
+			t.Errorf("%s on a tab without a task: %d %q, want 404", c.action, code, msg)
+		}
+	}
+	if got := work.actions(); len(got) != 0 {
+		t.Errorf("asked %v", got)
+	}
+	// Nothing was muted, and no card from Slack had the board read the
+	// watcher's state.
+	if _, err := os.Stat(filepath.Join(ts.cfg.StateDir, "slack")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the slack folder: %v, want none", err)
+	}
+}
+
+// Research starts while it hasn't, or was held or failed, and continues
+// while it's locked. Otherwise the answer is the strip's.
+func TestResearchAndContinueOnASlackTask(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}, herdr.Tab{ID: "w1:t3"}, herdr.Tab{ID: "w1:t4"}, herdr.Tab{ID: "w1:t5"}),
+		slackTask("w1:t1", ""), slackTask("w1:t2", task.ResearchHeld), slackTask("w1:t3", task.ResearchFailed),
+		slackTask("w1:t4", task.ResearchLocked), slackTask("w1:t5", task.ResearchOpen))
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	for _, c := range []struct {
+		action, tab string
+		want        int
+		msg         string
+	}{
+		{"research", "w1:t1", http.StatusNoContent, ""},
+		{"research", "w1:t2", http.StatusNoContent, ""},
+		{"research", "w1:t3", http.StatusNoContent, ""},
+		{"research", "w1:t4", http.StatusConflict, "Research already started."},
+		{"research", "w1:t5", http.StatusConflict, "Research already started."},
+		{"continue", "w1:t4", http.StatusNoContent, ""},
+		{"continue", "w1:t1", http.StatusConflict, "No locked research session in this tab."},
+		{"continue", "w1:t5", http.StatusConflict, "No locked research session in this tab."},
+	} {
+		if code, msg := ts.act(t, map[string]any{"session": "work", "tab": c.tab, "action": c.action}); code != c.want || msg != c.msg {
+			t.Errorf("%s %s: %d %q, want %d %q", c.action, c.tab, code, msg, c.want, c.msg)
+		}
+	}
+	want := []string{"research w1:t1", "research w1:t2", "research w1:t3", "continue w1:t4"}
+	if got := work.actions(); !reflect.DeepEqual(got, want) {
+		t.Errorf("asked %v, want %v", got, want)
+	}
+}
+
+// Starting research waits for Claude to be ready, which can take minutes.
+// The request waits as long as it takes, and the board goes on meanwhile.
+func TestSlowResearchStartHoldsNothingUp(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}),
+		slackTask("w1:t1", ""), &task.Task{TabID: "w1:t2", Stage: task.Active, Since: now})
+	work.hold = make(chan struct{})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+
+	answered := make(chan int, 1)
+	go func() {
+		r, _ := http.NewRequest("POST", ts.url("/api/task"), strings.NewReader(`{"session":"work","tab":"w1:t1","action":"research"}`))
+		r.Header.Set("Authorization", "Bearer "+ts.key)
+		resp, err := plain.Do(r)
+		if err != nil {
+			answered <- 0
+			return
+		}
+		resp.Body.Close()
+		answered <- resp.StatusCode
+	}()
+	for deadline := time.Now().Add(3 * time.Second); !slices.Contains(work.actions(), "research w1:t1"); time.Sleep(10 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("research never started")
+		}
+	}
+	// Longer than a session read may take.
+	time.Sleep(ts.timeout + 100*time.Millisecond)
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t2", "action": "priority", "on": true}); code != http.StatusNoContent {
+		t.Fatalf("priority while research starts: %d %s", code, msg)
+	}
+	boards := ts.stream(t)
+	waitFor(t, boards, "the priority", func(b Board) bool {
+		c, _ := findCard(b, "work", "w1:t2")
+		return c.Priority
+	})
+	select {
+	case code := <-answered:
+		t.Fatalf("research answered %d before it started", code)
+	default:
+	}
+	close(work.hold)
+	select {
+	case code := <-answered:
+		if code != http.StatusNoContent {
+			t.Errorf("research: %d, want 204", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("research never answered")
+	}
+}
+
+func TestMuteAction(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), slackTask("w1:t1", task.ResearchLocked))
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	boards := ts.stream(t)
+	muted := func(want bool) func(Board) bool {
+		return func(b Board) bool {
+			c, _ := findCard(b, "work", "w1:t1")
+			return c.Slack != nil && c.Slack.Muted == want
+		}
+	}
+	waitFor(t, boards, "the Slack card", muted(false))
+
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "mute"}); code != http.StatusNoContent {
+		t.Fatalf("mute: %d %s", code, msg)
+	}
+	st, err := slack.Load(ts.cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []slack.Mute{{ID: "C0123ABCD", Name: "#billing"}}; !reflect.DeepEqual(st.Muted, want) {
+		t.Fatalf("muted = %+v, want %+v", st.Muted, want)
+	}
+	waitFor(t, boards, "the card muted", muted(true))
+
+	// Muting it again changes nothing.
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "mute"}); code != http.StatusNoContent {
+		t.Fatalf("mute again: %d %s", code, msg)
+	}
+	if st, _ := slack.Load(ts.cfg.StateDir); len(st.Muted) != 1 {
+		t.Errorf("muted = %+v", st.Muted)
+	}
+
+	// Unmuted with the CLI, the card shows it once the board is built again.
+	if err := slack.Update(ts.cfg.StateDir, func(s *slack.State) error { s.Unmute("C0123ABCD"); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ts.Refresh()
+	waitFor(t, boards, "the card unmuted", muted(false))
+	if got := work.actions(); len(got) != 0 {
+		t.Errorf("asked %v", got)
+	}
+}
+
 // openLink asks the server to open a link of a task in session "work".
 func (ts *testServer) openLink(t *testing.T, tab, url string) (int, string) {
 	t.Helper()
@@ -999,6 +1289,363 @@ func TestServerExitsWhenBoardTurnedOff(t *testing.T) {
 				t.Errorf("board.json is still there: %v", err)
 			}
 		})
+	}
+}
+
+func TestServerStaysUpForSlackAlone(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.setOptions(func(o *reconcile.Options) { o.Board, o.SlackWatch = false, true })
+	select {
+	case <-ts.stopped:
+		t.Fatal("the server stopped with the Slack watcher on")
+	case <-time.After(500 * time.Millisecond): // 10 ticks
+	}
+	seen, problem := time.Now(), ""
+	if why := ts.check(context.Background(), &seen, &problem); why != "" {
+		t.Errorf("check = %q with the Slack watcher on", why)
+	}
+
+	ts.setOptions(func(o *reconcile.Options) { o.SlackWatch = false })
+	if why := ts.check(context.Background(), &seen, &problem); why != "the board and the Slack watcher are turned off" {
+		t.Errorf("check = %q", why)
+	}
+	select {
+	case <-ts.stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the server is still running with both turned off")
+	}
+}
+
+func TestBoardCarriesTheSlackLine(t *testing.T) {
+	var mu sync.Mutex
+	status := slack.Status{On: true, Problem: true, Text: "Slack: can't reach Slack since 14:20. Run /mcp in Claude Code to sign in again"}
+	setStatus := func(s slack.Status) {
+		mu.Lock()
+		defer mu.Unlock()
+		status = s
+	}
+	ts := startServer(t, Config{Sessions: running(), Slack: func() slack.Status {
+		mu.Lock()
+		defer mu.Unlock()
+		return status
+	}}, nil)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the Slack line", func(b Board) bool { return b.Slack != nil })
+	_, raw := ts.board(t)
+	var got struct {
+		Slack map[string]any `json:"slack"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Slack["text"] != status.Text || got.Slack["problem"] != true {
+		t.Errorf("slack = %v in %s", got.Slack, raw)
+	}
+
+	// The watcher's status changes, and Refresh has the board show it.
+	setStatus(slack.Status{On: true, Text: "Slack: last check 14:32"})
+	ts.Refresh()
+	waitFor(t, boards, "the new Slack line", func(b Board) bool {
+		return b.Slack != nil && b.Slack.Text == "Slack: last check 14:32" && !b.Slack.Problem
+	})
+
+	// Turned off, the board has no Slack line.
+	setStatus(slack.Status{Text: "Slack: off"})
+	ts.Refresh()
+	waitFor(t, boards, "no Slack line", func(b Board) bool { return b.Slack == nil })
+	if _, raw := ts.board(t); bytes.Contains(raw, []byte(`"slack"`)) {
+		t.Errorf("board = %s", raw)
+	}
+}
+
+// slackPost posts body to path, with the browser key unless key is false,
+// and with ctx, and returns the status and the answer, or why there's none.
+func (ts *testServer) slackPost(ctx context.Context, path, body string, key bool) (int, map[string]string, error) {
+	req, err := http.NewRequestWithContext(ctx, "POST", ts.url(path), strings.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	if key {
+		req.Header.Set("Authorization", "Bearer "+ts.key)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := plain.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, err
+	}
+	reply := map[string]string{}
+	if err := json.Unmarshal(raw, &reply); err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("answer %d %q: %v", resp.StatusCode, raw, err)
+	}
+	return resp.StatusCode, reply, nil
+}
+
+// postSlack is slackPost with the key, failing the test when there's no
+// answer.
+func (ts *testServer) postSlack(t *testing.T, path, body string) (int, map[string]string) {
+	t.Helper()
+	code, reply, err := ts.slackPost(context.Background(), path, body, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, reply
+}
+
+// slackStatus is a Slack watcher's status that a test changes.
+type slackStatus struct {
+	mu sync.Mutex
+	s  slack.Status
+}
+
+func (s *slackStatus) get() slack.Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.s
+}
+
+func (s *slackStatus) set(text string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.s.Text = text
+}
+
+// slackText is whether a board's Slack line reads text.
+func slackText(text string) func(Board) bool {
+	return func(b Board) bool { return b.Slack != nil && b.Slack.Text == text }
+}
+
+// fetchResult is what a test's fetch gives, and what the watcher's status
+// reads after it.
+type fetchResult struct {
+	text, status string
+	err          error
+}
+
+// TestFetchEndpoint: Fetch runs one fetch at a time, on the server's context
+// with 15 minutes to go, so it finishes when the page goes away. It answers
+// with what the fetch did, and the board is built again.
+func TestFetchEndpoint(t *testing.T) {
+	status := &slackStatus{s: slack.Status{Text: "Slack: off", Fetch: true}}
+	started := make(chan context.Context, 4)
+	results := make(chan fetchResult)
+	ended := make(chan error, 4) // the fetch's ctx.Err() as it ended
+	fetch := func(ctx context.Context) (string, error) {
+		started <- ctx
+		select {
+		case r := <-results:
+			status.set(r.status)
+			ended <- ctx.Err()
+			return r.text, r.err
+		case <-ctx.Done():
+			ended <- ctx.Err()
+			return "", ctx.Err()
+		case <-time.After(5 * time.Second):
+			ended <- errors.New("never answered")
+			return "", errors.New("never answered")
+		}
+	}
+	ts := startServer(t, Config{Sessions: running(), Slack: status.get, SlackFetch: fetch}, nil)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the Slack line", slackText("Slack: off"))
+
+	// No key, no fetch.
+	if code, _, err := ts.slackPost(context.Background(), "/api/slack/fetch", "{}", false); err != nil || code != http.StatusUnauthorized {
+		t.Errorf("without the key: %d %v, want 401", code, err)
+	}
+
+	answered := make(chan map[string]string, 1)
+	go func() {
+		code, reply, err := ts.slackPost(context.Background(), "/api/slack/fetch", "{}", true)
+		if err != nil || code != http.StatusOK {
+			t.Errorf("fetch: %d %v %v, want 200", code, reply, err)
+		}
+		answered <- reply
+	}()
+	var ctx context.Context
+	select {
+	case ctx = <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the fetch never started")
+	}
+	if dl, ok := ctx.Deadline(); !ok || time.Until(dl) < 14*time.Minute || time.Until(dl) > 15*time.Minute {
+		t.Errorf("the fetch's deadline: %v %v, want 15 minutes from now", dl, ok)
+	}
+	// A second, while the first runs, is turned away.
+	if code, reply := ts.postSlack(t, "/api/slack/fetch", "{}"); code != http.StatusConflict || reply["error"] != "A fetch is already running." {
+		t.Errorf("a second fetch: %d %v, want 409", code, reply)
+	}
+	summary := "Fetched from 08:30: 2 new tasks, 2 with research."
+	results <- fetchResult{text: summary, status: "Slack: last check 09:01"}
+	select {
+	case reply := <-answered:
+		if !reflect.DeepEqual(reply, map[string]string{"text": summary}) {
+			t.Errorf("fetch answered %v", reply)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the fetch never answered")
+	}
+	if err := <-ended; err != nil {
+		t.Errorf("the fetch ended with its context %v", err)
+	}
+	if len(started) != 0 {
+		t.Errorf("%d more fetches started", len(started))
+	}
+	waitFor(t, boards, "the Slack line after the fetch", slackText("Slack: last check 09:01"))
+
+	// The page goes away mid-fetch: the fetch goes on, and finishes. The
+	// server sees a request go only once it has read its body, so this one
+	// has none.
+	rctx, cancel := context.WithCancel(context.Background())
+	gone := make(chan error, 1)
+	go func() {
+		_, _, err := ts.slackPost(rctx, "/api/slack/fetch", "", true)
+		gone <- err
+	}()
+	select {
+	case ctx = <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the fetch never started")
+	}
+	cancel()
+	if err := <-gone; err == nil {
+		t.Fatal("the request wasn't canceled")
+	}
+	time.Sleep(200 * time.Millisecond) // for the server to see the page go
+	if ctx.Err() != nil {
+		t.Fatalf("the fetch's context ended with the request: %v", ctx.Err())
+	}
+	results <- fetchResult{text: summary, status: "Slack: last check 09:02"}
+	if err := <-ended; err != nil {
+		t.Errorf("the fetch ended with its context %v", err)
+	}
+	waitFor(t, boards, "the Slack line after the fetch", slackText("Slack: last check 09:02"))
+
+	// A fetch that fails says why.
+	go func() {
+		<-started
+		results <- fetchResult{err: errors.New("can't fetch: waiting for a herdr session"), status: "Slack: off"}
+	}()
+	if code, reply := ts.postSlack(t, "/api/slack/fetch", "{}"); code != http.StatusBadGateway || reply["error"] != "can't fetch: waiting for a herdr session" {
+		t.Errorf("a failed fetch: %d %v, want 502 with why", code, reply)
+	}
+	<-ended
+	waitFor(t, boards, "the Slack line after the failed fetch", slackText("Slack: off"))
+
+	// Without Slack, there's nothing to fetch.
+	bare := startServer(t, Config{Sessions: running()}, nil)
+	if code, reply := bare.postSlack(t, "/api/slack/fetch", "{}"); code != http.StatusNotFound || reply["error"] == "" {
+		t.Errorf("fetch without Slack: %d %v, want 404", code, reply)
+	}
+}
+
+// TestTakeEndpoint: Take makes the task for a skipped ask by its message
+// ID, and answers with where it went. The board is built again after it.
+func TestTakeEndpoint(t *testing.T) {
+	status := &slackStatus{s: slack.Status{On: true, Fetch: true, Text: "Slack: last check 09:00"}}
+	var mu sync.Mutex
+	var took []string
+	take := func(ctx context.Context, id string) (string, error) {
+		mu.Lock()
+		took = append(took, id)
+		mu.Unlock()
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("the take has no deadline")
+		}
+		switch id {
+		case "C0123ABCD/1793454730.123456":
+			status.set("Slack: took it")
+			return "Took it: new tab w2:t1, with research", nil
+		case "D0RUI0001/1793370600.000100":
+			return "", fmt.Errorf("%w %s", slack.ErrNoSkippedAsk, id)
+		}
+		return "", errors.New("can't take it: waiting for a herdr session")
+	}
+	ts := startServer(t, Config{Sessions: running(), Slack: status.get, SlackTake: take}, nil)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the Slack line", slackText("Slack: last check 09:00"))
+
+	code, reply := ts.postSlack(t, "/api/slack/take", `{"id": "C0123ABCD/1793454730.123456"}`)
+	if code != http.StatusOK || !reflect.DeepEqual(reply, map[string]string{"text": "Took it: new tab w2:t1, with research"}) {
+		t.Errorf("take: %d %v", code, reply)
+	}
+	waitFor(t, boards, "the Slack line after the take", slackText("Slack: took it"))
+
+	if code, reply := ts.postSlack(t, "/api/slack/take", `{"id": "D0RUI0001/1793370600.000100"}`); code != http.StatusNotFound || reply["error"] == "" {
+		t.Errorf("an ask that isn't skipped: %d %v, want 404", code, reply)
+	}
+	if code, reply := ts.postSlack(t, "/api/slack/take", `{"id": "C0123ABCD/1793450000.000100"}`); code != http.StatusBadGateway || reply["error"] != "can't take it: waiting for a herdr session" {
+		t.Errorf("a take that fails: %d %v, want 502 with why", code, reply)
+	}
+	for _, body := range []string{`{}`, `{"id": " "}`, `not json`} {
+		if code, reply := ts.postSlack(t, "/api/slack/take", body); code != http.StatusBadRequest || reply["error"] == "" {
+			t.Errorf("take %s: %d %v, want 400", body, code, reply)
+		}
+	}
+	if code, _, err := ts.slackPost(context.Background(), "/api/slack/take", `{"id": "C0123ABCD/1793454730.123456"}`, false); err != nil || code != http.StatusUnauthorized {
+		t.Errorf("without the key: %d %v, want 401", code, err)
+	}
+	mu.Lock()
+	want := []string{"C0123ABCD/1793454730.123456", "D0RUI0001/1793370600.000100", "C0123ABCD/1793450000.000100"}
+	if !reflect.DeepEqual(took, want) {
+		t.Errorf("took %q, want %q", took, want)
+	}
+	mu.Unlock()
+
+	bare := startServer(t, Config{Sessions: running()}, nil)
+	if code, reply := bare.postSlack(t, "/api/slack/take", `{"id": "C0123ABCD/1793454730.123456"}`); code != http.StatusNotFound || reply["error"] == "" {
+		t.Errorf("take without Slack: %d %v, want 404", code, reply)
+	}
+}
+
+// noHerdr is a herdr session that can't be reached.
+type noHerdr struct{ slack.Herdr }
+
+func (noHerdr) Live() (*herdr.Live, error) { return nil, errors.New("herdr isn't running") }
+
+// TestTakeEndpointIgnoresExpiredAsks: through the watcher's own Take, an
+// ask skipped over 7 days ago, which the list no longer shows, can't be
+// taken: it's a 404, as any ask that isn't on the list.
+func TestTakeEndpointIgnoresExpiredAsks(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	old := skippedAsk(time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC), false, "<@U0ME00001> old news")
+	if err := slack.Update(dir, func(s *slack.State) error {
+		s.UserID = "U0ME00001"
+		s.Skip(old, slack.Skip{Why: "old news"}, now.Add(-8*24*time.Hour))
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := &slack.Watcher{
+		Dir: dir, Exe: "/home/u/bin/herdr-tasks",
+		Options: func() (reconcile.Options, error) {
+			return reconcile.Options{SlackWorkspace: "Slack", SlackCwd: dir, SlackEvery: "5m", SlackHours: "always", SlackMaxNew: 4}, nil
+		},
+		Sessions: func() []slack.Session {
+			return []slack.Session{{Name: "work", Herdr: noHerdr{}, Store: &store.Store{Dir: dir, Session: "work"}}}
+		},
+		Now: func() time.Time { return now },
+	}
+	take := func(ctx context.Context, id string) (string, error) {
+		d, err := w.Take(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		return d.TookLine(), nil
+	}
+	status := &slackStatus{s: slack.Status{On: true, Fetch: true, Text: "Slack: last check 09:00"}}
+	ts := startServer(t, Config{Sessions: running(), Slack: status.get, SlackTake: take}, nil)
+	for _, id := range []string{old.ID(), "1"} {
+		code, reply := ts.postSlack(t, "/api/slack/take", `{"id": "`+id+`"}`)
+		if code != http.StatusNotFound || reply["error"] != "That ask isn't on the skipped list any more." {
+			t.Errorf("take %s, skipped 8 days ago: %d %v, want 404", id, code, reply)
+		}
 	}
 }
 

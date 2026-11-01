@@ -44,6 +44,26 @@ type Options struct {
 	// the task. Off by default.
 	ClaudeLinks bool `toml:"claude_links"`
 
+	// Check Slack for asks and start research sessions for them. Off by default.
+	SlackWatch bool `toml:"slack_watch"`
+	// The herdr session for Slack tabs, and the workspace in it.
+	SlackSession   string `toml:"slack_session"`
+	SlackWorkspace string `toml:"slack_workspace"`
+	// Where research sessions start; "" is the home folder.
+	SlackCwd string `toml:"slack_cwd"`
+	// DMs and group DMs count as asks.
+	SlackDMs bool `toml:"slack_dms"`
+	// Channel names or IDs never to make tasks for.
+	SlackSkipChannels []string `toml:"slack_skip_channels"`
+	// How often to check, and when (local time). See slack.ParseHours.
+	SlackEvery string `toml:"slack_every"`
+	SlackHours string `toml:"slack_hours"`
+	// Research sessions started per hour.
+	SlackMaxNew int `toml:"slack_max_new"`
+	// Only asks about this topic make tasks; a Haiku run judges each one.
+	// "" takes every ask.
+	SlackTopic string `toml:"slack_topic"`
+
 	// Set for the run after herdr starts, when strips need restarting.
 	Startup bool `toml:"-"`
 	// The strip pane running this, if any. It's never closed from here: the
@@ -90,7 +110,11 @@ func ConfigDir() string {
 
 // LoadOptions reads config.toml from the plugin's config directory.
 func LoadOptions() (Options, error) {
-	opt := Options{Markers: true, SortTabs: true, Strip: true}
+	opt := Options{
+		Markers: true, SortTabs: true, Strip: true,
+		SlackWorkspace: "Slack inbox", SlackDMs: true, SlackEvery: "5m",
+		SlackHours: "Mon-Fri 08:00-18:00", SlackMaxNew: 4,
+	}
 	path := filepath.Join(ConfigDir(), "config.toml")
 	if _, err := toml.DecodeFile(path, &opt); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return opt, err

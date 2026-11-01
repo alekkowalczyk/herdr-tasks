@@ -27,6 +27,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 )
 
@@ -197,10 +198,12 @@ func browserCommand(goos string, getenv func(string) string, url string) (cmd *e
 	return nil, false, fmt.Errorf("can't open a browser on %s", goos)
 }
 
-// serve runs the board server, for every running herdr session. The startup
-// hook and `herdr-tasks board` start it, detached. It stops on SIGTERM, when
-// the board is turned off or moved to another port, or when no herdr session
-// has run for a while. It logs to stderr, which is board.log.
+// serve runs the board server, for every running herdr session, and the
+// Slack watcher, which logs to slack.log. The startup hook and `herdr-tasks
+// board` start it, detached. It stops on SIGTERM, when the board and the
+// Slack watcher are turned off, when the board is moved to another port, or
+// when no herdr session has run for a while. It logs to stderr, which is
+// board.log.
 func (a *app) serve() error {
 	exe, err := executable()
 	if err != nil {
@@ -231,6 +234,7 @@ func (a *app) serve() error {
 	}()
 
 	log.Printf("serving on 127.0.0.1:%d: version %s, pid %d", port, version, os.Getpid())
+	w := &slack.Watcher{Dir: dir, Exe: exe, Options: reconcile.LoadOptions, Log: slack.OpenLog(dir)}
 	s := board.NewServer(board.Config{
 		StateDir: dir,
 		Port:     port,
@@ -241,9 +245,42 @@ func (a *app) serve() error {
 		Linear:   linearClient(linear.LoadKey, filepath.Join(dir, keyChanged), time.Now),
 		Options:  reconcile.LoadOptions,
 		Claude:   claudelog.NewCache(claudelog.ConfigDir()),
+		Slack:    w.Status,
+		SlackFetch: func(ctx context.Context) (string, error) {
+			got, err := w.Fetch(ctx)
+			if err != nil {
+				return "", err
+			}
+			return got.Summary(time.Now()), nil
+		},
+		SlackTake: func(ctx context.Context, id string) (string, error) {
+			d, err := w.Take(ctx, id)
+			if err != nil {
+				return "", err
+			}
+			return d.TookLine(), nil
+		},
 	}, board.NewAuth(token, port), lock)
-	return s.Run(ctx, ln)
+	w.Changed = s.Refresh
+	watching := make(chan struct{})
+	go func() {
+		defer close(watching)
+		w.Run(ctx)
+	}()
+	err = s.Run(ctx, ln)
+	// A check under way ends with ctx, which kills its claude. The wait is
+	// short, as a new server waits for this one to exit.
+	cancel()
+	select {
+	case <-watching:
+	case <-time.After(watcherGrace):
+	}
+	return err
 }
+
+// watcherGrace is how long the server waits for the Slack watcher to stop
+// as it shuts down.
+const watcherGrace = 500 * time.Millisecond
 
 // keyChanged is the file in the state dir that `herdr-tasks linear-key`
 // writes after it saves or deletes the Linear key, so the board server reads
@@ -330,8 +367,9 @@ func noteKeyChanged(dir string) error {
 	return os.WriteFile(filepath.Join(dir, keyChanged), []byte(strconv.FormatInt(time.Now().UnixNano(), 10)+"\n"), 0o600)
 }
 
-// startBoard starts the board server when herdr starts, unless it runs. A
-// problem goes to stderr and doesn't stop the hook.
+// startBoard starts the board server, which also runs the Slack watcher,
+// when herdr starts, unless it runs. A problem goes to stderr and doesn't
+// stop the hook.
 func (a *app) startBoard() {
 	exe, err := executable()
 	if err == nil {
