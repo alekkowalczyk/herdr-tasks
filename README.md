@@ -96,7 +96,7 @@ Open `http://127.0.0.1:8000/<session>/`. To sign in, run `herdr-tasks board --pr
 
 #### Pages
 
-A task's local `.html` links open from the board too, at an address under `/-/page/`, in a sandbox. The page's scripts run and it may load things from the internet. It can show the files in its folder (images, styles, other pages) but it can't read them from its scripts, and it can't reach the board. Secret-looking files (`.env`, keys, `.ssh` and the like, in any letter case) and hidden files are never served. A page in your home folder, above it, or in a folder of keys gets only itself. Files can be up to 64 MiB. The address works until the board's server restarts.
+A task's local `.html` links open from the board too, at an address under `/-/page/`, in a sandbox. The page's scripts run and it may load things from the internet. It can show the files in its folder (images, styles, other pages) but it can't read them from its scripts, and it can't reach the board. Secret-looking files (`.env`, keys, `.ssh` and the like, in any letter case) and hidden files are never served. A page in your home folder, above it, or in a hidden folder or a folder of keys under it, such as `~/.config`, gets only itself. Files can be up to 64 MiB. The address works until the board's server restarts.
 
 #### Sharing a `localhost` port
 

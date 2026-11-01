@@ -80,7 +80,8 @@ func (p *pages) href(page string) string {
 
 // lone reports whether a page in dir, with symlinks resolved, gets only
 // itself served: dir is / or the home folder, holds the home folder, or is or
-// is in a folder of keys under home, as these hold far more than the page.
+// is in a folder of keys or a hidden folder under home, as these hold far more
+// than the page: a hidden folder holds settings and keys of every name.
 // Folders are told apart by identity, as a file system may not tell cases
 // apart in a path.
 func lone(dir string) bool {
@@ -112,7 +113,8 @@ func lone(dir string) bool {
 			return true
 		} else if os.SameFile(pi, hi) {
 			slices.Reverse(below)
-			return slack.LooksSecretPath(below)
+			hidden := slices.ContainsFunc(below, func(name string) bool { return strings.HasPrefix(name, ".") })
+			return hidden || slack.LooksSecretPath(below)
 		}
 		below = append(below, filepath.Base(p))
 		if p == filepath.Dir(p) {

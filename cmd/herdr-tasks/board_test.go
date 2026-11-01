@@ -56,7 +56,8 @@ func newFakeBoard(t *testing.T, opts reconcile.Options) *fakeBoard {
 			call("open %s", url)
 			return nil
 		},
-		out: &f.out,
+		sleep: func(d time.Duration) { call("sleep %v", d) },
+		out:   &f.out,
 	}
 	return f
 }
@@ -175,6 +176,75 @@ func TestBoardShowsTailnetWhenNoBrowser(t *testing.T) {
 	}
 	if got, want := f.out.String(), testURL+"\n"+tailnetURL+"\n"; got != want {
 		t.Errorf("printed %q, want %q", got, want)
+	}
+}
+
+// A server that just started hasn't read Tailscale yet, so the board
+// command asks again, every half second, until it says where the board is
+// on the tailnet or why it isn't there, for up to 12 s.
+func TestBoardWaitsForTheTailnetAddress(t *testing.T) {
+	const tailnetURL = "https://devbox.tail0000.ts.net:7391/work/?code=0123abcd"
+	f := newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	logins := 0
+	f.loginURL = func(string, string) (board.Login, error) {
+		if logins++; logins < 4 {
+			return board.Login{Local: testURL}, nil
+		}
+		return board.Login{Local: testURL, Tailnet: tailnetURL}, nil
+	}
+	f.open = func(string) error { return errors.New("no display to open a browser on") }
+	if err := f.run(false, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if want := slices.Repeat([]string{"sleep 500ms"}, 3); logins != 4 || !slices.Equal(f.calls[1:], want) {
+		t.Errorf("asked %d times, calls %q; want 4 and %q", logins, f.calls, want)
+	}
+	if want := "Open this in your browser: " + tailnetURL + " (the code works for a minute)"; !slices.Equal(f.shown, []string{want}) {
+		t.Errorf("showed %q, want %q", f.shown, want)
+	}
+
+	// A problem ends the wait too.
+	f = newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	logins = 0
+	f.loginURL = func(string, string) (board.Login, error) {
+		if logins++; logins < 2 {
+			return board.Login{Local: testURL}, nil
+		}
+		return board.Login{Local: testURL, Problem: "Port 7391 is already shared with your tailnet for something else."}, nil
+	}
+	if err := f.run(true, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if logins != 2 || !slices.Equal(f.shown, []string{"Port 7391 is already shared with your tailnet for something else."}) {
+		t.Errorf("asked %d times, showed %q", logins, f.shown)
+	}
+
+	// After 12 s it goes on with the local address.
+	f = newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	f.open = func(string) error { return errors.New("no display to open a browser on") }
+	if err := f.run(false, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	sleeps := 0
+	for _, c := range f.calls {
+		if strings.HasPrefix(c, "sleep ") {
+			sleeps++
+		}
+	}
+	if sleeps != 24 {
+		t.Errorf("waited %d times, want 24 (12 s)", sleeps)
+	}
+	if want := "Open this in your browser: " + testURL + " (the code works for a minute)"; !slices.Equal(f.shown, []string{want}) {
+		t.Errorf("showed %q, want %q", f.shown, want)
+	}
+
+	// With board_tailnet off, it doesn't wait.
+	f = newFakeBoard(t, reconcile.Options{Board: true})
+	if err := f.run(true, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(f.calls, func(c string) bool { return strings.HasPrefix(c, "sleep ") }) {
+		t.Errorf("with board_tailnet off: %q", f.calls)
 	}
 }
 

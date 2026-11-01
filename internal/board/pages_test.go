@@ -55,6 +55,8 @@ func startPages(t *testing.T) *pageFixture {
 		"acme/report/Stra\u00dfe.html": "<!doctype html><title>Street</title>",
 		".\u00dfh/x.html":              "<!doctype html>",
 		".\u00dfh/config":              "Host acme",
+		".config/report.html":          "<!doctype html><title>Config report</title>",
+		".config/gh/hosts.yml":         "github.com: {}",
 	} {
 		p := filepath.Join(home, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -91,6 +93,7 @@ func startPages(t *testing.T) *pageFixture {
 			{URL: task.FileURL(filepath.Join(dir, "o\ufb03ce.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(dir, "Stra\u00dfe.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(home, ".\u00dfh", "x.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(home, ".config", "report.html")), Added: now},
 		}})
 	f.ts = startServer(t, Config{Sessions: running(work)}, nil)
 	f.ts.shows(t, "work", "w1:t1")
@@ -289,13 +292,26 @@ func TestPageInGcloudFolderServesOnlyItself(t *testing.T) {
 	}
 }
 
+// A hidden folder holds settings and keys that aren't named like secrets,
+// such as gh's hosts.yml, so a page in one gets only itself.
+func TestPageInHiddenFolderServesOnlyItself(t *testing.T) {
+	f := startPages(t)
+	href := f.href(t, filepath.Join(f.home, ".config", "report.html"))
+	if resp, body := f.page(t, href); resp.StatusCode != 200 || !strings.Contains(body, "Config report") {
+		t.Fatalf("report.html: %d %q", resp.StatusCode, body)
+	}
+	if resp, _ := f.page(t, pageHref.FindString(href)+"gh/hosts.yml"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a file in the folder beside it: %d, want 404", resp.StatusCode)
+	}
+}
+
 func TestLone(t *testing.T) {
 	home, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
-	for _, d := range []string{".aws", ".kube/x", "acme/report"} {
+	for _, d := range []string{".aws", ".kube/x", "acme/report", ".config/acme", "acme/.cache/x"} {
 		if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(d)), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -304,6 +320,8 @@ func TestLone(t *testing.T) {
 		"/": true, filepath.Dir(home): true, home: true,
 		filepath.Join(home, ".aws"): true, filepath.Join(home, ".kube", "x"): true,
 		filepath.Join(home, "acme"): false, filepath.Join(home, "acme", "report"): false,
+		filepath.Join(home, ".config"): true, filepath.Join(home, ".config", "acme"): true,
+		filepath.Join(home, "acme", ".cache", "x"): true,
 	} {
 		if got := lone(dir); got != want {
 			t.Errorf("lone(%s) = %v, want %v", dir, got, want)

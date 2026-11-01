@@ -48,9 +48,10 @@ type boardCmd struct {
 	rotate   func(dir string, port int, exe, version string) error
 	loginURL func(dir, session string) (board.Login, error)
 
-	show func(msg string)       // tells you something
-	open func(url string) error // opens url in the browser
-	out  io.Writer              // where --print prints the URL
+	show  func(msg string)       // tells you something
+	open  func(url string) error // opens url in the browser
+	sleep func(time.Duration)    // waits, while the server reads Tailscale
+	out   io.Writer              // where --print prints the URL
 }
 
 // openBoard runs `herdr-tasks board [--print] [--new-token] [--session NAME]`.
@@ -74,7 +75,7 @@ func (a *app) openBoard(args []string) error {
 	b := boardCmd{
 		opts: a.opts, dir: store.Dir(), exe: exe,
 		ensure: ensure, rotate: rotate, loginURL: board.LoginURL,
-		show: a.showMessage, open: openBrowser, out: os.Stdout,
+		show: a.showMessage, open: openBrowser, sleep: time.Sleep, out: os.Stdout,
 	}
 	return b.run(print, newToken, session)
 }
@@ -117,7 +118,8 @@ func currentSession(getenv func(string) string) string {
 // address on the tailnet while the board is shared there. When no browser
 // opens, as on a machine without a display, it shows the address on the
 // tailnet, or else the local one. It also shows why the board isn't on the
-// tailnet, when that goes wrong. With newToken it first replaces the token,
+// tailnet, when that goes wrong, and waits for a server that just started
+// to find out (see tailnetLogin). With newToken it first replaces the token,
 // which signs every browser out.
 func (b boardCmd) run(print, newToken bool, session string) error {
 	if !b.opts.Board {
@@ -140,6 +142,9 @@ func (b boardCmd) run(print, newToken bool, session string) error {
 	if err != nil {
 		return b.fail(err.Error())
 	}
+	if b.opts.BoardTailnet {
+		login = b.tailnetLogin(login, session)
+	}
 	// Said once, as each message opens the overview when herdr runs this.
 	var say []string
 	if print {
@@ -161,6 +166,30 @@ func (b boardCmd) run(print, newToken bool, session string) error {
 		b.show(strings.Join(say, " "))
 	}
 	return nil
+}
+
+// How long the board command waits for a server that just started to read
+// Tailscale, and how often it asks again meanwhile.
+const (
+	tailnetWait = 12 * time.Second
+	tailnetPoll = 500 * time.Millisecond
+)
+
+// tailnetLogin is login, or once the server has read Tailscale, a new one
+// that says where the board is on the tailnet, or why it isn't there. A
+// server that just started reads it within a few seconds; until then its
+// login says neither, so the address would be the local one. After
+// tailnetWait, or when asking fails, it goes on with what it has.
+func (b boardCmd) tailnetLogin(login board.Login, session string) board.Login {
+	for waited := time.Duration(0); login.Tailnet == "" && login.Problem == "" && waited < tailnetWait; waited += tailnetPoll {
+		b.sleep(tailnetPoll)
+		next, err := b.loginURL(b.dir, session)
+		if err != nil {
+			break
+		}
+		login = next
+	}
+	return login
 }
 
 func (b boardCmd) fail(msg string) error {
