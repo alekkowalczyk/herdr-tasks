@@ -1,0 +1,8 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/acme/api",
+  "permission_mode": "default",
+  "hook_event_name": "Stop",
+  "stop_hook_active": false,
+  "last_assistant_message": "Done. I read https://linear.app/acme/issue/ABC-12/fix-login and posted the summary to https://acme.slack.com/archives/C0123ABCD/p1700000000123456."
+}

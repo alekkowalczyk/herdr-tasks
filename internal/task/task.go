@@ -5,7 +5,9 @@ package task
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,6 +93,8 @@ type Link struct {
 	Label string    `json:"label,omitempty"`
 	By    string    `json:"by,omitempty"`
 	Added time.Time `json:"added"`
+	// The local file a page was published from.
+	Source string `json:"source,omitempty"`
 }
 
 func (l Link) Display() string {
@@ -102,8 +106,29 @@ func (l Link) Display() string {
 
 var ticketID = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-\d+$`)
 
-// LinkLabel names a link by what it points at: "PR #431", "MWP-418", "Figma".
+// LinkLabel names a link by what it points at: "PR #431", "MWP-418",
+// "Slack message", "plan.html", "localhost:4100/showcase".
 func LinkLabel(raw string) string {
+	switch KindOf(raw) {
+	case KindSlack:
+		if _, ok := SlackTime(raw); ok {
+			return "Slack message"
+		}
+		return "Slack channel"
+	case KindArtifact:
+		return "Artifact"
+	case KindFile:
+		p, _ := FilePath(raw)
+		return CleanLabel(filepath.Base(p))
+	case KindLocal, KindHosted:
+		// Host and path; the fragment too, as it can pick the page.
+		u, _ := url.Parse(raw)
+		label := strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/")
+		if u.Fragment != "" {
+			label += "#" + u.Fragment
+		}
+		return CleanLabel(label)
+	}
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return raw
@@ -152,6 +177,39 @@ func LinkLabel(raw string) string {
 	return host
 }
 
+// LinearID returns the issue ID a Linear issue URL points at, as "ABC-12".
+func LinearID(raw string) (string, bool) {
+	_, id, ok := linearIssue(raw)
+	return id, ok
+}
+
+// LinearOrg returns the workspace part of a Linear issue URL, as "acme".
+func LinearOrg(raw string) (string, bool) {
+	org, _, ok := linearIssue(raw)
+	return org, ok
+}
+
+// LinearURL is the plain URL of a Linear issue, without the title slug.
+func LinearURL(org, id string) string {
+	return "https://linear.app/" + org + "/issue/" + strings.ToUpper(id)
+}
+
+// linearIssue reads https://linear.app/<org>/issue/<ID>[/<slug>].
+func linearIssue(raw string) (org, id string, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", "", false
+	}
+	if host := strings.ToLower(u.Hostname()); host != "linear.app" && host != "www.linear.app" {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(u.EscapedPath(), "/"), "/")
+	if len(parts) < 3 || len(parts) > 4 || parts[0] == "" || parts[1] != "issue" || !ticketID.MatchString(parts[2]) {
+		return "", "", false
+	}
+	return parts[0], strings.ToUpper(parts[2]), true
+}
+
 // Entry is a line someone other than you added to the task, usually an agent.
 type Entry struct {
 	Who  string    `json:"who"`
@@ -172,6 +230,10 @@ type Task struct {
 	Note     string  `json:"note,omitempty"`
 	Log      []Entry `json:"log,omitempty"`
 	Links    []Link  `json:"links,omitempty"`
+	// Linear issues you removed, so agents don't add them back.
+	DismissedIssues []string `json:"dismissed_issues,omitempty"`
+	// Keys of other links you removed, so agents don't add them back.
+	DismissedLinks []string `json:"dismissed_links,omitempty"`
 	// The tab label this plugin last set, so its own renames aren't mistaken for yours.
 	Applied string `json:"applied,omitempty"`
 	// The pane showing this task's strip. You can turn a task's strip off,
@@ -244,40 +306,158 @@ func (t *Task) SetPriority(on bool) error {
 	return nil
 }
 
-func (t *Task) AddLink(raw, label, by string, now time.Time) Link {
-	for _, l := range t.Links {
-		if l.URL == raw {
-			return l
-		}
-	}
-	l := Link{URL: raw, Label: label, By: by, Added: now}
-	t.Links = append(t.Links, l)
-	return l
+// AddLink adds a link as Add does. by is "" for you, or the agent's name.
+func (t *Task) AddLink(raw, label, by string, now time.Time) (Link, bool) {
+	return t.Add(Link{URL: raw, Label: label, By: by, Added: now})
 }
 
-// RemoveLink removes a link by 1-based number or by URL.
+// Add adds l unless the task has a link with the same LinkKey, and reports
+// whether it did. It refuses a URL that isn't SafeURL, and cleans the label.
+// An agent (l.By != "") can't add back a link you removed; adding it
+// yourself takes it off the dismissed lists.
+func (t *Task) Add(l Link) (Link, bool) {
+	if !SafeURL(l.URL) {
+		return Link{}, false
+	}
+	key := LinkKey(l.URL)
+	for _, o := range t.Links {
+		if LinkKey(o.URL) == key {
+			return o, false
+		}
+	}
+	if l.By != "" && t.Dismissed(l.URL, l.Source) {
+		return Link{}, false
+	}
+	if l.By == "" {
+		t.undismiss(l.URL)
+		if l.Source != "" {
+			t.undismiss(FileURL(l.Source))
+		}
+	}
+	l.Label = CleanLabel(l.Label)
+	t.Links = append(t.Links, l)
+	return l, true
+}
+
+// Dismissed reports whether agents may not add raw: its key, or for an
+// artifact with a source, its source file's key, was removed.
+func (t *Task) Dismissed(raw, source string) bool {
+	if t.dismissed(raw) {
+		return true
+	}
+	return source != "" && t.dismissed(FileURL(source))
+}
+
+func (t *Task) dismissed(raw string) bool {
+	if id, ok := LinearID(raw); ok {
+		return slices.Contains(t.DismissedIssues, id)
+	}
+	return slices.Contains(t.DismissedLinks, LinkKey(raw))
+}
+
+// Dismiss keeps raw off the task, so agents don't add it: a Linear issue by
+// its ID, anything else by its key. It reports whether raw wasn't dismissed
+// already. It leaves the task's links as they are.
+func (t *Task) Dismiss(raw string) bool {
+	if id, ok := LinearID(raw); ok {
+		if slices.Contains(t.DismissedIssues, id) {
+			return false
+		}
+		t.DismissedIssues = append(t.DismissedIssues, id)
+		return true
+	}
+	key := LinkKey(raw)
+	if slices.Contains(t.DismissedLinks, key) {
+		return false
+	}
+	t.DismissedLinks = append(t.DismissedLinks, key)
+	return true
+}
+
+func (t *Task) undismiss(raw string) {
+	if id, ok := LinearID(raw); ok {
+		t.DismissedIssues = slices.DeleteFunc(t.DismissedIssues, func(d string) bool { return d == id })
+		return
+	}
+	key := LinkKey(raw)
+	t.DismissedLinks = slices.DeleteFunc(t.DismissedLinks, func(d string) bool { return d == key })
+}
+
+// RemoveLink removes a link by 1-based number, by URL, or by Linear issue ID.
+// The link goes under all its URLs, and is dismissed, so agents don't add it
+// back. A page published from a file dismisses that file too, and removing
+// a file removes and dismisses the artifacts an agent published from it.
 func (t *Task) RemoveLink(which string) (Link, error) {
+	i, err := t.findLink(which)
+	if err != nil {
+		return Link{}, err
+	}
+	l := t.Links[i]
+	// State can hold the same link under several URLs: from before 0.6.0 for
+	// Linear issues, and from before 0.9.0 for everything else.
+	key := LinkKey(l.URL)
+	t.Links = slices.DeleteFunc(t.Links, func(o Link) bool { return LinkKey(o.URL) == key })
+	t.Dismiss(l.URL)
+	if l.Source != "" {
+		t.Dismiss(FileURL(l.Source))
+	}
+	// The other way round: artifacts an agent published from a removed file
+	// go too, and are dismissed, so a reply naming one without its file
+	// doesn't add it back. One you linked yourself stays, and isn't dismissed.
+	if p, ok := FilePath(l.URL); ok {
+		yours := map[string]bool{}
+		for _, o := range t.Links {
+			if o.By == "" {
+				yours[LinkKey(o.URL)] = true
+			}
+		}
+		for _, o := range slices.Clone(t.Links) {
+			k := LinkKey(o.URL)
+			if o.By != "" && o.Source != "" && KindOf(o.URL) == KindArtifact && filepath.Clean(o.Source) == p && !yours[k] {
+				t.Links = slices.DeleteFunc(t.Links, func(x Link) bool { return LinkKey(x.URL) == k })
+				t.Dismiss(o.URL)
+			}
+		}
+	}
+	return l, nil
+}
+
+// findLink finds a link by number, by its exact URL, by another URL for the
+// same link, then by Linear issue ID.
+func (t *Task) findLink(which string) (int, error) {
 	if n, err := strconv.Atoi(which); err == nil {
 		if n < 1 || n > len(t.Links) {
-			return Link{}, fmt.Errorf("no link %d (this task has %d)", n, len(t.Links))
+			return 0, fmt.Errorf("no link %d (this task has %d)", n, len(t.Links))
 		}
-		l := t.Links[n-1]
-		t.Links = append(t.Links[:n-1], t.Links[n:]...)
-		return l, nil
+		return n - 1, nil
 	}
 	for i, l := range t.Links {
 		if l.URL == which {
-			t.Links = append(t.Links[:i], t.Links[i+1:]...)
-			return l, nil
+			return i, nil
 		}
 	}
-	return Link{}, fmt.Errorf("no link %q", which)
+	key := LinkKey(which)
+	for i, l := range t.Links {
+		if LinkKey(l.URL) == key {
+			return i, nil
+		}
+	}
+	if ticketID.MatchString(which) {
+		id := strings.ToUpper(which)
+		for i, l := range t.Links {
+			if lid, _ := LinearID(l.URL); lid == id {
+				return i, nil
+			}
+		}
+	}
+	return 0, fmt.Errorf("no link %q", which)
 }
 
-// Name is what the overview calls the task.
+// Name is what the overview calls the task. The title can come from an agent
+// or a hand-edited state file, so it's cleaned as a label is.
 func (t *Task) Name(position int) string {
-	if t.Title != "" {
-		return t.Title
+	if title := CleanLabel(t.Title); title != "" {
+		return title
 	}
 	if position > 0 {
 		return fmt.Sprintf("tab %d", position)
@@ -302,6 +482,16 @@ const (
 )
 
 var Groups = []Group{Asking, YourTurn, Running, GReview, GPaused, GParked, GDone, GTool}
+
+// Order is the group's place in Groups.
+func (g Group) Order() int {
+	for i, gr := range Groups {
+		if gr == g {
+			return i
+		}
+	}
+	return 0
+}
 
 // GroupOf splits active tasks by what their agents are doing.
 func GroupOf(s Stage, agentStatus string) Group {

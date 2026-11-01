@@ -38,33 +38,39 @@ func BinDir() string {
 	return filepath.Join(home, ".local", "bin")
 }
 
+// PathCommand is how herdr runs the copy of herdr-tasks on PATH.
+const PathCommand = "$HOME/.local/bin/herdr-tasks"
+
 // InstallBinary copies exe to ~/.local/bin/herdr-tasks. It copies rather
 // than links because herdr builds plugins in a temporary folder and moves
 // them afterwards. A marker file in stateDir records that the copy is ours,
 // so an unrelated herdr-tasks file is never overwritten or removed. It
-// returns the command herdr should run for the tab bar status, plus
-// anything worth telling you.
+// returns the command herdr should run for the tab bar status, and Claude
+// Code for its hook, plus anything worth telling you.
+//
+// When ~/.local/bin/herdr-tasks isn't ours, it copies exe to bin/herdr-tasks
+// in stateDir instead, and that copy is the command: exe itself may be in
+// herdr's temporary build folder, which is gone once the build ends.
 func InstallBinary(exe, stateDir string) (command string, notes []string, err error) {
 	dir := BinDir()
 	dst := filepath.Join(dir, "herdr-tasks")
-	if !ours(dst, stateDir) {
-		return exe, []string{dst + " already exists and wasn't installed by herdr-tasks, so it was left alone."}, nil
+	if !ours(dst, stateDir, exe) {
+		own := ownCopy(stateDir)
+		if err := os.MkdirAll(filepath.Dir(own), 0o700); err != nil {
+			return "", nil, err
+		}
+		if err := copyBinary(exe, own); err != nil {
+			return "", nil, err
+		}
+		return own, []string{dst + " already exists and wasn't installed by herdr-tasks, so it was left alone. herdr runs " + own + " instead."}, nil
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, err
 	}
-	b, err := os.ReadFile(exe)
-	if err != nil {
+	if err := copyBinary(exe, dst); err != nil {
 		return "", nil, err
 	}
-	tmp := dst + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o755); err != nil {
-		return "", nil, err
-	}
-	if err := os.Rename(tmp, dst); err != nil {
-		return "", nil, err
-	}
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return "", nil, err
 	}
 	if err := os.WriteFile(filepath.Join(stateDir, "installed-binary"), []byte(dst+"\n"), 0o644); err != nil {
@@ -73,31 +79,85 @@ func InstallBinary(exe, stateDir string) (command string, notes []string, err er
 	if !onPath(dir) {
 		notes = append(notes, dir+" isn't on your PATH, so agents can't run herdr-tasks by name yet.")
 	}
-	return "$HOME/.local/bin/herdr-tasks", notes, nil
+	return PathCommand, notes, nil
 }
 
-// RemoveBinary deletes ~/.local/bin/herdr-tasks if herdr-tasks installed it.
+// ownCopy is where InstallBinary copies herdr-tasks when the file on PATH
+// isn't ours: in the state folder, off PATH.
+func ownCopy(stateDir string) string { return filepath.Join(stateDir, "bin", "herdr-tasks") }
+
+// copyBinary copies exe to dst through a temp file renamed into place, so a
+// copy that's running isn't changed under it.
+func copyBinary(exe, dst string) error {
+	b, err := os.ReadFile(exe)
+	if err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o755); err != nil {
+		return err
+	}
+	return os.Rename(tmp, dst)
+}
+
+// RemoveBinary deletes ~/.local/bin/herdr-tasks if herdr-tasks installed it,
+// and the copy InstallBinary made in stateDir instead, if any.
 func RemoveBinary(stateDir string) error {
+	own := ownCopy(stateDir)
+	if err := os.Remove(own); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	_ = os.Remove(filepath.Dir(own)) // when it's empty
 	dst := filepath.Join(BinDir(), "herdr-tasks")
 	if _, err := os.Lstat(dst); errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
-	if !ours(dst, stateDir) {
+	if !ours(dst, stateDir, "") {
 		return nil
 	}
 	_ = os.Remove(filepath.Join(stateDir, "installed-binary"))
 	return os.Remove(dst)
 }
 
-// ours reports whether dst is missing, a link (from older versions), or a
-// copy herdr-tasks installed.
-func ours(dst, stateDir string) bool {
+// InstalledBinary is the copy of herdr-tasks that InstallBinary put on
+// PATH, or "" when it put none there.
+func InstalledBinary(stateDir string) string {
+	b, err := os.ReadFile(filepath.Join(stateDir, "installed-binary"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
+// ours reports whether herdr-tasks may replace or remove dst: it's missing,
+// it's the copy herdr-tasks installed (the marker in stateDir names it), or
+// it's a link an older version made. Such a link points nowhere now, as
+// herdr moved the build it pointed at, or at exe, the herdr-tasks being
+// installed ("" when none is). A link to any other file is yours.
+func ours(dst, stateDir, exe string) bool {
 	fi, err := os.Lstat(dst)
-	if errors.Is(err, os.ErrNotExist) || (err == nil && fi.Mode()&os.ModeSymlink != 0) {
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return true
+	case InstalledBinary(stateDir) == dst:
+		return true
+	case err != nil || fi.Mode()&os.ModeSymlink == 0:
+		return false
+	}
+	if _, err := os.Stat(dst); errors.Is(err, os.ErrNotExist) {
 		return true
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir, "installed-binary"))
-	return err == nil && strings.TrimSpace(string(b)) == dst
+	if exe == "" {
+		return false
+	}
+	target, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return false
+	}
+	if r, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = r
+	}
+	return target == exe
 }
 
 func onPath(dir string) bool {
@@ -281,17 +341,27 @@ func usesKey(v any, key string) bool {
 }
 
 // WriteConfig saves a new config, keeping a one-time backup of the original.
+// When path is a link, as into a dotfiles repo, it saves the file the link
+// points at, with the backup next to that file, and the link stays a link.
 func WriteConfig(path, before, after string) (backup string, err error) {
 	if before == after {
 		return "", nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	target := path
+	if r, err := filepath.EvalSymlinks(path); err == nil {
+		target = r
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	} else if _, err := os.Lstat(path); err == nil {
+		return "", fmt.Errorf("%s links to a file that doesn't exist, so it was left alone", path)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return "", err
 	}
 	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
+	if fi, err := os.Stat(target); err == nil {
 		mode = fi.Mode().Perm()
-		backup = path + ".before-herdr-tasks"
+		backup = target + ".before-herdr-tasks"
 		if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
 			if err := os.WriteFile(backup, []byte(before), mode); err != nil {
 				return "", err
@@ -300,11 +370,12 @@ func WriteConfig(path, before, after string) (backup string, err error) {
 			backup = ""
 		}
 	}
-	tmp := path + ".herdr-tasks.tmp"
+	// Next to the target, so the rename stays on one filesystem.
+	tmp := target + ".herdr-tasks.tmp"
 	if err := os.WriteFile(tmp, []byte(after), mode); err != nil {
 		return "", err
 	}
-	return backup, os.Rename(tmp, path)
+	return backup, os.Rename(tmp, target)
 }
 
 // ReadConfig returns herdr's config, or "" if there isn't one yet.

@@ -36,12 +36,30 @@ type Options struct {
 	SortTabs bool `toml:"sort_tabs"`
 	// Show each task's stage, note, and links in a strip along the bottom of its tab.
 	Strip bool `toml:"strip"`
+	// Serve the task board in the browser. Off by default.
+	Board bool `toml:"board"`
+	// The board's port on 127.0.0.1; 0 means DefaultBoardPort.
+	BoardPort int `toml:"board_port"`
+	// Link the Linear issues, Slack links and pages Claude Code works with to
+	// the task. Off by default.
+	ClaudeLinks bool `toml:"claude_links"`
 
 	// Set for the run after herdr starts, when strips need restarting.
 	Startup bool `toml:"-"`
 	// The strip pane running this, if any. It's never closed from here: the
 	// strip saves first and then exits on its own.
 	Self string `toml:"-"`
+}
+
+// DefaultBoardPort is the board's port when board_port isn't set.
+const DefaultBoardPort = 7391
+
+// Port is the port the board listens on.
+func (o Options) Port() int {
+	if o.BoardPort <= 0 {
+		return DefaultBoardPort
+	}
+	return o.BoardPort
 }
 
 // Strips is implemented by hosts that can show strips (see package strip).
@@ -163,6 +181,21 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 		err = stripErr
 	}
 	return live, err
+}
+
+// ErrNoTab is ChangeTask's error for a tab without a task.
+var ErrNoTab = errors.New("no tab")
+
+// ChangeTask runs fn on one tab's task and syncs herdr, like Run. A tab
+// without a task is ErrNoTab.
+func ChangeTask(h Herdr, st *store.Store, opt Options, now time.Time, tabID string, fn func(*task.Task) error) (*herdr.Live, error) {
+	return Run(h, st, opt, now, func(s *store.State, _ *herdr.Live) error {
+		t, ok := s.Tasks[tabID]
+		if !ok {
+			return fmt.Errorf("%w %s", ErrNoTab, tabID)
+		}
+		return fn(t)
+	})
 }
 
 // Clear undoes what the plugin shows in herdr: tab names get their plain

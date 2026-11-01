@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"net/url"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -22,6 +23,9 @@ var (
 	cReview = lipgloss.Color("#b9a6ff")
 	cTool   = lipgloss.Color("#8a96a8")
 	cLink   = lipgloss.Color("#9cc4ff")
+	cLinear = lipgloss.Color("#8f8cf2")
+	cSlack  = lipgloss.Color("#c965a9")
+	cPages  = lipgloss.Color("#4fb86e")
 	cSelBG  = lipgloss.Color("#232b35")
 	cChipBG = lipgloss.Color("#2b3442")
 	cKeyBG  = lipgloss.Color("#20262e")
@@ -99,16 +103,50 @@ func fit(s string, w int) string {
 	return s
 }
 
-// hyperlink makes text a clickable OSC 8 link in terminals that support it.
-func hyperlink(url, text string) string {
-	return "\x1b]8;;" + url + "\x1b\\" + text + "\x1b]8;;\x1b\\"
+// hyperlink wraps text in an OSC 8 link to raw, clickable in terminals that
+// support it. When raw isn't task.SafeURL, isn't linkable, or holds ";" in
+// its scheme or host part, it returns the cleaned text alone. The text is
+// always cleaned.
+func hyperlink(raw, text string) string {
+	text = task.CleanLabel(text)
+	if !task.SafeURL(raw) || !linkable(raw) || strings.Contains(urlHead(raw), ";") {
+		return text
+	}
+	return "\x1b]8;;" + raw + "\x1b\\" + text + "\x1b]8;;\x1b\\"
 }
 
-// wrap breaks text into lines of at most w cells.
+// linkable reports whether a terminal may be handed raw as an OSC 8 target:
+// http(s) with a host, or a local file:// URL. A terminal hands any other
+// scheme, such as shortcuts: or vscode:, to the app registered for it, and a
+// label can hide which scheme a link has. The board links http(s) only.
+func linkable(raw string) bool {
+	if _, ok := task.FilePath(raw); ok {
+		return true
+	}
+	u, err := url.Parse(raw) // Parse lowercases the scheme
+	return err == nil && (u.Scheme == "http" || u.Scheme == "https") && u.Host != ""
+}
+
+// urlHead is a URL up to its path: the scheme, user, host and port.
+func urlHead(raw string) string {
+	rest := raw
+	if _, after, ok := strings.Cut(raw, "://"); ok {
+		rest = after
+	}
+	if i := strings.IndexAny(rest, "/?#"); i >= 0 {
+		return raw[:len(raw)-len(rest)+i]
+	}
+	return raw
+}
+
+// wrap breaks text into lines of at most w cells. The text is cleaned with
+// task.CleanText first, as notes, log entries and reasons can come from an
+// agent or a hand-edited state file.
 func wrap(text string, w int) []string {
 	if w <= 0 {
 		return nil
 	}
+	text = task.CleanText(text)
 	var out []string
 	for _, para := range strings.Split(text, "\n") {
 		if para == "" {

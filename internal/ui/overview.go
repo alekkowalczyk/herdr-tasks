@@ -3,6 +3,7 @@ package ui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -19,6 +20,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
+	"github.com/alekkowalczyk/herdr-tasks/internal/view"
 )
 
 type Env struct {
@@ -27,6 +29,9 @@ type Env struct {
 	Opts   reconcile.Options
 	// The tab to select when the overview opens.
 	CurrentTab string
+	// Shown in the message line when the overview opens, such as why the
+	// board couldn't start.
+	Message string
 }
 
 func (e Env) host() strip.Host { return strip.Host{Client: e.Client} }
@@ -91,10 +96,16 @@ type model struct {
 	note          textarea.Model
 	msg           string
 	help          bool
+	// The tab and links as they were when you pressed L, so the number you
+	// press picks the link you were shown, even if a refresh changes the
+	// list or the selection meanwhile.
+	unlinkTab   string
+	unlinkLinks []task.Link
 
 	// Hit areas from the last render, for the mouse.
 	rowAt      map[int]string
-	linkAt     map[int]int
+	linkAt     map[int]task.Link // the link each × removes, from linkTab
+	linkTab    string
 	chips      []hit
 	keys       []hit
 	filterY    int
@@ -108,7 +119,7 @@ type model struct {
 }
 
 func newModel(env Env) (*model, error) {
-	m := &model{env: env, rowAt: map[int]string{}, linkAt: map[int]int{}, alertY: -1}
+	m := &model{env: env, rowAt: map[int]string{}, linkAt: map[int]task.Link{}, alertY: -1}
 	// Track any tabs created since the last sync before showing them.
 	live, err := reconcile.Run(env.host(), env.Store, env.Opts, time.Now(), nil)
 	if err != nil {
@@ -119,6 +130,7 @@ func newModel(env Env) (*model, error) {
 		return nil, err
 	}
 	m.sel = env.CurrentTab
+	m.msg = env.Message
 	m.rebuild()
 
 	m.input = textinput.New()
@@ -154,31 +166,9 @@ func (m *model) refresh() {
 // rebuild recomputes the visible rows and keeps the selection on a visible task.
 func (m *model) rebuild() {
 	m.rows = m.rows[:0]
-	for _, tab := range m.live.Tabs {
-		t, ok := m.state.Tasks[tab.ID]
-		if !ok {
-			continue
-		}
-		ws, _ := m.live.Workspace(tab.WorkspaceID)
-		if m.state.IsHidden(ws.Label) {
-			continue
-		}
-		m.rows = append(m.rows, row{tab: tab, task: t, ws: ws, pos: m.live.Position(tab.ID), group: task.GroupOf(t.Stage, tab.AgentStatus)})
+	for _, r := range view.Rows(m.state, m.live) {
+		m.rows = append(m.rows, row{tab: r.Tab, task: r.Task, ws: r.Workspace, pos: r.Pos, group: r.Group})
 	}
-	order := map[task.Group]int{}
-	for i, g := range task.Groups {
-		order[g] = i
-	}
-	sort.SliceStable(m.rows, func(i, j int) bool {
-		a, b := m.rows[i], m.rows[j]
-		if order[a.group] != order[b.group] {
-			return order[a.group] < order[b.group]
-		}
-		if a.task.Priority != b.task.Priority {
-			return a.task.Priority
-		}
-		return a.task.Since.After(b.task.Since)
-	})
 	if m.selected() == nil && len(m.rows) > 0 {
 		m.sel = m.rows[0].tab.ID
 	}
@@ -213,7 +203,11 @@ func (m *model) change(fn func(t *task.Task), done string) {
 	if r == nil {
 		return
 	}
-	id := r.tab.ID
+	m.changeTab(r.tab.ID, fn, done)
+}
+
+// changeTab is change for the task of tab id, whichever task is selected.
+func (m *model) changeTab(id string, fn func(t *task.Task), done string) {
 	live, err := reconcile.Run(m.env.host(), m.env.Store, m.env.Opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
 		t, ok := s.Tasks[id]
 		if !ok {
@@ -361,10 +355,18 @@ func (m *model) finishInput() {
 		if v == "" {
 			return
 		}
-		if !strings.Contains(v, "://") {
-			v = "https://" + v
+		v = task.LinkInput(v, "")
+		if !task.SafeURL(v) {
+			// Task.Add would refuse it.
+			m.msg = "Not a valid link"
+			return
 		}
-		m.change(func(t *task.Task) { t.AddLink(v, "", "", time.Now()) }, "Added "+task.LinkLabel(v)+" to "+name)
+		done := "Added " + task.LinkLabel(v) + " to " + name
+		added := false
+		m.change(func(t *task.Task) { _, added = t.AddLink(v, "", "", time.Now()) }, done)
+		if !added && m.msg == done {
+			m.msg = "Already linked to " + name
+		}
 	case inputRename:
 		m.change(func(t *task.Task) { t.Title = v }, "Renamed to "+map[bool]string{true: v, false: "its tab number"}[v != ""])
 	}
@@ -484,8 +486,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		case modeUnlink:
 			m.mode = modeList
+			tab, links := m.unlinkTab, m.unlinkLinks
+			m.unlinkTab, m.unlinkLinks = "", nil
 			if n, err := strconv.Atoi(msg.String()); err == nil {
-				m.removeLink(n - 1)
+				if n < 1 || n > len(links) {
+					m.msg = fmt.Sprintf("No link %d", n)
+				} else {
+					m.removeLink(tab, links[n-1])
+				}
 			}
 			return m, nil
 		}
@@ -559,7 +567,8 @@ func (m *model) key(k string) tea.Cmd {
 	case "L":
 		if r := m.selected(); r != nil && len(r.task.Links) > 0 {
 			m.mode = modeUnlink
-			m.msg = fmt.Sprintf("Remove which link? 1–%d", len(r.task.Links))
+			m.unlinkTab, m.unlinkLinks = r.tab.ID, slices.Clone(r.task.Links)
+			m.msg = fmt.Sprintf("Remove which link? 1–%d", len(m.unlinkLinks))
 		}
 	case "r":
 		if r := m.selected(); r != nil {
@@ -573,13 +582,26 @@ func (m *model) key(k string) tea.Cmd {
 	return nil
 }
 
-func (m *model) removeLink(i int) {
-	r := m.selected()
-	if r == nil || i < 0 || i >= len(r.task.Links) {
-		return
+// removeLink removes l, a link you were shown, from tab's task. It goes by
+// l's URL in the task as saved now, since another writer, such as the Claude
+// hook, may have changed the list since you saw it.
+func (m *model) removeLink(tab string, l task.Link) {
+	label := task.CleanLabel(l.Display())
+	done := "Removed " + label
+	gone := false
+	m.changeTab(tab, func(t *task.Task) {
+		// RemoveLink is given its number, as a URL could also read as a
+		// number or an issue ID.
+		i := slices.IndexFunc(t.Links, func(o task.Link) bool { return o.URL == l.URL })
+		if i < 0 {
+			gone = true
+			return
+		}
+		_, _ = t.RemoveLink(strconv.Itoa(i + 1))
+	}, done)
+	if gone && m.msg == done {
+		m.msg = label + " was removed already"
 	}
-	label := r.task.Links[i].Display()
-	m.change(func(t *task.Task) { _, _ = t.RemoveLink(strconv.Itoa(i + 1)) }, "Removed "+label)
 }
 
 // isDouble reports whether this click on target follows the last one quickly.
@@ -633,8 +655,8 @@ func (m *model) mouse(msg tea.MouseMsg) tea.Cmd {
 			}
 		}
 	default:
-		if i, ok := m.linkAt[y]; ok && m.wide() && x >= m.width-3 {
-			m.removeLink(i)
+		if l, ok := m.linkAt[y]; ok && m.wide() && x >= m.width-3 {
+			m.removeLink(m.linkTab, l)
 			return nil
 		}
 		if id, ok := m.rowAt[y]; ok {
@@ -658,7 +680,7 @@ func (m *model) View() string {
 		return ""
 	}
 	var b strings.Builder
-	m.rowAt, m.linkAt = map[int]string{}, map[int]int{}
+	m.rowAt, m.linkAt = map[int]string{}, map[int]task.Link{}
 	m.alertY = -1
 
 	// Header.
@@ -889,9 +911,9 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 	info, infoColor := "", lipgloss.TerminalColor(cDim)
 	switch {
 	case r.task.Stage.TakesReason() && r.task.Reason != "":
-		info, infoColor = r.task.Reason, stageColor(r.task.Stage)
+		info, infoColor = task.CleanLabel(r.task.Reason), stageColor(r.task.Stage)
 	case len(r.task.Links) > 0:
-		info, infoColor = "↗ "+r.task.Links[0].Display(), cLink
+		info, infoColor = "↗ "+task.CleanLabel(r.task.Links[0].Display()), cLink
 		if n := len(r.task.Links); n > 1 {
 			info += fmt.Sprintf(" +%d", n-1)
 		}
@@ -958,9 +980,9 @@ func (m *model) detailLines(w, h int) []string {
 			add(wrap(t.Note, w)...)
 		}
 		for _, e := range t.Log {
-			who := e.Who + " " + e.At.Local().Format("15:04")
+			who := task.CleanLabel(e.Who) + " " + e.At.Local().Format("15:04")
 			if time.Since(e.At) > 20*time.Hour {
-				who = e.Who + " " + e.At.Local().Format("Mon 15:04")
+				who = task.CleanLabel(e.Who) + " " + e.At.Local().Format("Mon 15:04")
 			}
 			body := wrap(e.Text, max(10, w-ansi.StringWidth(who)-1))
 			for i, l := range body {
@@ -975,19 +997,33 @@ func (m *model) detailLines(w, h int) []string {
 	add("")
 
 	add(sDim.Render("LINKS") + strings.Repeat(" ", max(1, w-12)) + sDim.Render("l add"))
-	if len(t.Links) == 0 {
+	links := t.Links
+	if m.mode == modeUnlink && r.tab.ID == m.unlinkTab {
+		// The numbers you're choosing from don't move.
+		links = m.unlinkLinks
+	}
+	if len(links) == 0 {
 		add(sDim.Render("No links yet."))
 	}
-	for i, l := range t.Links {
-		label := l.Display()
+	m.linkTab = r.tab.ID
+	for i, l := range links {
+		// Everything here can come from a hand-edited state file, so it's
+		// cleaned before it's measured or printed. An unsafe URL isn't shown
+		// at all: a terminal could still find a link in its text.
+		label := task.CleanLabel(l.Display())
+		url := "unsafe link"
+		if task.SafeURL(l.URL) {
+			url = task.CleanLabel(strings.TrimPrefix(strings.TrimPrefix(l.URL, "https://"), "http://"))
+		} else if l.Label == "" {
+			label = url
+		}
 		via := ""
-		if l.By != "" {
-			via = " via " + l.By
+		if by := task.CleanLabel(l.By); by != "" {
+			via = " via " + by
 		}
 		rest := max(0, w-ansi.StringWidth(label)-ansi.StringWidth(via)-6)
-		url := strings.TrimPrefix(strings.TrimPrefix(l.URL, "https://"), "http://")
-		line := sDim.Render(fmt.Sprintf("%d ", i+1)) + hyperlink(l.URL, sLink.Render(label)) + " " + sDim.Render(fit(url, rest)) + sRun.Render(via)
-		m.linkAt[m.listTop+len(lines)] = i
+		line := sDim.Render(fmt.Sprintf("%d ", i+1)) + sLink.Render(hyperlink(l.URL, label)) + " " + sDim.Render(fit(url, rest)) + sRun.Render(via)
+		m.linkAt[m.listTop+len(lines)] = l
 		add(fit(line, w-2) + sDim.Render(" ×"))
 	}
 	if len(lines) > h {

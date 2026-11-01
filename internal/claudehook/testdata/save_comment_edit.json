@@ -1,0 +1,28 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "prompt_id": "5f1e2d3c-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__linear__save_comment",
+  "tool_input": {
+    "id": "c0ffee00-0000-4000-8000-000000000005",
+    "body": "Fixed in #31, deployed."
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "{\"id\":\"c0ffee00-0000-4000-8000-000000000005\",\"body\":\"Fixed in #31, deployed.\",\"attachments\":[],\"createdAt\":\"2026-10-30T15:05:00.000Z\",\"updatedAt\":\"2026-10-30T15:09:00.000Z\",\"parentId\":null,\"resolvedAt\":null,\"quotedText\":null,\"author\":{\"id\":\"d0d0d0d0-0000-4000-8000-000000000006\",\"name\":\"Dev\"},\"onBehalfOf\":null}"
+    }
+  ],
+  "tool_use_id": "toolu_acme0006",
+  "duration_ms": 406,
+  "mcp_server": {
+    "name": "linear",
+    "source": "dynamic"
+  }
+}

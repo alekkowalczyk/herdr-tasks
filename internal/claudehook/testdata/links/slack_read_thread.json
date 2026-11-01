@@ -1,0 +1,21 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/acme/api",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__plugin_slack_slack__slack_read_thread",
+  "tool_input": {
+    "channel_id": "C0123ABCD",
+    "message_ts": "1700000000.123456"
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "{\"messages\":[{\"user\":\"U0123ABCD\",\"text\":\"Is it deployed?\",\"message_link\":\"https://acme.slack.com/archives/C0123ABCD/p1700000000123456\"},{\"user\":\"U0456EFGH\",\"text\":\"Yes, see https://acme.slack.com/archives/C0123ABCD/p1700000000654321\",\"message_link\":\"https://acme.slack.com/archives/C0123ABCD/p1700000000654321?thread_ts=1700000000.123456&cid=C0123ABCD\"}]}"
+    }
+  ],
+  "tool_use_id": "toolu_00000000000000000000000002",
+  "mcp_server": {
+    "name": "plugin:slack:slack",
+    "source": "plugin"
+  }
+}

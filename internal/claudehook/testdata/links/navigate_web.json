@@ -1,0 +1,16 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "cwd": "/home/dev/acme/api",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__playwright__browser_navigate",
+  "tool_input": {
+    "url": "https://example.com"
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "Navigated to https://example.com"
+    }
+  ],
+  "tool_use_id": "toolu_00000000000000000000000005"
+}

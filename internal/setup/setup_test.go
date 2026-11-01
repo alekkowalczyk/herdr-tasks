@@ -122,8 +122,14 @@ func TestInstallBinaryLeavesOtherFilesAlone(t *testing.T) {
 	os.WriteFile(exe, []byte("v1"), 0o755)
 
 	dst := filepath.Join(home, ".local", "bin", "herdr-tasks")
+	if got := InstalledBinary(state); got != "" {
+		t.Fatalf("InstalledBinary before install = %q", got)
+	}
 	if cmd, _, err := InstallBinary(exe, state); err != nil || cmd != "$HOME/.local/bin/herdr-tasks" {
 		t.Fatalf("install: %q %v", cmd, err)
+	}
+	if got := InstalledBinary(state); got != dst {
+		t.Fatalf("InstalledBinary = %q, want %q", got, dst)
 	}
 	// The build folder goes away; the installed copy must still work.
 	os.RemoveAll(filepath.Dir(exe))
@@ -145,12 +151,142 @@ func TestInstallBinaryLeavesOtherFilesAlone(t *testing.T) {
 
 	// Someone else's herdr-tasks is never touched.
 	os.WriteFile(dst, []byte("theirs"), 0o755)
-	if cmd, notes, _ := InstallBinary(exe, state); cmd != exe || len(notes) != 1 {
+	if cmd, notes, _ := InstallBinary(exe, state); cmd == PathCommand || len(notes) != 1 {
 		t.Fatalf("overwrote a foreign file? cmd %q notes %v", cmd, notes)
 	}
 	RemoveBinary(state)
 	if b, _ := os.ReadFile(dst); string(b) != "theirs" {
 		t.Fatal("removed a foreign file")
+	}
+}
+
+// With someone else's herdr-tasks on PATH, herdr runs a copy in the state
+// folder, since the build folder herdr runs setup from goes away.
+func TestInstallBinaryKeepsItsOwnCopyWhenPathIsTaken(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	state := filepath.Join(home, "state")
+	exe := filepath.Join(home, "build", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(exe), 0o755)
+	os.WriteFile(exe, []byte("v1"), 0o755)
+	dst := filepath.Join(home, ".local", "bin", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(dst), 0o755)
+	os.WriteFile(dst, []byte("theirs"), 0o755)
+
+	cmd, notes, err := InstallBinary(exe, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd == exe || cmd == PathCommand || !filepath.IsAbs(cmd) {
+		t.Fatalf("command = %q, want a copy of its own", cmd)
+	}
+	if len(notes) != 1 || !strings.Contains(notes[0], "left alone") || !strings.Contains(notes[0], cmd) {
+		t.Errorf("notes = %q, want one saying %s is left alone and %s runs instead", notes, dst, cmd)
+	}
+	os.RemoveAll(filepath.Dir(exe))
+	if b, err := os.ReadFile(cmd); err != nil || string(b) != "v1" {
+		t.Fatalf("after the build folder went: %q, %v", b, err)
+	}
+	if fi, _ := os.Stat(cmd); fi == nil || fi.Mode().Perm()&0o100 == 0 {
+		t.Errorf("%s can't be run", cmd)
+	}
+	if got := InstalledBinary(state); got != "" {
+		t.Errorf("InstalledBinary = %q, want none on PATH", got)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "theirs" {
+		t.Errorf("%s = %q, want it left alone", dst, b)
+	}
+
+	if err := RemoveBinary(state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(cmd); !os.IsNotExist(err) {
+		t.Errorf("remove left %s behind: %v", cmd, err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "theirs" {
+		t.Errorf("remove changed %s: %q", dst, b)
+	}
+}
+
+// legacyLink makes ~/.local/bin/herdr-tasks a link to target, with no
+// marker, as an older version or you could have.
+func legacyLink(t *testing.T, target string) (home, state, dst string) {
+	t.Helper()
+	home = t.TempDir()
+	t.Setenv("HOME", home)
+	state = filepath.Join(home, "state")
+	dst = filepath.Join(home, ".local", "bin", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(dst), 0o755)
+	if err := os.Symlink(target, dst); err != nil {
+		t.Fatal(err)
+	}
+	return home, state, dst
+}
+
+func TestInstallBinaryLeavesYourSymlinkAlone(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "opt", "other", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(other), 0o755)
+	os.WriteFile(other, []byte("other"), 0o755)
+	home, state, dst := legacyLink(t, other)
+	exe := filepath.Join(home, "build", "herdr-tasks")
+	os.MkdirAll(filepath.Dir(exe), 0o755)
+	os.WriteFile(exe, []byte("v1"), 0o755)
+
+	cmd, notes, err := InstallBinary(exe, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd == PathCommand || len(notes) != 1 {
+		t.Errorf("command %q, notes %q; want the link left alone, with a note", cmd, notes)
+	}
+	if got, err := os.Readlink(dst); err != nil || got != other {
+		t.Errorf("link = %q, %v; want it still pointing at %s", got, err, other)
+	}
+	if b, _ := os.ReadFile(other); string(b) != "other" {
+		t.Errorf("%s = %q, want it unchanged", other, b)
+	}
+}
+
+func TestRemoveBinaryLeavesYourSymlinkAlone(t *testing.T) {
+	other := filepath.Join(t.TempDir(), "herdr-tasks")
+	os.WriteFile(other, []byte("other"), 0o755)
+	_, state, dst := legacyLink(t, other)
+	if err := RemoveBinary(state); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(dst); err != nil || got != other {
+		t.Errorf("link = %q, %v; want it left alone", got, err)
+	}
+}
+
+func TestInstallBinaryReplacesALegacyLink(t *testing.T) {
+	for _, dangling := range []bool{true, false} {
+		build := filepath.Join(t.TempDir(), "build", "herdr-tasks")
+		home, state, dst := legacyLink(t, build)
+		exe := build
+		if dangling {
+			// herdr moved the build the link pointed at.
+			exe = filepath.Join(home, "plugin", "herdr-tasks")
+		}
+		os.MkdirAll(filepath.Dir(exe), 0o755)
+		os.WriteFile(exe, []byte("v2"), 0o755)
+
+		cmd, _, err := InstallBinary(exe, state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if cmd != PathCommand {
+			t.Errorf("dangling %v: command = %q, want %q", dangling, cmd, PathCommand)
+		}
+		if fi, err := os.Lstat(dst); err != nil || !fi.Mode().IsRegular() {
+			t.Errorf("dangling %v: %s isn't a copy now: %v", dangling, dst, err)
+		}
+		if b, _ := os.ReadFile(dst); string(b) != "v2" {
+			t.Errorf("dangling %v: copy = %q, want v2", dangling, b)
+		}
+		if got := InstalledBinary(state); got != dst {
+			t.Errorf("dangling %v: InstalledBinary = %q, want %q", dangling, got, dst)
+		}
 	}
 }
 
@@ -214,5 +350,53 @@ func TestWorkingRowsAreBlue(t *testing.T) {
 	}
 	if found != 7 {
 		t.Fatalf("%d rows have a working token, want 7", found)
+	}
+}
+
+// A config that links into a dotfiles repo stays a link, and the file in the
+// repo gets the change.
+func TestWriteConfigFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "dotfiles", "config.toml")
+	os.MkdirAll(filepath.Dir(real), 0o755)
+	os.WriteFile(real, []byte("[ui]\n"), 0o640)
+	path := filepath.Join(dir, "herdr", "config.toml")
+	os.MkdirAll(filepath.Dir(path), 0o755)
+	if err := os.Symlink(real, path); err != nil {
+		t.Fatal(err)
+	}
+
+	backup, err := WriteConfig(path, "[ui]\n", "[ui]\n# managed\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Lstat(path); err != nil || fi.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("%s isn't a link any more: %v", path, err)
+	}
+	if b, _ := os.ReadFile(real); string(b) != "[ui]\n# managed\n" {
+		t.Errorf("the linked file = %q, want the new config", b)
+	}
+	if fi, _ := os.Stat(real); fi == nil || fi.Mode().Perm() != 0o640 {
+		t.Errorf("the linked file's mode changed: %v", fi.Mode())
+	}
+	realDir, _ := filepath.EvalSymlinks(filepath.Dir(real))
+	if want := filepath.Join(realDir, "config.toml.before-herdr-tasks"); backup != want {
+		t.Errorf("backup = %q, want %q", backup, want)
+	}
+	if b, _ := os.ReadFile(backup); string(b) != "[ui]\n" {
+		t.Errorf("backup = %q, want the old config", b)
+	}
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(path), "*")); len(left) != 1 {
+		t.Errorf("files next to the link: %q, want the link alone", left)
+	}
+
+	// A link to nothing is left alone.
+	dangling := filepath.Join(dir, "gone.toml")
+	os.Symlink(filepath.Join(dir, "missing", "config.toml"), dangling)
+	if _, err := WriteConfig(dangling, "", "[ui]\n"); err == nil {
+		t.Error("wrote through a link to nothing")
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "missing")); !os.IsNotExist(err) {
+		t.Errorf("made the folder a link to nothing points at: %v", err)
 	}
 }

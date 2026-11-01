@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -244,6 +245,37 @@ func TestMarkersOffPutsNamesBack(t *testing.T) {
 	Run(f, st, Options{Markers: false, SortTabs: true}, time.Now(), nil)
 	if f.renames != r {
 		t.Fatal("markers off should leave tabs alone once names are back")
+	}
+}
+
+func TestChangeTaskUnknownTab(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	_, err := ChangeTask(f, st, on, time.Now(), "x", func(*task.Task) error {
+		t.Fatal("fn ran for a tab that isn't there")
+		return nil
+	})
+	if err == nil || err.Error() != "no tab x" || !errors.Is(err, ErrNoTab) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestChangeTaskSavesAndSyncs(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	live, err := ChangeTask(f, st, on, time.Now(), "w1:t2", func(t *task.Task) error {
+		t.SetStage(task.Paused, "", time.Now())
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := st.Load(); s.Tasks["w1:t2"].Stage != task.Paused {
+		t.Fatalf("stage = %s", s.Tasks["w1:t2"].Stage)
+	}
+	if got := fmt.Sprint(f.labels("w1")); got != "[● 1 ● 2 ‖ arm CI runners]" {
+		t.Fatalf("labels = %s", got)
+	}
+	if live.Position("w1:t2") != 3 {
+		t.Fatalf("live wasn't updated: %+v", live.Tabs)
 	}
 }
 

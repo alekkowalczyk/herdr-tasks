@@ -1,0 +1,30 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "prompt_id": "5f1e2d3c-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__claude_ai_Linear__create_attachment_from_upload",
+  "tool_input": {
+    "issue": "ABC-12",
+    "assetUrl": "https://uploads.linear.app/acme/1111/screenshot.png",
+    "title": "Screenshot",
+    "subtitle": "Login page"
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "{\"id\":\"e1e1e1e1-0000-4000-8000-000000000007\",\"title\":\"Screenshot\",\"subtitle\":\"Login page\",\"url\":\"https://uploads.linear.app/acme/1111/screenshot.png?signature=abc\"}"
+    }
+  ],
+  "tool_use_id": "toolu_acme0007",
+  "duration_ms": 407,
+  "mcp_server": {
+    "name": "claude.ai Linear",
+    "source": "claudeai"
+  }
+}

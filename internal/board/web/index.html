@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Tasks</title>
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<link rel="stylesheet" href="/static/board.css">
+<script src="/static/vendor/xterm.js" defer></script>
+<script src="/static/vendor/addon-unicode11.js" defer></script>
+<script src="/static/keymap.js" defer></script>
+<script src="/static/term.js" defer></script>
+<script src="/static/app.js" defer></script>
+</head>
+<body>
+<header class="top">
+  <h1 class="brand">Tasks</h1>
+  <span id="stale" class="badge stale" title="herdr didn't answer the last read. This is what it showed before." hidden>stale</span>
+  <nav id="sessions" class="sessions" aria-label="Sessions" hidden></nav>
+  <div id="spaces" class="spaces" role="group" aria-label="Spaces" hidden></div>
+  <div class="top-end">
+    <span id="conn" class="conn" role="status"></span>
+    <span id="version" class="version"></span>
+  </div>
+</header>
+<p id="hint" class="hint" hidden>Add a Linear API key to see issue status: <code>herdr-tasks linear-key</code></p>
+<main id="board" class="board" hidden></main>
+<section id="empty" class="empty" aria-live="polite">
+  <p id="empty-text" class="empty-text">Connecting…</p>
+</section>
+
+<div id="menu" class="menu" role="menu" aria-label="Move to" hidden></div>
+
+<dialog id="reason" class="sheet" aria-labelledby="reason-title">
+  <form id="reason-form" class="sheet-body">
+    <h2 id="reason-title" class="sheet-title">In review</h2>
+    <p id="reason-task" class="sheet-task"></p>
+    <label id="reason-label" class="field-label" for="reason-text">Waiting for</label>
+    <input id="reason-text" class="field" type="text" autocomplete="off" spellcheck="false" maxlength="300">
+    <div class="sheet-buttons">
+      <button id="reason-cancel" class="button" type="button">Cancel</button>
+      <button class="button primary" type="submit">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<section id="view" class="view" aria-labelledby="detail-title" hidden>
+  <div class="view-head">
+    <button id="view-back" class="button back" type="button" title="Back to the board (Esc)"><span aria-hidden="true">←</span> Back</button>
+    <h2 id="detail-title" class="view-title"></h2>
+  </div>
+  <div class="view-body">
+    <div id="terms" class="terms" role="region" aria-label="Terminals"></div>
+    <aside id="detail-body" class="panel" aria-label="Task"></aside>
+  </div>
+</section>
+
+<div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+</body>
+</html>

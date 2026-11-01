@@ -1,0 +1,1349 @@
+package board
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
+	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
+	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/store"
+	"github.com/alekkowalczyk/herdr-tasks/internal/task"
+)
+
+// fakeSessions are the herdr sessions a test server finds running.
+type fakeSessions struct {
+	mu    sync.Mutex
+	conns []*fakeConn
+}
+
+func running(conns ...*fakeConn) *fakeSessions { return &fakeSessions{conns: conns} }
+
+func (f *fakeSessions) List() []SessionConn {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []SessionConn
+	for _, c := range f.conns {
+		out = append(out, c)
+	}
+	return out
+}
+
+func (f *fakeSessions) set(conns ...*fakeConn) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.conns = conns
+}
+
+// fakeConn is one herdr session: its tabs and panes in memory, and its tasks
+// in a store of its own.
+type fakeConn struct {
+	name   string
+	st     *store.Store
+	events chan herdr.Event // what Subscribe streams
+	stuck  chan struct{}    // when set, Live waits until it's closed
+	slowOp time.Duration    // how long each op typed into a pane takes
+
+	mu      sync.Mutex
+	live    *herdr.Live
+	panes   []herdr.Pane
+	focused []string
+	ended   bool
+	down    bool // herdr doesn't answer: Panes and the terminals' calls fail
+
+	// Terminals: each tab's layout, what each pane shows, how many times
+	// each pane was read, and what was typed, as "<pane> <op> <value>".
+	layouts map[string]*herdr.TabLayout
+	screens map[string]string
+	reads   map[string]int
+	typed   []string
+}
+
+func newConn(t *testing.T, name string, live *herdr.Live, tasks ...*task.Task) *fakeConn {
+	t.Helper()
+	c := &fakeConn{name: name, st: &store.Store{Dir: t.TempDir(), Session: name}, events: make(chan herdr.Event, 16), live: live}
+	err := c.st.Update(func(s *store.State) error {
+		for _, tk := range tasks {
+			s.Tasks[tk.TabID] = tk
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+func (c *fakeConn) Name() string { return c.name }
+
+func (c *fakeConn) Ended() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ended
+}
+
+// end has the session end, as when herdr removes its socket.
+func (c *fakeConn) end() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ended = true
+}
+
+func (c *fakeConn) Live() (*herdr.Live, error) {
+	if c.stuck != nil {
+		<-c.stuck
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.live, nil
+}
+
+func (c *fakeConn) Panes() ([]herdr.Pane, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.down {
+		return nil, errDown
+	}
+	return c.panes, nil
+}
+
+// errDown is what a call to a herdr that doesn't answer returns.
+var errDown = errors.New("dial unix herdr.sock: connect: no such file or directory")
+
+func (c *fakeConn) Store() *store.Store { return c.st }
+
+func (c *fakeConn) Change(tabID string, fn func(*task.Task) error) error {
+	return c.st.Update(func(s *store.State) error {
+		t, ok := s.Tasks[tabID]
+		if !ok {
+			return fmt.Errorf("%w %s", reconcile.ErrNoTab, tabID)
+		}
+		return fn(t)
+	})
+}
+
+func (c *fakeConn) Focus(tabID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.focused = append(c.focused, tabID)
+	return nil
+}
+
+func (c *fakeConn) Subscribe(ctx context.Context, fn func(herdr.Event)) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case ev := <-c.events:
+			fn(ev)
+		}
+	}
+}
+
+// save changes a stored task behind the board's back, as a strip or the
+// CLI would.
+func (c *fakeConn) save(t *testing.T, tabID string, fn func(*task.Task)) {
+	t.Helper()
+	if err := c.st.Update(func(s *store.State) error { fn(s.Tasks[tabID]); return nil }); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// nudge sends a herdr event.
+func (c *fakeConn) nudge() { c.events <- herdr.Event{Event: "tab_renamed"} }
+
+// stored is the task as saved.
+func (c *fakeConn) stored(t *testing.T, tabID string) *task.Task {
+	t.Helper()
+	s, err := c.st.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk, ok := s.Tasks[tabID]
+	if !ok {
+		t.Fatalf("no task for %s", tabID)
+	}
+	return tk
+}
+
+// oneSpace is herdr with one space, "acme", holding tabs.
+func oneSpace(tabs ...herdr.Tab) *herdr.Live {
+	for i := range tabs {
+		tabs[i].WorkspaceID = "w1"
+	}
+	return &herdr.Live{Workspaces: []herdr.Workspace{{ID: "w1", Label: "acme"}}, Tabs: tabs}
+}
+
+// testServer is a board server running in the test.
+type testServer struct {
+	*Server
+	port    int
+	key     string // the browser key
+	stopped chan struct{}
+	err     error // what Run returned, once stopped is closed
+
+	mu   sync.Mutex
+	opts reconcile.Options
+}
+
+var plain = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
+
+// startServer runs a server with cfg, timed for tests: sessions are read
+// once at the start and then only when something asks. The board is on, at
+// the server's port, until the test says otherwise. tune may change the
+// timings before it starts.
+func startServer(t *testing.T, cfg Config, tune func(*Server)) *testServer {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := &testServer{port: ln.Addr().(*net.TCPAddr).Port, stopped: make(chan struct{})}
+	auth := NewAuth(testToken, ts.port)
+	ts.key = auth.key
+	ts.opts = reconcile.Options{Board: true, BoardPort: ts.port}
+	cfg.StateDir, cfg.Port, cfg.Version = t.TempDir(), ts.port, testVersion
+	cfg.Options = func() (reconcile.Options, error) {
+		ts.mu.Lock()
+		defer ts.mu.Unlock()
+		return ts.opts, nil
+	}
+	ts.Server = NewServer(cfg, auth, nil)
+	ts.tick, ts.poll, ts.quiet, ts.timeout, ts.retry = 50*time.Millisecond, time.Hour, 20*time.Millisecond, time.Second, 50*time.Millisecond
+	if tune != nil {
+		tune(ts.Server)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		ts.err = ts.Run(ctx, ln)
+		close(ts.stopped)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-ts.stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("the server didn't stop")
+			return
+		}
+		// Reads still under way use stores in the test's temp dirs, which
+		// go next. Reads start under the hub's lock, and none starts once
+		// the server has stopped, so after taking the lock all are counted.
+		settled := make(chan struct{})
+		go func() {
+			ts.hub.mu.Lock()
+			ts.hub.mu.Unlock()
+			ts.hub.reads.Wait()
+			close(settled)
+		}()
+		select {
+		case <-settled:
+		case <-time.After(5 * time.Second):
+			t.Error("a session read never finished")
+		}
+	})
+	return ts
+}
+
+func (ts *testServer) setOptions(fn func(*reconcile.Options)) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	fn(&ts.opts)
+}
+
+func (ts *testServer) url(path string) string {
+	return fmt.Sprintf("http://127.0.0.1:%d%s", ts.port, path)
+}
+
+// post sends body to /api/task, and returns the status and the error text.
+func (ts *testServer) post(t *testing.T, body string) (int, string) {
+	t.Helper()
+	return ts.postTo(t, "/api/task", body)
+}
+
+// postTo sends body to path with the browser key, and returns the status
+// and the error text.
+func (ts *testServer) postTo(t *testing.T, path, body string) (int, string) {
+	t.Helper()
+	req, err := http.NewRequest("POST", ts.url(path), strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := plain.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var reply struct{ Error string }
+	b, _ := io.ReadAll(resp.Body)
+	if len(b) > 0 {
+		if err := json.Unmarshal(b, &reply); err != nil {
+			t.Fatalf("answer %d %q: %v", resp.StatusCode, b, err)
+		}
+	}
+	return resp.StatusCode, reply.Error
+}
+
+// act asks for a task action.
+func (ts *testServer) act(t *testing.T, req map[string]any) (int, string) {
+	t.Helper()
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts.post(t, string(b))
+}
+
+// board gets /api/board.
+func (ts *testServer) board(t *testing.T) (Board, []byte) {
+	t.Helper()
+	req, err := http.NewRequest("GET", ts.url("/api/board"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.key)
+	resp, err := plain.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/json" {
+		t.Fatalf("board: %s %q %s", resp.Status, resp.Header.Get("Content-Type"), raw)
+	}
+	var b Board
+	if err := json.Unmarshal(raw, &b); err != nil {
+		t.Fatalf("board %s: %v", raw, err)
+	}
+	return b, raw
+}
+
+// shows waits up to 3 s for /api/board to have a session's card, as it
+// does once the session has been found and read.
+func (ts *testServer) shows(t *testing.T, session, tab string) (Board, []byte) {
+	t.Helper()
+	for deadline := time.Now().Add(3 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		b, raw := ts.board(t)
+		if hasCard(session, tab)(b) {
+			return b, raw
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no card %s %s within 3s: %s", session, tab, raw)
+		}
+	}
+}
+
+// sseEvent is one event a stream sent.
+type sseEvent struct{ name, data string }
+
+// sse opens the stream at path and passes on each event it sends, until the
+// stream ends, the func it returns is called, or the test ends.
+func (ts *testServer) sse(t *testing.T, path string) (<-chan sseEvent, func()) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, "GET", ts.url(path), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.key)
+	resp, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}}).Do(req)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	stop := func() {
+		cancel()
+		resp.Body.Close()
+	}
+	t.Cleanup(stop)
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("%s: %s %q", path, resp.Status, resp.Header.Get("Content-Type"))
+	}
+	events := make(chan sseEvent, 100)
+	go func() {
+		defer close(events)
+		sc := bufio.NewScanner(resp.Body)
+		sc.Buffer(make([]byte, 64<<10), 16<<20)
+		var ev sseEvent
+		for sc.Scan() {
+			line := sc.Text()
+			switch {
+			case line == "":
+				if ev.name != "" {
+					events <- ev
+				}
+				ev = sseEvent{}
+			case strings.HasPrefix(line, "event: "):
+				ev.name = strings.TrimPrefix(line, "event: ")
+			case strings.HasPrefix(line, "data: "):
+				ev.data = strings.TrimPrefix(line, "data: ")
+			}
+		}
+	}()
+	return events, stop
+}
+
+// stream opens /api/events and passes on each board it sends.
+func (ts *testServer) stream(t *testing.T) <-chan Board {
+	t.Helper()
+	events, _ := ts.sse(t, "/api/events")
+	boards := make(chan Board, 100)
+	go func() {
+		defer close(boards)
+		for ev := range events {
+			if ev.name != "board" {
+				continue
+			}
+			var b Board
+			if err := json.Unmarshal([]byte(ev.data), &b); err != nil {
+				t.Errorf("board event %q: %v", ev.data, err)
+				return
+			}
+			boards <- b
+		}
+	}()
+	return boards
+}
+
+// waitFor reads boards until one passes ok, for up to 3 s.
+func waitFor(t *testing.T, boards <-chan Board, what string, ok func(Board) bool) Board {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case b, open := <-boards:
+			if !open {
+				t.Fatalf("the stream ended before %s", what)
+			}
+			if ok(b) {
+				return b
+			}
+		case <-deadline:
+			t.Fatalf("no board with %s within 3s", what)
+		}
+	}
+}
+
+func findCard(b Board, session, tab string) (Card, bool) {
+	for _, s := range b.Sessions {
+		for _, c := range s.Cards {
+			if s.Name == session && c.Tab == tab {
+				return c, true
+			}
+		}
+	}
+	return Card{}, false
+}
+
+func hasCard(session, tab string) func(Board) bool {
+	return func(b Board) bool {
+		_, ok := findCard(b, session, tab)
+		return ok
+	}
+}
+
+func writeLog(t *testing.T, path string, lines ...string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBoardEndpointReturnsThePublishedBoard(t *testing.T) {
+	const sid = "0b5e1c2a-7d3f-4e8a-9c61-2f4d8a1b3c5e"
+	claude := t.TempDir()
+	writeLog(t, filepath.Join(claude, "projects", "-home-acme-web", sid+".jsonl"),
+		`{"type":"ai-title","aiTitle":"Fixing the login page"}`,
+		`{"type":"system","subtype":"away_summary","content":"You're fixing the login page. Next: the tests.","timestamp":"2026-10-31T08:30:00Z"}`)
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1", AgentStatus: "working"}),
+		&task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now,
+			Links: []task.Link{{URL: "https://linear.app/acme/issue/ABC-12/fix-the-login-page", Added: now}}})
+	work.panes = []herdr.Pane{{ID: "w1:p1", TabID: "w1:t1", Agent: "claude", AgentStatus: "working",
+		Session: &herdr.AgentSession{Agent: "claude", Kind: "id", Value: sid}}}
+	ts := startServer(t, Config{Sessions: running(work), Claude: claudelog.NewCache(claude)}, nil)
+
+	b, raw := ts.shows(t, "work", "w1:t1")
+	if b.Version != testVersion || b.LinearKey || len(b.Sessions) != 1 {
+		t.Fatalf("board = %s", raw)
+	}
+	c, _ := findCard(b, "work", "w1:t1")
+	if c.Title != "Login page" || c.Column != "running" || len(c.Links) != 1 || c.Links[0].Linear == nil || c.Links[0].Linear.ID != "ABC-12" {
+		t.Fatalf("card = %+v", c)
+	}
+	if len(c.Agents) != 1 || c.Agents[0].Title != "Fixing the login page" || c.Agents[0].Recap != "You're fixing the login page. Next: the tests." {
+		t.Fatalf("agents = %+v", c.Agents)
+	}
+
+	// The state file and the session log change, but nothing has the board
+	// built again, so /api/board answers with the board already out.
+	work.save(t, "w1:t1", func(tk *task.Task) { tk.Note = "Ship it" })
+	f, err := os.OpenFile(filepath.Join(claude, "projects", "-home-acme-web", sid+".jsonl"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fmt.Fprintln(f, `{"type":"system","subtype":"away_summary","content":"The tests pass.","timestamp":"2026-10-31T08:45:00Z"}`)
+	f.Close()
+	if _, again := ts.board(t); !bytes.Equal(again, raw) {
+		t.Errorf("board changed without a build:\n%s\nwas\n%s", again, raw)
+	}
+}
+
+func TestEventsSendsBoardOnConnectAndOnChange(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	boards := ts.stream(t)
+	select {
+	case b := <-boards:
+		// The session may not have been read yet.
+		if !hasCard("work", "w1:t1")(b) {
+			waitFor(t, boards, "the card", hasCard("work", "w1:t1"))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no board on connect")
+	}
+
+	// A herdr event has the session read again.
+	work.save(t, "w1:t1", func(tk *task.Task) { tk.Note = "Ship it" })
+	work.nudge()
+	waitFor(t, boards, "the note", func(b Board) bool {
+		c, _ := findCard(b, "work", "w1:t1")
+		return c.Note == "Ship it"
+	})
+
+	// Reading it again when nothing changed sends nothing.
+	work.nudge()
+	select {
+	case b := <-boards:
+		t.Errorf("a board came without a change: %+v", b)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	// A page that connects now gets the board as it is.
+	select {
+	case b := <-ts.stream(t):
+		if c, _ := findCard(b, "work", "w1:t1"); c.Note != "Ship it" {
+			t.Errorf("first board on a new stream = %+v", b)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no board on connect")
+	}
+}
+
+func TestTaskStageMovesAndKeepsReason(t *testing.T) {
+	later := now.Add(time.Hour)
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1", AgentStatus: "working"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work), Now: func() time.Time { return later }}, nil)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the card", hasCard("work", "w1:t1"))
+	move := func(stage, reason string) {
+		t.Helper()
+		code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "stage", "stage": stage, "reason": reason})
+		if code != http.StatusNoContent {
+			t.Fatalf("stage %s: %d %s", stage, code, msg)
+		}
+	}
+	shows := func(column, reason string) {
+		t.Helper()
+		waitFor(t, boards, column+" "+reason, func(b Board) bool {
+			c, _ := findCard(b, "work", "w1:t1")
+			return c.Column == column && c.Reason == reason
+		})
+	}
+
+	move("paused", "PR review")
+	if tk := work.stored(t, "w1:t1"); tk.Stage != task.Paused || tk.Reason != "PR review" || !tk.Since.Equal(later) {
+		t.Fatalf("after paused: %+v", tk)
+	}
+	// An action has the session read again, so the board shows it at once.
+	shows("paused", "PR review")
+
+	move("review", "")
+	if tk := work.stored(t, "w1:t1"); tk.Stage != task.Review || tk.Reason != "PR review" {
+		t.Fatalf("after review: %+v", tk)
+	}
+	shows("review", "PR review")
+
+	move("done", "")
+	if tk := work.stored(t, "w1:t1"); tk.Stage != task.Done || tk.Reason != "" {
+		t.Fatalf("after done: %+v", tk)
+	}
+	shows("done", "")
+
+	// Asking, Your turn and Working are all Active; the agent picks the column.
+	for _, col := range []string{"asking", "yourturn", "running"} {
+		move("parked", "")
+		move(col, "")
+		if tk := work.stored(t, "w1:t1"); tk.Stage != task.Active {
+			t.Fatalf("after %s: %+v", col, tk)
+		}
+	}
+	shows("running", "")
+}
+
+func TestTaskStageRejectsUnknownStage(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	for _, stage := range []string{"tool", "active", "Done", "", "later"} {
+		code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "stage", "stage": stage})
+		if code != http.StatusBadRequest || msg == "" {
+			t.Errorf("stage %q: %d %q, want 400 with an error", stage, code, msg)
+		}
+	}
+	for _, c := range []struct {
+		body string
+		want int
+	}{
+		{`{"session":"work","tab":"w1:t1","action":"rename"}`, 400},
+		{`{"session":"work","tab":"w1:t1"}`, 400},
+		{`{"session":"work","action":"stage","stage":"done"}`, 400},
+		{`not json`, 400},
+		{`{"session":"home","tab":"w1:t1","action":"stage","stage":"done"}`, 404},
+		{`{"session":"work","tab":"w1:t9","action":"stage","stage":"done"}`, 404},
+	} {
+		if code, msg := ts.post(t, c.body); code != c.want || msg == "" {
+			t.Errorf("%s: %d %q, want %d with an error", c.body, code, msg, c.want)
+		}
+	}
+	if tk := work.stored(t, "w1:t1"); tk.Stage != task.Active || !tk.Since.Equal(now) {
+		t.Errorf("task changed: %+v", tk)
+	}
+}
+
+func TestPriorityOnDoneIs409(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Done, Since: now},
+		&task.Task{TabID: "w1:t2", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "priority", "on": true})
+	if code != http.StatusConflict || !strings.Contains(msg, "done") {
+		t.Errorf("priority on a done task: %d %q, want 409", code, msg)
+	}
+	if work.stored(t, "w1:t1").Priority {
+		t.Error("the done task is a priority")
+	}
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t2", "action": "priority", "on": true}); code != http.StatusNoContent {
+		t.Fatalf("priority on: %d %s", code, msg)
+	}
+	if !work.stored(t, "w1:t2").Priority {
+		t.Error("priority didn't turn on")
+	}
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t2", "action": "priority", "on": false}); code != http.StatusNoContent {
+		t.Fatalf("priority off: %d %s", code, msg)
+	}
+	if work.stored(t, "w1:t2").Priority {
+		t.Error("priority didn't turn off")
+	}
+}
+
+func TestUnlinkDismissesLinearIssue(t *testing.T) {
+	issue := "https://linear.app/acme/issue/ABC-12/fix-the-login-page"
+	pr := "https://github.com/acme/web/pull/7"
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now,
+		Links: []task.Link{{URL: pr, Added: now}, {URL: issue, By: "claude", Added: now}}})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "unlink", "url": issue}); code != http.StatusNoContent {
+		t.Fatalf("unlink: %d %s", code, msg)
+	}
+	tk := work.stored(t, "w1:t1")
+	if len(tk.Links) != 1 || tk.Links[0].URL != pr || !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+		t.Fatalf("after unlink: links %+v, dismissed %v", tk.Links, tk.DismissedIssues)
+	}
+	// The board names a link by its URL only, never by its place in a list
+	// that may have changed.
+	for _, url := range []string{issue, "1", "ABC-12", ""} {
+		if code, _ := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "unlink", "url": url}); code != http.StatusNotFound {
+			t.Errorf("unlink %q: %d, want 404", url, code)
+		}
+	}
+	if tk := work.stored(t, "w1:t1"); len(tk.Links) != 1 {
+		t.Errorf("links = %+v", tk.Links)
+	}
+}
+
+func TestFocusShowsTheTabInHerdr(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "focus"}); code != http.StatusNoContent {
+		t.Fatalf("focus: %d %s", code, msg)
+	}
+	work.mu.Lock()
+	defer work.mu.Unlock()
+	if !reflect.DeepEqual(work.focused, []string{"w1:t1"}) {
+		t.Errorf("focused %v", work.focused)
+	}
+}
+
+// openLink asks the server to open a link of a task in session "work".
+func (ts *testServer) openLink(t *testing.T, tab, url string) (int, string) {
+	t.Helper()
+	b, err := json.Marshal(map[string]string{"session": "work", "tab": tab, "url": url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ts.postTo(t, "/api/open", string(b))
+}
+
+// recordOpens has openPath record the paths it's asked to open, rather than
+// open them, until the test ends. Call it before the server starts.
+func recordOpens(t *testing.T) (opened func() []string) {
+	t.Helper()
+	var mu sync.Mutex
+	var paths []string
+	old := openPath
+	openPath = func(path string) error {
+		mu.Lock()
+		defer mu.Unlock()
+		paths = append(paths, path)
+		return nil
+	}
+	t.Cleanup(func() { openPath = old })
+	return func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		return slices.Clone(paths)
+	}
+}
+
+// writeFiles writes each file, by name, into a new temp dir, and returns
+// their paths.
+func writeFiles(t *testing.T, files map[string]string) map[string]string {
+	t.Helper()
+	dir := t.TempDir()
+	paths := map[string]string{}
+	for name, text := range files {
+		paths[name] = filepath.Join(dir, name)
+		if err := os.WriteFile(paths[name], []byte(text), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return paths
+}
+
+func TestOpenOnlyOpensThisTasksPages(t *testing.T) {
+	f := writeFiles(t, map[string]string{
+		"plan.html":  "<!doctype html><title>Plan</title>",
+		"other.html": "<!doctype html><title>Other</title>",
+		"run.sh":     "echo hi",
+		"id_acme":    "not a real key",
+		"gone.html":  "<!doctype html><title>Gone</title>",
+	})
+	symlink := filepath.Join(filepath.Dir(f["id_acme"]), "key.html")
+	if err := os.Symlink(f["id_acme"], symlink); err != nil {
+		t.Fatal(err)
+	}
+	file := task.FileURL
+	onAnotherHost := "file://nas" + f["plan.html"]
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{
+			{URL: file(f["plan.html"]), By: "claude", Added: now},
+			{URL: file(f["run.sh"]), Added: now},
+			{URL: onAnotherHost, Added: now},
+			{URL: file(symlink), Added: now},
+			{URL: file(f["gone.html"]), Added: now},
+			{URL: "https://acme.github.io/demo/", Added: now},
+		}},
+		&task.Task{TabID: "w1:t2", Stage: task.Active, Since: now, Links: []task.Link{{URL: file(f["other.html"]), Added: now}}})
+	if err := os.Remove(f["gone.html"]); err != nil {
+		t.Fatal(err)
+	}
+	opened := recordOpens(t)
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+
+	for _, c := range []struct {
+		what, url string
+		want      int
+	}{
+		{"another task's file", file(f["other.html"]), 404},
+		{"another form of the page's URL", "file://localhost" + f["plan.html"], 404},
+		{"a .sh file", file(f["run.sh"]), 400},
+		{"a file on another host", onAnotherHost, 400},
+		{"a web page", "https://acme.github.io/demo/", 400},
+		{"a .html symlink to a key file", file(symlink), 404},
+		{"a deleted file", file(f["gone.html"]), 404},
+	} {
+		if code, msg := ts.openLink(t, "w1:t1", c.url); code != c.want || msg == "" {
+			t.Errorf("%s: %d %q, want %d with an error", c.what, code, msg, c.want)
+		}
+	}
+	for _, c := range []struct {
+		body string
+		want int
+	}{
+		{`not json`, 400},
+		{`{"session":"work","url":"` + file(f["plan.html"]) + `"}`, 400},
+		{`{"session":"home","tab":"w1:t1","url":"` + file(f["plan.html"]) + `"}`, 404},
+		{`{"session":"work","tab":"w1:t9","url":"` + file(f["plan.html"]) + `"}`, 404},
+	} {
+		if code, msg := ts.postTo(t, "/api/open", c.body); code != c.want || msg == "" {
+			t.Errorf("%s: %d %q, want %d with an error", c.body, code, msg, c.want)
+		}
+	}
+	if got := opened(); len(got) != 0 {
+		t.Fatalf("opened %v", got)
+	}
+
+	if code, msg := ts.openLink(t, "w1:t1", file(f["plan.html"])); code != http.StatusNoContent {
+		t.Fatalf("the task's page: %d %s", code, msg)
+	}
+	resolved, err := filepath.EvalSymlinks(f["plan.html"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := opened(); !reflect.DeepEqual(got, []string{resolved}) {
+		t.Fatalf("opened %v, want %s", got, resolved)
+	}
+
+	// It goes by the task as saved now, not as the board last read it.
+	work.save(t, "w1:t1", func(tk *task.Task) { tk.Links = tk.Links[1:] })
+	if code, _ := ts.openLink(t, "w1:t1", file(f["plan.html"])); code != http.StatusNotFound {
+		t.Errorf("a page removed since the board read the task: %d, want 404", code)
+	}
+	if got := opened(); len(got) != 1 {
+		t.Errorf("opened %v", got)
+	}
+}
+
+func TestOpenReportsAFailedOpener(t *testing.T) {
+	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
+	var mu sync.Mutex
+	run := []string{"sh", "-c", "printf 'nope\\nmore\\n' >&2; exit 3"}
+	old := opener
+	opener = func(string) *exec.Cmd {
+		mu.Lock()
+		defer mu.Unlock()
+		return exec.Command(run[0], run[1:]...)
+	}
+	t.Cleanup(func() { opener = old })
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+
+	// It says what the opener said went wrong: the first line of it.
+	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusInternalServerError || msg != "Couldn't open it: nope" {
+		t.Errorf("an opener that fails: %d %q, want 500 with its message", code, msg)
+	}
+
+	// An opener still running after 3 s is taken to have worked.
+	mu.Lock()
+	run = []string{"sleep", "5"}
+	mu.Unlock()
+	start := time.Now()
+	code, msg := ts.openLink(t, "w1:t1", task.FileURL(page))
+	if d := time.Since(start); code != http.StatusNoContent || d > 4*time.Second {
+		t.Errorf("an opener that keeps running: %d %q after %v, want 204 within about 3s", code, msg, d)
+	}
+}
+
+// A session whose tasks stay locked, as while a sync waits on herdr, gets
+// the usual time to answer an open. The read ends with the request: none is
+// left waiting on the lock, however often you click.
+func TestOpenGivesUpOnALockedSession(t *testing.T) {
+	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
+	opened := recordOpens(t)
+	ts := startServer(t, Config{Sessions: running(work)}, func(s *Server) { s.timeout = 200 * time.Millisecond })
+	ts.shows(t, "work", "w1:t1")
+
+	held, err := os.OpenFile(filepath.Join(work.st.Dir, "work.lock"), os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		start := time.Now()
+		code, msg := ts.openLink(t, "w1:t1", task.FileURL(page))
+		if code != http.StatusInternalServerError || msg != "Couldn't read the task: no answer within 200ms" {
+			t.Errorf("open with the session locked: %d %q", code, msg)
+		}
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("the open took %v", d)
+		}
+	}
+	if n := waitingReads(); n > 0 {
+		t.Errorf("%d reads are still waiting on the lock", n)
+	}
+	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusNoContent || len(opened()) != 1 {
+		t.Errorf("open with the lock free: %d %q, opened %v", code, msg, opened())
+	}
+}
+
+// waitingReads is how many goroutines are reading a store, other than the
+// hub's reads.
+func waitingReads() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	count := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "store.(*Store).Load") && !strings.Contains(g, "board.readSession") {
+			count++
+		}
+	}
+	return count
+}
+
+func TestOpenNeedsTheKey(t *testing.T) {
+	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
+	opened := recordOpens(t)
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	body, err := json.Marshal(map[string]string{"session": "work", "tab": "w1:t1", "url": task.FileURL(page)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		what   string
+		header map[string]string
+		want   int
+	}{
+		{"no key", nil, 401},
+		{"a wrong key", map[string]string{"Authorization": "Bearer " + strings.Repeat("0", 64)}, 401},
+		{"a foreign origin", map[string]string{"Authorization": "Bearer " + ts.key, "Origin": fmt.Sprintf("http://127.0.0.1:%d", ts.port+1)}, 403},
+		{"a cross-site fetch", map[string]string{"Authorization": "Bearer " + ts.key, "Sec-Fetch-Site": "cross-site"}, 403},
+	} {
+		req, err := http.NewRequest("POST", ts.url("/api/open"), bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for k, v := range c.header {
+			req.Header.Set(k, v)
+		}
+		resp, err := plain.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != c.want {
+			t.Errorf("%s: %d, want %d", c.what, resp.StatusCode, c.want)
+		}
+	}
+	if got := opened(); len(got) != 0 {
+		t.Fatalf("opened %v", got)
+	}
+	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusNoContent || len(opened()) != 1 {
+		t.Fatalf("with the key: %d %s, opened %v", code, msg, opened())
+	}
+}
+
+func TestServerExitsWhenBoardTurnedOff(t *testing.T) {
+	for name, change := range map[string]func(*reconcile.Options){
+		"board off":    func(o *reconcile.Options) { o.Board = false },
+		"another port": func(o *reconcile.Options) { o.BoardPort++ },
+	} {
+		t.Run(name, func(t *testing.T) {
+			work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+			ts := startServer(t, Config{Sessions: running(work)}, nil)
+			if got := status(t, ts.port, "/api/health", ts.key); got != http.StatusOK {
+				t.Fatalf("health: %d", got)
+			}
+			ts.setOptions(change)
+			select {
+			case <-ts.stopped:
+			case <-time.After(2 * time.Second):
+				t.Fatal("the server is still running")
+			}
+			if ts.err != nil {
+				t.Errorf("Run = %v", ts.err)
+			}
+			if _, err := os.Stat(filepath.Join(ts.cfg.StateDir, "board", "board.json")); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("board.json is still there: %v", err)
+			}
+		})
+	}
+}
+
+func TestServerExitsWithoutSessions(t *testing.T) {
+	quick := func(s *Server) { s.idle = 300 * time.Millisecond }
+	start := time.Now()
+	ts := startServer(t, Config{Sessions: running()}, quick)
+	select {
+	case <-ts.stopped:
+		if d := time.Since(start); d < 300*time.Millisecond {
+			t.Errorf("stopped after %v, before the idle time", d)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the server is still running without a session")
+	}
+
+	// It stays while a session runs, and goes once none does. The session
+	// leaves the board first.
+	work := newConn(t, "work", oneSpace())
+	sessions := running(work)
+	ts = startServer(t, Config{Sessions: sessions}, quick)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the session", func(b Board) bool { return len(b.Sessions) == 1 })
+	select {
+	case <-ts.stopped:
+		t.Fatal("the server stopped with a session running")
+	case <-time.After(800 * time.Millisecond):
+	}
+	sessions.set()
+	waitFor(t, boards, "no session", func(b Board) bool { return len(b.Sessions) == 0 })
+	select {
+	case <-ts.stopped:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the server is still running after the session ended")
+	}
+}
+
+func TestOneWedgedSessionDoesntFreezeOthers(t *testing.T) {
+	stuck := newConn(t, "stuck", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	stuck.stuck = make(chan struct{})
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(stuck, work)}, func(s *Server) { s.timeout = 300 * time.Millisecond })
+	// Before the server's cleanup, which waits for every read to finish.
+	t.Cleanup(func() { close(stuck.stuck) })
+	boards := ts.stream(t)
+	waitFor(t, boards, "work's card", hasCard("work", "w1:t1"))
+
+	if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "stage", "stage": "parked"}); code != http.StatusNoContent {
+		t.Fatalf("stage: %d %s", code, msg)
+	}
+	waitFor(t, boards, "work's card parked", func(b Board) bool {
+		c, _ := findCard(b, "work", "w1:t1")
+		return c.Column == "parked"
+	})
+	// The stuck session is on the board, marked stale.
+	waitFor(t, boards, "the stuck session marked stale", func(b Board) bool {
+		return slices.ContainsFunc(b.Sessions, func(s Session) bool { return s.Name == "stuck" && s.Stale })
+	})
+}
+
+// A session left out of one listing stays, marked stale, as herdr may only
+// have been too busy to take the connection. It goes once it's been left out
+// graceTicks times in a row, or at once when it surely ended.
+func TestSessionLeftOutOfTheListStaysAWhile(t *testing.T) {
+	newSession := func(name string) *fakeConn {
+		return newConn(t, name, oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	}
+	work, away, ended := newSession("work"), newSession("away"), newSession("ended")
+	sessions := running(work, away, ended)
+	// The server looks for sessions once as it starts; the test does the
+	// ticks after that.
+	ts := startServer(t, Config{Sessions: sessions}, func(s *Server) { s.tick = time.Hour })
+	tick := func() { ts.track(ts.ctx, sessions.List()) }
+	kept := func(name string) bool {
+		_, ok := ts.hub.conn(name)
+		return ok
+	}
+	boards := ts.stream(t)
+	waitFor(t, boards, "every session's card", func(b Board) bool {
+		return hasCard("work", "w1:t1")(b) && hasCard("away", "w1:t1")(b) && hasCard("ended", "w1:t1")(b)
+	})
+
+	ended.end()
+	sessions.set(work)
+	tick()
+	waitFor(t, boards, "away stale, with its card, and ended gone", func(b Board) bool {
+		s, ok := sessionNamed(b, "away")
+		_, gone := sessionNamed(b, "ended")
+		return ok && s.Stale && hasCard("away", "w1:t1")(b) && !gone
+	})
+	for range graceTicks - 2 {
+		tick()
+	}
+	if !kept("away") {
+		t.Fatalf("away went after %d ticks left out", graceTicks-1)
+	}
+
+	// Listed again, it starts over, and shows as it is at once.
+	sessions.set(work, away)
+	tick()
+	waitFor(t, boards, "away no longer stale", func(b Board) bool {
+		s, ok := sessionNamed(b, "away")
+		return ok && !s.Stale
+	})
+	sessions.set(work)
+	for range graceTicks - 1 {
+		tick()
+	}
+	if !kept("away") {
+		t.Fatal("away went before its grace was up")
+	}
+	tick()
+	waitFor(t, boards, "away gone", func(b Board) bool {
+		_, ok := sessionNamed(b, "away")
+		return !ok && hasCard("work", "w1:t1")(b)
+	})
+}
+
+func TestSlowStreamDoesntBlockOthers(t *testing.T) {
+	// Each board is half a megabyte, so a page that stops reading soon fills
+	// what the connection can hold.
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now,
+		Note: strings.Repeat("x", 512<<10)})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+
+	// A stream with a small window that's never read past its headers.
+	d := net.Dialer{Control: func(_, _ string, c syscall.RawConn) error {
+		return c.Control(func(fd uintptr) { _ = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, 4096) })
+	}}
+	slow, err := d.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", ts.port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { slow.Close() })
+	fmt.Fprintf(slow, "GET /api/events HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nAuthorization: Bearer %s\r\n\r\n", ts.port, ts.key)
+	r := bufio.NewReaderSize(slow, 16)
+	if line, err := r.ReadString('\n'); err != nil || !strings.HasPrefix(line, "HTTP/1.1 200") {
+		t.Fatalf("slow stream: %q %v", line, err)
+	}
+	for {
+		line, err := r.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		if line == "\r\n" {
+			break
+		}
+	}
+
+	fast := ts.stream(t)
+	waitFor(t, fast, "the card", hasCard("work", "w1:t1"))
+	for i := range 16 {
+		start := time.Now()
+		stage := []string{"parked", "paused"}[i%2]
+		if code, msg := ts.act(t, map[string]any{"session": "work", "tab": "w1:t1", "action": "stage", "stage": stage, "reason": fmt.Sprint(i)}); code != http.StatusNoContent {
+			t.Fatalf("stage: %d %s", code, msg)
+		}
+		want := ""
+		if stage == "paused" {
+			want = fmt.Sprint(i)
+		}
+		waitFor(t, fast, stage+" "+want, func(b Board) bool {
+			c, _ := findCard(b, "work", "w1:t1")
+			return c.Column == stage && c.Reason == want
+		})
+		if d := time.Since(start); d > 2*time.Second {
+			t.Errorf("change %d took %v to reach the other stream", i, d)
+		}
+	}
+	start := time.Now()
+	ts.board(t)
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("/api/board took %v", d)
+	}
+}
+
+func TestLinearStatusForOpenCards(t *testing.T) {
+	var mu sync.Mutex
+	var asked [][]string
+	failing := false
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Variables map[string]string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Linear request: %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		var ids []string
+		data := map[string]any{}
+		for alias, id := range req.Variables {
+			ids = append(ids, id)
+			data[alias] = map[string]any{"identifier": id, "title": "Fix " + id, "url": "https://linear.app/acme/issue/" + id,
+				"state": map[string]any{"name": "In Progress", "type": "started", "color": "#f2c94c"}}
+		}
+		sort.Strings(ids)
+		asked = append(asked, ids)
+		if failing {
+			http.Error(w, "down for a moment", http.StatusInternalServerError)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer api.Close()
+	calls := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(asked)
+	}
+
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: "https://linear.app/acme/issue/ABC-12/fix-the-login-page", Added: now}}},
+		&task.Task{TabID: "w1:t2", Stage: task.Done, Since: now, Links: []task.Link{{URL: "https://linear.app/acme/issue/ABC-13", Added: now}}})
+	key := func() (*linear.Client, bool) { return &linear.Client{Key: "lin_api_test", Endpoint: api.URL}, true }
+	// issue is how a card shows a Linear issue.
+	issue := func(b Board, tab, id string) *linear.Issue {
+		c, _ := findCard(b, "work", tab)
+		for _, l := range c.Links {
+			if l.Linear != nil && l.Linear.ID == id {
+				return l.Linear
+			}
+		}
+		return nil
+	}
+
+	// The board asks about an issue as soon as it's on an open card, without
+	// waiting for the next refresh.
+	ts := startServer(t, Config{Sessions: running(work), Linear: key}, func(s *Server) { s.linearEvery = time.Hour })
+	boards := ts.stream(t)
+	b := waitFor(t, boards, "ABC-12's status", func(b Board) bool {
+		is := issue(b, "w1:t1", "ABC-12")
+		return is != nil && is.State == "In Progress"
+	})
+	if !b.LinearKey {
+		t.Error("linearKey = false")
+	}
+	// A done card's issue isn't asked about.
+	if is := issue(b, "w1:t2", "ABC-13"); is == nil || *is != (linear.Issue{ID: "ABC-13"}) {
+		t.Errorf("the done card's issue = %+v", is)
+	}
+	mu.Lock()
+	if !reflect.DeepEqual(asked, [][]string{{"ABC-12"}}) {
+		t.Errorf("asked Linear for %v", asked)
+	}
+	failing = true
+	mu.Unlock()
+
+	// When Linear fails, the board keeps the status it had.
+	n := calls()
+	work.save(t, "w1:t1", func(tk *task.Task) { tk.AddLink("https://linear.app/acme/issue/ABC-14", "", "", now) })
+	work.nudge()
+	waitFor(t, boards, "ABC-14", func(b Board) bool { return issue(b, "w1:t1", "ABC-14") != nil })
+	for deadline := time.Now().Add(3 * time.Second); calls() == n; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("Linear wasn't asked about ABC-14")
+		}
+	}
+	b, _ = ts.board(t)
+	if is := issue(b, "w1:t1", "ABC-12"); is == nil || is.State != "In Progress" || !b.LinearKey {
+		t.Errorf("after Linear failed: %+v", is)
+	}
+	if is := issue(b, "w1:t1", "ABC-14"); is == nil || *is != (linear.Issue{ID: "ABC-14"}) {
+		t.Errorf("ABC-14 = %+v", is)
+	}
+
+	// It asks again every linearEvery.
+	mu.Lock()
+	failing = false
+	mu.Unlock()
+	ts = startServer(t, Config{Sessions: running(work), Linear: key}, func(s *Server) { s.linearEvery = 50 * time.Millisecond })
+	n = calls()
+	for deadline := time.Now().Add(3 * time.Second); calls() < n+4; time.Sleep(20 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("Linear asked %d times in 3s", calls()-n)
+		}
+	}
+
+	// Without a key, the board says so, and shows the ID alone.
+	noKey := func() (*linear.Client, bool) { return nil, false }
+	ts = startServer(t, Config{Sessions: running(work), Linear: noKey}, nil)
+	b = waitFor(t, ts.stream(t), "the card", hasCard("work", "w1:t1"))
+	if is := issue(b, "w1:t1", "ABC-12"); b.LinearKey || is == nil || *is != (linear.Issue{ID: "ABC-12"}) {
+		t.Errorf("without a key: linearKey %v, issue %+v", b.LinearKey, is)
+	}
+}
+
+// An issue that moved to another team has a new identifier, and Linear
+// answers its old one with it. The board asks by the ID in the link, as the
+// fetched issues are keyed by it, so it asks once rather than in a loop.
+func TestLinearIssueWithANewIdentifier(t *testing.T) {
+	var mu sync.Mutex
+	var asked [][]string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct{ Variables map[string]string }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("Linear request: %v", err)
+		}
+		var ids []string
+		data := map[string]any{}
+		for alias, id := range req.Variables {
+			ids = append(ids, id)
+			now := id
+			if id == "ABC-12" {
+				now = "XYZ-9"
+			}
+			data[alias] = map[string]any{"identifier": now, "title": "Fix " + now, "url": "https://linear.app/acme/issue/" + now,
+				"state": map[string]any{"name": "In Progress", "type": "started", "color": "#f2c94c"}}
+		}
+		sort.Strings(ids)
+		mu.Lock()
+		asked = append(asked, ids)
+		mu.Unlock()
+		json.NewEncoder(w).Encode(map[string]any{"data": data})
+	}))
+	defer api.Close()
+
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: "https://linear.app/acme/issue/ABC-12/fix-the-login-page", Added: now}}})
+	key := func() (*linear.Client, bool) { return &linear.Client{Key: "lin_api_test", Endpoint: api.URL}, true }
+	ts := startServer(t, Config{Sessions: running(work), Linear: key}, func(s *Server) { s.linearEvery = time.Hour })
+	waitFor(t, ts.stream(t), "the fetched status", func(b Board) bool {
+		c, _ := findCard(b, "work", "w1:t1")
+		return len(c.Links) == 1 && c.Links[0].Linear != nil && c.Links[0].Linear.ID == "XYZ-9" && c.Links[0].Linear.State == "In Progress"
+	})
+	time.Sleep(500 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if !reflect.DeepEqual(asked, [][]string{{"ABC-12"}}) {
+		n := len(asked)
+		t.Errorf("asked Linear %d times: %v", n, asked[:min(n, 6)])
+	}
+}
+
+func TestPageNeedsNoKey(t *testing.T) {
+	ts := startServer(t, Config{Sessions: running()}, nil)
+	for path, want := range map[string]int{"/": 200, "/static/": 404, "/nope": 404} {
+		resp, err := plain.Get(ts.url(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("GET %s: %d, want %d", path, resp.StatusCode, want)
+		}
+		if want == 200 && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			t.Errorf("GET %s: Content-Type %q", path, resp.Header.Get("Content-Type"))
+		}
+	}
+}

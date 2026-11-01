@@ -4,11 +4,13 @@ package herdr
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
+	"syscall"
 	"time"
 )
 
@@ -39,9 +41,10 @@ func SessionKey(socketPath string) string {
 	return "default"
 }
 
-// RunningSessions returns a client for every herdr session of this user
-// whose server answers, including the default session.
-func RunningSessions() []*Client {
+// SessionSockets is the socket of every herdr session of this user: the
+// default session's, each named session's, and HERDR_SOCKET_PATH. Some may
+// be gone, or left by a herdr that ended.
+func SessionSockets() []string {
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".config", "herdr")
 	paths := []string{filepath.Join(base, "herdr.sock")}
@@ -50,14 +53,37 @@ func RunningSessions() []*Client {
 	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" && !slices.Contains(paths, p) {
 		paths = append(paths, p)
 	}
+	return paths
+}
+
+// RunningSessions returns a client for every herdr session of this user
+// whose server answers, including the default session. It asks each in
+// turn, so one that's busy holds up the rest.
+func RunningSessions() []*Client {
 	var out []*Client
-	for _, p := range paths {
+	for _, p := range SessionSockets() {
 		c := &Client{SocketPath: p}
 		if _, err := c.Workspaces(); err == nil {
 			out = append(out, c)
 		}
 	}
 	return out
+}
+
+// Listening reports whether a server listens on the socket at path. It only
+// connects, without asking anything, so a herdr too busy to answer counts:
+// the system takes the connection for it, or the dial waits out timeout
+// while too many are waiting. It's false when there's no socket or nothing
+// listens on it. On macOS a server that has left 128 connections waiting is
+// refused too, so false doesn't always mean herdr ended.
+func Listening(path string, timeout time.Duration) bool {
+	c, err := net.DialTimeout("unix", path, timeout)
+	if err == nil {
+		c.Close()
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout() || errors.Is(err, syscall.EAGAIN)
 }
 
 // Error is an error response from the herdr server.
@@ -202,11 +228,16 @@ func (c *Client) DisablePlugin(id string) error {
 }
 
 func (c *Client) OpenPluginPane(pluginID, entrypoint string) error {
-	return c.Call("plugin.pane.open", map[string]any{
-		"plugin_id":  pluginID,
-		"entrypoint": entrypoint,
-		"focus":      true,
-	}, nil)
+	return c.OpenPluginPaneEnv(pluginID, entrypoint, nil)
+}
+
+// OpenPluginPaneEnv opens a plugin pane with extra environment variables.
+func (c *Client) OpenPluginPaneEnv(pluginID, entrypoint string, env map[string]string) error {
+	params := map[string]any{"plugin_id": pluginID, "entrypoint": entrypoint, "focus": true}
+	if len(env) > 0 {
+		params["env"] = env
+	}
+	return c.Call("plugin.pane.open", params, nil)
 }
 
 // Live is one read of herdr's workspaces and tabs.
@@ -287,12 +318,34 @@ func (l *Live) FocusedTab() (Tab, bool) {
 	return Tab{}, false
 }
 
+// Pane is one pane. Agent is set only while an agent runs in it; Session
+// stays after the agent exits.
 type Pane struct {
-	ID          string `json:"pane_id"`
-	TabID       string `json:"tab_id"`
-	WorkspaceID string `json:"workspace_id"`
-	Label       string `json:"label"`
-	Focused     bool   `json:"focused"`
+	ID          string        `json:"pane_id"`
+	TabID       string        `json:"tab_id"`
+	WorkspaceID string        `json:"workspace_id"`
+	Label       string        `json:"label"`
+	Focused     bool          `json:"focused"`
+	Agent       string        `json:"agent"`
+	AgentStatus string        `json:"agent_status"`
+	Session     *AgentSession `json:"agent_session"`
+	Title       string        `json:"terminal_title_stripped"`
+	Cwd         string        `json:"cwd"`
+	Scroll      Scroll        `json:"scroll"`
+}
+
+// AgentSession is the agent session herdr last saw in a pane.
+type AgentSession struct {
+	Source string `json:"source"`
+	Agent  string `json:"agent"`
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+}
+
+// Scroll is how far a pane is scrolled back, and how many rows it shows.
+type Scroll struct {
+	Offset int `json:"offset_from_bottom"`
+	Rows   int `json:"viewport_rows"`
 }
 
 // Panes lists every pane in every workspace.
@@ -343,7 +396,10 @@ func (c *Client) Layout(tabID string) (*Node, error) {
 }
 
 type Rect struct {
-	X, Y, Width, Height int
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // PaneRects returns the tab area and each pane's rectangle for a pane's tab.

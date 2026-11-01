@@ -1,6 +1,6 @@
 id = "herdr-tasks"
 name = "Tasks"
-version = "0.5.2"
+version = "0.9.0"
 min_herdr_version = "0.8.0"
 description = "Task stages, notes, and links on herdr tabs, with an overview across all spaces."
 platforms = ["linux", "macos"]
@@ -15,6 +15,7 @@ command = ["sh", "scripts/build.sh"]
 [[build]]
 command = ["sh", "-c", "./bin/herdr-tasks setup"]
 
+# Syncs tasks, restarts strips, and starts the task board when board = true.
 [[startup]]
 command = ["bin/herdr-tasks", "hook"]
 
@@ -37,6 +38,11 @@ command = ["bin/herdr-tasks", "sidebar-toggle"]
 id = "sync"
 title = "Redo task markers and counts"
 command = ["bin/herdr-tasks", "sync"]
+
+[[actions]]
+id = "board"
+title = "Open task board"
+command = ["bin/herdr-tasks", "board"]
 
 [[events]]
 on = "tab.created"

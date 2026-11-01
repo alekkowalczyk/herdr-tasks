@@ -1,0 +1,25 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "prompt_id": "5f1e2d3c-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo https://linear.app/acme/issue/ABC-12",
+    "description": "Print the issue URL"
+  },
+  "tool_response": {
+    "stdout": "https://linear.app/acme/issue/ABC-12\n",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_acme0009",
+  "duration_ms": 409
+}

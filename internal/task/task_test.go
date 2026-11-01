@@ -1,6 +1,7 @@
 package task
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -102,9 +103,15 @@ func TestSetStage(t *testing.T) {
 func TestLinks(t *testing.T) {
 	tk := &Task{}
 	now := time.Now()
-	tk.AddLink("https://github.com/a/b/pull/1", "", "claude", now)
-	tk.AddLink("https://github.com/a/b/pull/1", "", "", now)
-	tk.AddLink("https://linear.app/a/issue/X-2", "", "", now)
+	if _, added := tk.AddLink("https://github.com/a/b/pull/1", "", "claude", now); !added {
+		t.Fatal("first link not added")
+	}
+	if l, added := tk.AddLink("https://github.com/a/b/pull/1", "", "", now); added || l.By != "claude" {
+		t.Fatalf("adding it again should return the existing link: %+v, %v", l, added)
+	}
+	if _, added := tk.AddLink("https://linear.app/a/issue/X-2", "", "", now); !added {
+		t.Fatal("second link not added")
+	}
 	if len(tk.Links) != 2 {
 		t.Fatalf("duplicate link added: %d links", len(tk.Links))
 	}
@@ -116,6 +123,304 @@ func TestLinks(t *testing.T) {
 	}
 	if _, err := tk.RemoveLink("https://linear.app/a/issue/X-2"); err != nil || len(tk.Links) != 0 {
 		t.Fatalf("RemoveLink by URL: %v, %d left", err, len(tk.Links))
+	}
+}
+
+func TestLinearID(t *testing.T) {
+	cases := map[string]string{
+		"https://linear.app/acme/issue/ABC-12/fix-it":                 "ABC-12",
+		"https://linear.app/acme/issue/abc-12":                        "ABC-12",
+		"https://linear.app/acme/issue/ABC-12?noRedirect=1#comment-1": "ABC-12",
+		"https://www.linear.app/acme/issue/ABC-12/":                   "ABC-12",
+		"https://linear.app/acme/project/ABC-12":                      "",
+		"https://github.com/acme/x/issues/12":                         "",
+		"https://notlinear.app/acme/issue/ABC-12":                     "",
+		"https://linear.app/acme/issue/fix-it":                        "",
+		"https://linear.app/acme/issue/ABC-12/fix-it/more":            "",
+		"linear.app/acme/issue/ABC-12":                                "",
+		"ftp://linear.app/acme/issue/ABC-12":                          "",
+	}
+	for in, want := range cases {
+		got, ok := LinearID(in)
+		if got != want || ok != (want != "") {
+			t.Errorf("LinearID(%q) = %q, %v, want %q", in, got, ok, want)
+		}
+	}
+	if org, ok := LinearOrg("https://linear.app/acme/issue/ABC-12/fix-it"); !ok || org != "acme" {
+		t.Errorf("LinearOrg = %q, %v, want acme", org, ok)
+	}
+	if _, ok := LinearOrg("https://linear.app/acme/project/ABC-12"); ok {
+		t.Error("LinearOrg should only read issue URLs")
+	}
+	if got := LinearURL("acme", "abc-12"); got != "https://linear.app/acme/issue/ABC-12" {
+		t.Errorf("LinearURL = %q", got)
+	}
+}
+
+const issueURL = "https://linear.app/acme/issue/ABC-12"
+
+func TestAutoLinkIsIdempotentAcrossURLForms(t *testing.T) {
+	tk := &Task{}
+	now := time.Now()
+	if _, added := tk.AddLink(issueURL, "", "claude", now); !added {
+		t.Fatal("first link not added")
+	}
+	l, added := tk.AddLink(issueURL+"/fix-it", "", "claude", now)
+	if added || l.URL != issueURL {
+		t.Fatalf("the same issue under another URL should return the existing link: %+v, %v", l, added)
+	}
+	if len(tk.Links) != 1 {
+		t.Fatalf("%d links, want 1", len(tk.Links))
+	}
+}
+
+func TestRemovedLinearLinkIsDismissed(t *testing.T) {
+	tk := &Task{}
+	now := time.Now()
+	tk.AddLink(issueURL+"/fix-it", "", "claude", now)
+	if l, err := tk.RemoveLink("abc-12"); err != nil || l.URL != issueURL+"/fix-it" {
+		t.Fatalf("RemoveLink(abc-12) = %+v, %v", l, err)
+	}
+	if len(tk.Links) != 0 {
+		t.Fatalf("%d links left", len(tk.Links))
+	}
+	if !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+		t.Fatalf("DismissedIssues = %q", tk.DismissedIssues)
+	}
+	// Added back by you, then removed again: dismissed again.
+	tk.AddLink(issueURL, "", "", now)
+	tk.RemoveLink(issueURL)
+	if !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+		t.Fatalf("removing it again should dismiss it again: %q", tk.DismissedIssues)
+	}
+}
+
+func TestDismissingAnAlreadyDismissedIssueKeepsOneEntry(t *testing.T) {
+	// A hand-edited file can link an issue that's dismissed already.
+	tk := &Task{
+		Links:           []Link{{URL: issueURL + "/fix-it"}},
+		DismissedIssues: []string{"ABC-12"},
+	}
+	if _, err := tk.RemoveLink("1"); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+		t.Fatalf("dismissing twice should keep one entry: %q", tk.DismissedIssues)
+	}
+}
+
+func TestDismissReportsWhetherItWasNew(t *testing.T) {
+	art := "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001"
+	tk := &Task{Links: []Link{{URL: art, By: "claude"}}}
+	if !tk.Dismiss(art+"?sk=abc") || !tk.Dismiss(issueURL) {
+		t.Fatal("Dismiss of a new key = false, want true")
+	}
+	if tk.Dismiss(art) || tk.Dismiss(issueURL+"/fix-it") {
+		t.Fatal("Dismiss of a dismissed key = true, want false")
+	}
+	if !reflect.DeepEqual(tk.DismissedLinks, []string{"artifact:00000000-0000-4000-8000-000000000001"}) || !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+		t.Fatalf("DismissedLinks = %q, DismissedIssues = %q", tk.DismissedLinks, tk.DismissedIssues)
+	}
+	if len(tk.Links) != 1 {
+		t.Fatalf("Dismiss changed the links: %+v", tk.Links)
+	}
+}
+
+func TestRemovingALinearLinkRemovesItsOtherURLs(t *testing.T) {
+	pr := Link{URL: "https://github.com/acme/api/pull/431"}
+	for _, which := range []string{"abc-12", "1"} {
+		t.Run(which, func(t *testing.T) {
+			// Before 0.6.0, AddLink deduped only on the exact URL.
+			tk := &Task{Links: []Link{{URL: issueURL}, pr, {URL: issueURL + "/fix-it"}}}
+			if l, err := tk.RemoveLink(which); err != nil || l.URL != issueURL {
+				t.Fatalf("RemoveLink(%s) = %+v, %v", which, l, err)
+			}
+			if !reflect.DeepEqual(tk.Links, []Link{pr}) {
+				t.Fatalf("links left: %+v, want only the PR", tk.Links)
+			}
+			if !reflect.DeepEqual(tk.DismissedIssues, []string{"ABC-12"}) {
+				t.Fatalf("DismissedIssues = %q", tk.DismissedIssues)
+			}
+		})
+	}
+}
+
+func TestAgentLinkAddRespectsDismissal(t *testing.T) {
+	tk := &Task{}
+	now := time.Now()
+	tk.AddLink(issueURL, "", "claude", now)
+	tk.RemoveLink("1")
+	l, added := tk.AddLink(issueURL+"/fix-it", "", "claude", now)
+	if added || l != (Link{}) || len(tk.Links) != 0 {
+		t.Fatalf("an agent added back a dismissed issue: %+v, %v, %d links", l, added, len(tk.Links))
+	}
+	if len(tk.DismissedIssues) != 1 {
+		t.Fatalf("DismissedIssues = %q", tk.DismissedIssues)
+	}
+}
+
+func TestAddingItYourselfClearsTheDismissal(t *testing.T) {
+	tk := &Task{}
+	now := time.Now()
+	tk.AddLink(issueURL, "", "claude", now)
+	tk.RemoveLink("ABC-12")
+	l, added := tk.AddLink(issueURL, "", "", now)
+	if !added || l.URL != issueURL || len(tk.Links) != 1 {
+		t.Fatalf("AddLink by you = %+v, %v, %d links", l, added, len(tk.Links))
+	}
+	if len(tk.DismissedIssues) != 0 {
+		t.Fatalf("DismissedIssues = %q, want none", tk.DismissedIssues)
+	}
+}
+
+func TestRemovingAnyLinkDismissesIt(t *testing.T) {
+	pr := "https://github.com/acme/api/pull/431"
+	tk := &Task{}
+	tk.AddLink(pr, "", "claude", time.Now())
+	if _, err := tk.RemoveLink("1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.DismissedIssues) != 0 || !reflect.DeepEqual(tk.DismissedLinks, []string{pr}) {
+		t.Fatalf("DismissedIssues = %q, DismissedLinks = %q, want only the PR's URL", tk.DismissedIssues, tk.DismissedLinks)
+	}
+	if !tk.Dismissed(pr, "") {
+		t.Fatal("the removed PR isn't dismissed")
+	}
+	if _, err := tk.RemoveLink("ABC-12"); err == nil {
+		t.Fatal("removing an issue the task doesn't have should fail")
+	}
+}
+
+func TestAgentCantReAddARemovedPage(t *testing.T) {
+	tk := &Task{}
+	now := time.Now()
+	if _, added := tk.Add(Link{URL: "http://localhost:4100/showcase", By: "claude", Added: now}); !added {
+		t.Fatal("first link not added")
+	}
+	if _, err := tk.RemoveLink("1"); err != nil {
+		t.Fatal(err)
+	}
+	if l, added := tk.Add(Link{URL: "http://localhost:4100/showcase/", By: "claude", Added: now}); added || l != (Link{}) || len(tk.Links) != 0 {
+		t.Fatalf("an agent added back a removed page: %+v, %v, %d links", l, added, len(tk.Links))
+	}
+	l, added := tk.Add(Link{URL: "http://localhost:4100/showcase/", Added: now})
+	if !added || l.URL != "http://localhost:4100/showcase/" || len(tk.Links) != 1 {
+		t.Fatalf("Add by you = %+v, %v, %d links", l, added, len(tk.Links))
+	}
+	if len(tk.DismissedLinks) != 0 {
+		t.Fatalf("DismissedLinks = %q, want none", tk.DismissedLinks)
+	}
+}
+
+func TestRemovingAnArtifactDismissesItsSource(t *testing.T) {
+	art := "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001"
+	now := time.Now()
+	tk := &Task{}
+	tk.Add(Link{URL: art, Source: "/tmp/p.html", By: "claude", Added: now})
+	if _, err := tk.RemoveLink(art + "?sk=abc"); err != nil {
+		t.Fatal(err)
+	}
+	if !tk.Dismissed("file:///tmp/p.html", "") {
+		t.Fatal("removing the artifact didn't dismiss its source file")
+	}
+	if _, added := tk.Add(Link{URL: "file:///tmp/p.html", By: "claude", Added: now}); added {
+		t.Fatal("an agent added back the removed artifact's source file")
+	}
+
+	// The other way round: removing the file keeps off artifacts made from it.
+	tk = &Task{}
+	tk.Add(Link{URL: "file:///tmp/p.html", By: "claude", Added: now})
+	if _, err := tk.RemoveLink("1"); err != nil {
+		t.Fatal(err)
+	}
+	if !tk.Dismissed(art, "/tmp/p.html") {
+		t.Fatal("an artifact made from a removed file isn't dismissed")
+	}
+	if tk.Dismissed(art, "") || tk.Dismissed(art, "/tmp/other.html") {
+		t.Fatal("an artifact from another file is dismissed")
+	}
+	// Adding the artifact yourself brings its source back too.
+	if _, added := tk.Add(Link{URL: art, Source: "/tmp/p.html", Added: now}); !added || len(tk.DismissedLinks) != 0 {
+		t.Fatalf("Add by you: added %v, DismissedLinks = %q", added, tk.DismissedLinks)
+	}
+}
+
+func TestRemovingYourFileTakesItsArtifact(t *testing.T) {
+	const art = "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001"
+	now := time.Now()
+
+	// You linked the file; Claude published it.
+	tk := &Task{}
+	tk.Add(Link{URL: "file:///tmp/x/p.html", Added: now})
+	tk.Add(Link{URL: art, Source: "/tmp/x/p.html", By: "claude", Added: now})
+	tk.Add(Link{URL: "https://claude.ai/artifact/other", Source: "/tmp/x/q.html", By: "claude", Added: now})
+	if _, err := tk.RemoveLink("file:///tmp/x/p.html"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.Links) != 1 || tk.Links[0].URL != "https://claude.ai/artifact/other" {
+		t.Fatalf("links = %+v, want only the artifact from another file", tk.Links)
+	}
+	// Kept off however it comes back: a reply names it without its file.
+	if !tk.Dismissed(art, "") || !tk.Dismissed(art+"?sk=abc", "") || !tk.Dismissed(art, "/tmp/x/p.html") {
+		t.Fatal("the artifact published from the removed file isn't dismissed")
+	}
+	if _, added := tk.Add(Link{URL: art + "?sk=abc", By: "claude", Added: now}); added {
+		t.Fatal("an agent added back the artifact published from the removed file")
+	}
+
+	// An artifact you linked yourself stays, and isn't dismissed.
+	tk = &Task{}
+	tk.Add(Link{URL: "file:///tmp/x/p.html", Added: now})
+	tk.Add(Link{URL: art, Source: "/tmp/x/p.html", Added: now})
+	if _, err := tk.RemoveLink("1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(tk.Links) != 1 || tk.Links[0].URL != art || tk.Dismissed(art, "") {
+		t.Fatalf("links = %+v, dismissed %q: want your artifact kept", tk.Links, tk.DismissedLinks)
+	}
+}
+
+func TestAddRefusesControlCharacters(t *testing.T) {
+	tk := &Task{}
+	for _, u := range []string{"http://localhost:4100/\x1b]8;;x", "http://localhost:4100/%1b", "http://localhost:4100/%c2%9b"} {
+		if l, added := tk.Add(Link{URL: u, Added: time.Now()}); added || l != (Link{}) {
+			t.Errorf("Add(%q) = %+v, %v, want it refused", u, l, added)
+		}
+	}
+	if len(tk.Links) != 0 {
+		t.Fatalf("links = %+v, want none", tk.Links)
+	}
+}
+
+func TestAddCleansTheLabel(t *testing.T) {
+	tk := &Task{}
+	l, added := tk.Add(Link{URL: "http://localhost:4100", Label: "Demo\x1b[2J\npage", Added: time.Now()})
+	if !added || l.Label != "Demo[2J page" || tk.Links[0].Label != l.Label {
+		t.Fatalf("Add = %+v, %v", l, added)
+	}
+}
+
+func TestNameIsCleaned(t *testing.T) {
+	cases := map[string]string{
+		"ABC-12 checkout":           "ABC-12 checkout",
+		"x\x1b]0;owned\x07\ny":      "x]0;owned y",
+		"\x1b\x07":                  "tab 3",
+		"":                          "tab 3",
+		"Fix \x1b[2Jthe\tlogin\x9b": "Fix [2Jthe login",
+	}
+	for title, want := range cases {
+		if got := (&Task{Title: title}).Name(3); got != want {
+			t.Errorf("Name of %q = %q, want %q", title, got, want)
+		}
+	}
+}
+
+func TestGroupOrder(t *testing.T) {
+	if Asking.Order() != 0 {
+		t.Fatalf("Asking.Order() = %d, want 0", Asking.Order())
+	}
+	if GDone.Order() <= Running.Order() {
+		t.Fatal("done should sort after running")
 	}
 }
 

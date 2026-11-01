@@ -1,0 +1,30 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "prompt_id": "5f1e2d3c-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__linear__save_issue",
+  "tool_input": {
+    "team": "Platform",
+    "title": "Retry token refresh",
+    "parentId": "ABC-12",
+    "description": "Split out of https://linear.app/acme/issue/ABC-12"
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "{\"id\":\"ABC-13\",\"uuid\":\"9a8b7c6d-0000-4000-8000-000000000013\",\"title\":\"Retry token refresh\",\"description\":\"Login loops back to /login. Related: https://linear.app/acme/issue/ABC-7 and https://github.com/acme/api/pull/31\",\"priority\":{\"value\":2,\"name\":\"High\"},\"url\":\"https://linear.app/acme/issue/ABC-13/retry-token-refresh\",\"gitBranchName\":\"dev/abc-13-retry-token-refresh\",\"createdAt\":\"2026-10-01T09:00:00.000Z\",\"updatedAt\":\"2026-10-30T15:00:00.000Z\",\"status\":\"In Progress\",\"labels\":[\"Bug\"],\"attachments\":[],\"assignee\":\"Dev\",\"parentId\":\"ABC-12\",\"team\":\"Platform\",\"teamId\":\"7e6d5c4b-0000-4000-8000-000000000003\"}"
+    }
+  ],
+  "tool_use_id": "toolu_acme0003",
+  "duration_ms": 403,
+  "mcp_server": {
+    "name": "linear",
+    "source": "dynamic"
+  }
+}

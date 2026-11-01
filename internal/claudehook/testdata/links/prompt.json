@@ -1,0 +1,9 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "permission_mode": "default",
+  "hook_event_name": "UserPromptSubmit",
+  "source": "user",
+  "prompt": "Pick up from https://acme.slack.com/archives/C0123ABCD/p1700000000123456?thread_ts=1700000000.000001&cid=C0123ABCD&foo=1 and the channel https://acme.enterprise.slack.com/archives/C0123ABCD.\nThe issue is https://linear.app/acme/issue/ABC-12/fix-login, and the demo runs at **http://localhost:4100/showcase/**. The API also answers on http://[::1] now.\nThe plan is https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001?sk=abc&x=1 and the docs are on https://acme.github.io/demo/ (see https://github.com/acme/x/pull/1)."
+}

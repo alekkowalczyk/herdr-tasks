@@ -3,12 +3,14 @@
 package store
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -52,14 +54,30 @@ func Dir() string {
 
 func New(session string) *Store { return &Store{Dir: Dir(), Session: session} }
 
-func (s *Store) path() string     { return filepath.Join(s.Dir, s.Session+".json") }
+// Path is the state file.
+func (s *Store) Path() string { return filepath.Join(s.Dir, s.Session+".json") }
+
 func (s *Store) lockPath() string { return filepath.Join(s.Dir, s.Session+".lock") }
 
-func (s *Store) lock(how int) (func(), error) {
-	if err := os.MkdirAll(s.Dir, 0o755); err != nil {
+// openLock opens the session's lock file. The state folder holds notes, the
+// share keys of artifact links, and the board's token, so it's made yours
+// only, as is the lock file: also when an older version or herdr made them
+// readable by others. That part is best effort, as the lock works either way.
+func (s *Store) openLock() (*os.File, error) {
+	if err := os.MkdirAll(s.Dir, 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0o644)
+	_ = os.Chmod(s.Dir, 0o700)
+	f, err := os.OpenFile(s.lockPath(), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	_ = f.Chmod(0o600)
+	return f, nil
+}
+
+func (s *Store) lock(how int) (func(), error) {
+	f, err := s.openLock()
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +93,7 @@ func (s *Store) lock(how int) (func(), error) {
 
 func (s *Store) read() (*State, error) {
 	st := &State{Version: 1, Tasks: map[string]*task.Task{}}
-	b, err := os.ReadFile(s.path())
+	b, err := os.ReadFile(s.Path())
 	if errors.Is(err, os.ErrNotExist) {
 		return st, nil
 	}
@@ -83,7 +101,7 @@ func (s *Store) read() (*State, error) {
 		return nil, err
 	}
 	if err := json.Unmarshal(b, st); err != nil {
-		return nil, fmt.Errorf("reading %s: %w", s.path(), err)
+		return nil, fmt.Errorf("reading %s: %w", s.Path(), err)
 	}
 	if st.Tasks == nil {
 		st.Tasks = map[string]*task.Task{}
@@ -91,16 +109,29 @@ func (s *Store) read() (*State, error) {
 	return st, nil
 }
 
+// write saves st as a new file, readable by you only (CreateTemp makes it
+// 0600), that takes the old one's place. So a state file an older version
+// left readable by others is replaced with one that isn't.
 func (s *Store) write(st *State) error {
 	b, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path() + ".tmp"
-	if err := os.WriteFile(tmp, append(b, '\n'), 0o644); err != nil {
+	f, err := os.CreateTemp(s.Dir, s.Session+".*.tmp")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path())
+	_, err = f.Write(append(b, '\n'))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(f.Name(), s.Path())
+	}
+	if err != nil {
+		os.Remove(f.Name())
+	}
+	return err
 }
 
 // Load reads the current state.
@@ -110,6 +141,33 @@ func (s *Store) Load() (*State, error) {
 		return nil, err
 	}
 	defer unlock()
+	return s.read()
+}
+
+// LoadContext is Load, but it stops waiting for the lock when ctx ends, and
+// returns ctx.Err(). A writer may hold the lock a while, as a sync does while
+// it waits on herdr. Load's wait can't be cut short.
+func (s *Store) LoadContext(ctx context.Context) (*State, error) {
+	f, err := s.openLock()
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_SH|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EINTR) {
+			return nil, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
+	defer syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 	return s.read()
 }
 

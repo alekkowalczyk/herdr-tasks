@@ -1,0 +1,28 @@
+{
+  "session_id": "0b6c1d2e-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-acme-api/0b6c1d2e-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/acme/api",
+  "prompt_id": "5f1e2d3c-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUse",
+  "tool_name": "mcp__linear__list_issues",
+  "tool_input": {
+    "team": "Platform",
+    "limit": 2
+  },
+  "tool_response": [
+    {
+      "type": "text",
+      "text": "{\"issues\":[{\"id\":\"ABC-12\",\"title\":\"Fix login redirect\",\"url\":\"https://linear.app/acme/issue/ABC-12/fix-login\"},{\"id\":\"ABC-13\",\"title\":\"Retry token refresh\",\"url\":\"https://linear.app/acme/issue/ABC-13/retry-token-refresh\"}],\"hasNextPage\":false}"
+    }
+  ],
+  "tool_use_id": "toolu_acme0008",
+  "duration_ms": 408,
+  "mcp_server": {
+    "name": "linear",
+    "source": "dynamic"
+  }
+}

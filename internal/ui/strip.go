@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -97,6 +98,9 @@ type stripModel struct {
 	reasonStage task.Stage
 	note        textarea.Model
 	buttons     []hit
+	// The links as they were when you started unlinking, so the numbers you
+	// read don't move when a refresh changes the list.
+	unlinkLinks []task.Link
 }
 
 type stripData struct {
@@ -211,10 +215,19 @@ func (m *stripModel) finishInput(save bool) tea.Cmd {
 		if !save || v == "" {
 			return nil
 		}
-		if !strings.Contains(v, "://") {
-			v = "https://" + v
+		v = task.LinkInput(v, "")
+		if !task.SafeURL(v) {
+			// Task.Add would refuse it.
+			m.msg = "Not a valid link"
+			return nil
 		}
-		return m.change(func(t *task.Task) { t.AddLink(v, "", "", time.Now()) }, "Added "+task.LinkLabel(v))
+		done := "Added " + task.LinkLabel(v)
+		added := false
+		cmd := m.change(func(t *task.Task) { _, added = t.AddLink(v, "", "", time.Now()) }, done)
+		if !added && m.msg == done {
+			m.msg = "Already linked"
+		}
+		return cmd
 	case inputRename:
 		if !save {
 			return nil
@@ -252,6 +265,50 @@ func (m *stripModel) finishNote(save bool) tea.Cmd {
 func (m *stripModel) sizeNote() {
 	m.note.SetWidth(max(10, m.width-4))
 	m.note.SetHeight(max(1, m.height-2))
+}
+
+// startUnlink grows the strip to number every link, and asks which to remove.
+func (m *stripModel) startUnlink() tea.Cmd {
+	m.mode = modeUnlink
+	m.unlinkLinks = slices.Clone(m.t.Links)
+	m.input.SetValue("")
+	m.input.Placeholder = fmt.Sprintf("1–%d", len(m.unlinkLinks))
+	m.input.Width = 8
+	m.input.Focus()
+	m.rows = noteRows
+	return m.fit()
+}
+
+// finishUnlink removes the link whose number you typed, or cancels. The
+// number is one in the list you were shown, and the link goes by its URL, so
+// the link you saw goes even if the list has changed since.
+func (m *stripModel) finishUnlink(save bool) tea.Cmd {
+	links := m.unlinkLinks
+	m.unlinkLinks = nil
+	m.mode = modeList
+	m.input.Blur()
+	m.rows = strip.Rows
+	fit := m.fit()
+	v := strings.TrimSpace(m.input.Value())
+	if !save || v == "" || m.t == nil {
+		return fit
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 || n > len(links) {
+		m.msg = fmt.Sprintf("No link %s. This task has %d.", v, len(links))
+		return fit
+	}
+	l := links[n-1]
+	done := "Removed " + linkItem(l)
+	gone := false
+	cmd := m.change(func(t *task.Task) {
+		_, err := t.RemoveLink(l.URL)
+		gone = err != nil
+	}, done)
+	if gone && m.msg == done {
+		m.msg = linkItem(l) + " was removed already"
+	}
+	return tea.Batch(fit, cmd)
 }
 
 // action runs a button or key.
@@ -292,7 +349,7 @@ func (m *stripModel) action(k string) tea.Cmd {
 		m.startInput(inputLink, "", "https://github.com/… or linear.app/…")
 	case "L":
 		if len(m.t.Links) > 0 {
-			m.mode = modeUnlink
+			return m.startUnlink()
 		}
 	case "r":
 		m.startInput(inputRename, m.t.Title, "task name (empty uses the tab number)")
@@ -365,12 +422,18 @@ func (m *stripModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
 		case modeUnlink:
-			m.mode = modeList
-			if n, err := strconv.Atoi(msg.String()); err == nil && m.t != nil && n >= 1 && n <= len(m.t.Links) {
-				label := m.t.Links[n-1].Display()
-				return m, m.change(func(t *task.Task) { _, _ = t.RemoveLink(strconv.Itoa(n)) }, "Removed "+label)
+			switch msg.String() {
+			case "enter":
+				return m, m.finishUnlink(true)
+			case "esc":
+				return m, m.finishUnlink(false)
 			}
-			return m, nil
+			if msg.Type == tea.KeySpace || msg.Type == tea.KeyRunes && strings.Trim(string(msg.Runes), "0123456789") != "" {
+				return m, nil // only numbers
+			}
+			var cmd tea.Cmd
+			m.input, cmd = m.input.Update(msg)
+			return m, cmd
 		}
 		return m, m.action(msg.String())
 	}
@@ -403,7 +466,7 @@ func (m *stripModel) View() string {
 	}
 	head += sDim.Render(" · " + task.Age(time.Since(t.Since)))
 	if t.Stage.TakesReason() && t.Reason != "" {
-		head += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(reasonLabel(t.Stage)+" "+t.Reason)
+		head += sDim.Render(" · ") + lipgloss.NewStyle().Foreground(stageColor(t.Stage)).Render(reasonLabel(t.Stage)+" "+task.CleanLabel(t.Reason))
 	}
 	right := sBold.Render(t.Name(m.pos)) + " "
 	if m.msg != "" {
@@ -428,19 +491,28 @@ func (m *stripModel) View() string {
 		lines = append(lines, fit(sDim.Render(" Editing the note · ctrl+s save · esc cancel"), w))
 		return strings.Join(lines, "\n")
 	}
+	if m.mode == modeUnlink {
+		lines = append(lines, unlinkRows(m.unlinkLinks, w, body)...)
+		for len(lines) <= body {
+			lines = append(lines, "")
+		}
+		lines = append(lines, m.bottom(w))
+		return strings.Join(lines, "\n")
+	}
 
 	// Note and agent lines on the left, links on the right.
 	linkW := 0
+	noteW := w - 3
 	if len(t.Links) > 0 {
 		linkW = min(52, w/2)
+		noteW = w - linkW - 4 // " " note " │ " links
 	}
-	noteW := w - linkW - 3
 	var left []string
 	if t.Note != "" {
 		left = append(left, wrap(t.Note, noteW)...)
 	}
 	for _, e := range t.Log {
-		who := e.Who + " " + e.At.Local().Format("15:04")
+		who := task.CleanLabel(e.Who) + " " + e.At.Local().Format("15:04")
 		for i, l := range wrap(e.Text, max(10, noteW-ansi.StringWidth(who)-1)) {
 			prefix := strings.Repeat(" ", ansi.StringWidth(who))
 			if i == 0 {
@@ -456,17 +528,7 @@ func (m *stripModel) View() string {
 	if len(left) > body && body > 0 {
 		left = left[len(left)-body:]
 	}
-	var links []string
-	for i, l := range t.Links {
-		via := ""
-		if l.By != "" {
-			via = sRun.Render(" via " + l.By)
-		}
-		label := l.Display()
-		url := strings.TrimPrefix(strings.TrimPrefix(l.URL, "https://"), "http://")
-		rest := max(0, linkW-ansi.StringWidth(label)-ansi.StringWidth(via)-5)
-		links = append(links, sDim.Render(strconv.Itoa(i+1)+" ")+hyperlink(l.URL, sLink.Render(label))+" "+sDim.Render(fit(url, rest))+via)
-	}
+	links := linkRows(t.Links, linkW, false)
 	for i := 0; i < body; i++ {
 		l, r := "", ""
 		if i < len(left) {
@@ -477,7 +539,7 @@ func (m *stripModel) View() string {
 		}
 		line := " " + fit(l, noteW)
 		if linkW > 0 {
-			line += sDim.Render(" │") + fit(r, linkW)
+			line += sDim.Render(" │ ") + fit(r, linkW)
 		}
 		lines = append(lines, line)
 	}
@@ -494,7 +556,7 @@ func (m *stripModel) bottom(w int) string {
 		color := map[inputKind]lipgloss.Color{inputReason: stageColor(m.reasonStage), inputLink: cLink, inputRename: cFg}[m.inputKind]
 		return fit(" "+lipgloss.NewStyle().Foreground(color).Render(label)+" "+m.input.View()+sDim.Render("  ↵ save · esc cancel"), w)
 	case modeUnlink:
-		return fit(sDim.Render(fmt.Sprintf(" Press a link number to remove it (1–%d), any other key to cancel", len(m.t.Links))), w)
+		return fit(" "+lipgloss.NewStyle().Foreground(cLink).Render("Remove link number")+" "+m.input.View()+sDim.Render("  ↵ remove · esc cancel"), w)
 	}
 	type button struct{ key, label string }
 	buttons := []button{{"a", "active"}, {"v", "review"}, {"p", "pause"}, {"z", "park"}, {"d", "done"}, {"o", "tool"}}

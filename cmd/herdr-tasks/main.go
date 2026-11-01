@@ -14,7 +14,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/board"
+	"github.com/alekkowalczyk/herdr-tasks/internal/claudehook"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
+	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
@@ -23,7 +26,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.5.2"
+const version = "0.9.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -39,8 +42,8 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks note set <text>                             replace your note
   herdr-tasks note add <text> [--as NAME]                 add a line (agents use this)
   herdr-tasks note clear
-  herdr-tasks link add <url> [--label TEXT] [--as NAME]   attach a link
-  herdr-tasks link rm <number|url>
+  herdr-tasks link add <url> [--label TEXT] [--as NAME]   attach a URL or a local file
+  herdr-tasks link rm <number|url|issue ID>
   herdr-tasks show [--json]                               this tab's task
   herdr-tasks list [--json]                               every task
   herdr-tasks rename <name>                               name the task (empty: tab number)
@@ -48,7 +51,14 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks setup [--no-config]   put herdr-tasks on PATH, add herdr config, sync
                                     (herdr plugin install runs this for you)
   herdr-tasks remove [--purge]      undo setup, give tabs their names back, and
-                                    uninstall the plugin (--purge also deletes notes)
+                                    uninstall the plugin (--purge also deletes notes
+                                    and the Linear key)
+
+  herdr-tasks board [--print]       open the task board in your browser (board = true);
+                                    --print prints its address instead
+  herdr-tasks board --new-token     sign every browser out of the board
+  herdr-tasks linear-key [--delete] save a Linear API key, for issue status on the
+                                    board (read from stdin, or typed hidden)
 
   herdr-tasks overview      the overview screen (herdr opens it in a popup)
   herdr-tasks strip         the strip along the bottom of a tab (runs in its pane)
@@ -58,6 +68,11 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks status        one line for herdr's tab bar
   herdr-tasks sync          redo markers, tab order, and sidebar counts
   herdr-tasks hook          run by herdr on startup and tab events
+  herdr-tasks serve         the task board's server (board and the startup hook
+                            start it)
+  herdr-tasks claude-hook   run by Claude Code on prompts, replies, and tool
+                            calls, to link the Linear issues, Slack links, and
+                            pages they name to the task (claude_links = true)
   herdr-tasks config        print the herdr config lines setup adds
   herdr-tasks config --merge     read a herdr config on stdin, print it with the
                                  herdr-tasks lines added (for a config on another
@@ -68,7 +83,9 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "herdr-tasks:", err)
+		if !errors.Is(err, errShown) {
+			fmt.Fprintln(os.Stderr, "herdr-tasks:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -151,6 +168,10 @@ func run(args []string) error {
 		return nil
 	case "config":
 		return configCmd(rest)
+	case "claude-hook":
+		return runClaudeHook()
+	case "linear-key":
+		return linearKey(rest, os.Stdin, os.Stdout, linear.SaveKey, linear.DeleteKey, store.Dir())
 	}
 	a, err := newApp(rest)
 	if err != nil {
@@ -160,11 +181,11 @@ func run(args []string) error {
 	case "overview":
 		return a.overview()
 	case "open":
-		id := os.Getenv("HERDR_PLUGIN_ID")
-		if id == "" {
-			id = store.PluginID
-		}
-		return a.client.OpenPluginPane(id, "overview")
+		return a.client.OpenPluginPane(pluginID(), "overview")
+	case "board":
+		return a.openBoard(rest)
+	case "serve":
+		return a.serve()
 	case "status":
 		return a.status()
 	case "sync":
@@ -202,7 +223,8 @@ func run(args []string) error {
 	case "link":
 		return a.link()
 	case "rename":
-		return a.change(func(t *task.Task) error { t.Title = a.flags.text(); return nil })
+		title := task.CleanLabel(a.flags.text())
+		return a.change(func(t *task.Task) error { t.Title = title; return nil })
 	case "show":
 		return a.show()
 	case "list", "ls":
@@ -244,20 +266,14 @@ func (a *app) change(fn func(t *task.Task) error) error {
 	if err != nil {
 		return err
 	}
-	_, err = reconcile.Run(a.host(), a.store, a.opts, time.Now(), func(s *store.State, _ *herdr.Live) error {
-		t, ok := s.Tasks[id]
-		if !ok {
-			return fmt.Errorf("no tab %s", id)
-		}
-		return fn(t)
-	})
+	_, err = reconcile.ChangeTask(a.host(), a.store, a.opts, time.Now(), id, fn)
 	return err
 }
 
 // who names the author of an agent's note or link.
 func (a *app) who() string {
-	if a.flags.as != "" {
-		return a.flags.as
+	if as := task.CleanLabel(a.flags.as); as != "" {
+		return as
 	}
 	if os.Getenv("CLAUDECODE") == "1" {
 		return "claude"
@@ -276,7 +292,7 @@ func (a *app) set() error {
 	if !ok {
 		return fmt.Errorf("unknown stage %q; use active, review, paused, parked, done, or tool", a.flags.args[0])
 	}
-	reason := strings.TrimSpace(strings.Join(a.flags.args[1:], " "))
+	reason := task.CleanLabel(strings.Join(a.flags.args[1:], " "))
 	if reason != "" && !s.TakesReason() {
 		return errors.New("only review and paused take a reason")
 	}
@@ -304,7 +320,8 @@ func (a *app) note() error {
 	}
 	sub := a.flags.args[0]
 	a.flags.args = a.flags.args[1:]
-	text := a.flags.text()
+	// Agents write notes, so a control character can't get into one.
+	text := strings.TrimSpace(task.CleanText(a.flags.text()))
 	switch sub {
 	case "set":
 		return a.change(func(t *task.Task) error { t.Note = text; return nil })
@@ -324,22 +341,17 @@ func (a *app) note() error {
 
 func (a *app) link() error {
 	if len(a.flags.args) < 2 {
-		return errors.New("link add <url> | link rm <number|url>")
+		return errors.New("link add <url> | link rm <number|url|issue ID>")
 	}
 	sub, target := a.flags.args[0], a.flags.args[1]
 	switch sub {
 	case "add":
-		if !strings.Contains(target, "://") {
-			target = "https://" + target
-		}
 		by := a.who()
 		if by == "you" {
 			by = ""
 		}
-		return a.change(func(t *task.Task) error {
-			t.AddLink(target, a.flags.label, by, time.Now())
-			return nil
-		})
+		cwd, _ := os.Getwd()
+		return linkAdd(a.change, os.Stderr, target, cwd, a.flags.label, by)
 	case "rm", "remove":
 		return a.change(func(t *task.Task) error {
 			_, err := t.RemoveLink(target)
@@ -347,6 +359,30 @@ func (a *app) link() error {
 		})
 	}
 	return fmt.Errorf("unknown link command %q; use add or rm", sub)
+}
+
+// linkAdd adds a link to the task through change, as by ("" for you). target
+// is a URL, or the path of a file, relative to cwd. A URL Task.Add would
+// refuse, with a control character or one that doesn't parse, is an error.
+// An agent can't add back a link you removed. That isn't an error, as for the
+// Claude links hook, but linkAdd says so on w, since nothing else would.
+func linkAdd(change func(func(*task.Task) error) error, w io.Writer, target, cwd, label, by string) error {
+	target = task.LinkInput(target, cwd)
+	if !task.SafeURL(target) {
+		// Quoted, so a control character in it isn't printed as it is.
+		return fmt.Errorf("%q can't be saved as a link: it has a control character, or isn't a valid URL", target)
+	}
+	dismissed := false
+	err := change(func(t *task.Task) error {
+		if _, added := t.AddLink(target, label, by, time.Now()); !added && t.Dismissed(target, "") {
+			dismissed = true
+		}
+		return nil
+	})
+	if err == nil && dismissed {
+		fmt.Fprintf(w, "herdr-tasks: %s was removed from this task, so it wasn't added back; to restore it, run `herdr-tasks link add %s` yourself (outside an agent, without --as)\n", task.LinkLabel(target), target)
+	}
+	return err
 }
 
 func (a *app) show() error {
@@ -370,50 +406,65 @@ func (a *app) show() error {
 		return printJSON(t)
 	}
 	tab, _ := live.Tab(id)
-	pos := live.Position(id)
-	fmt.Printf("%s  (%s · %s)\n", t.Name(pos), t.Workspace, id)
+	printTask(os.Stdout, t, id, tab.AgentStatus, live.Position(id), time.Now())
+	return nil
+}
+
+// printTask prints a task as show does. Agents write much of it, and the
+// state file can be edited by hand, so everything is cleaned of control
+// characters before it reaches the terminal, and a link whose URL isn't
+// task.SafeURL is shown as "unsafe link".
+func printTask(w io.Writer, t *task.Task, id, agentStatus string, pos int, now time.Time) {
+	fmt.Fprintf(w, "%s  (%s · %s)\n", t.Name(pos), task.CleanLabel(t.Workspace), id)
 	if t.Priority {
-		fmt.Print("! ")
+		fmt.Fprint(w, "! ")
 	}
-	fmt.Printf("%s %s · %s", t.Stage.Glyph(), t.Stage.Label(), task.Age(time.Since(t.Since)))
-	if g := task.GroupOf(t.Stage, tab.AgentStatus); g == task.YourTurn {
-		fmt.Print(" · your turn")
+	fmt.Fprintf(w, "%s %s · %s", t.Stage.Glyph(), t.Stage.Label(), task.Age(now.Sub(t.Since)))
+	if g := task.GroupOf(t.Stage, agentStatus); g == task.YourTurn {
+		fmt.Fprint(w, " · your turn")
 	} else if g == task.Running {
-		fmt.Print(" · agent running")
+		fmt.Fprint(w, " · agent running")
 	} else if g == task.Asking {
-		fmt.Print(" · agent asking")
+		fmt.Fprint(w, " · agent asking")
 	}
-	if t.Reason != "" {
+	if reason := task.CleanLabel(t.Reason); reason != "" {
 		label := "until"
 		if t.Stage == task.Review {
 			label = "waiting for"
 		}
-		fmt.Printf(" · %s %s", label, t.Reason)
+		fmt.Fprintf(w, " · %s %s", label, reason)
 	}
-	fmt.Println()
-	if t.Note != "" {
-		fmt.Println("\nNote:")
-		for _, l := range strings.Split(t.Note, "\n") {
-			fmt.Println("  " + l)
+	fmt.Fprintln(w)
+	if note := task.CleanText(t.Note); note != "" {
+		fmt.Fprintln(w, "\nNote:")
+		for _, l := range strings.Split(note, "\n") {
+			fmt.Fprintln(w, "  "+l)
 		}
 	}
 	if len(t.Log) > 0 {
-		fmt.Println("\nAdded:")
+		fmt.Fprintln(w, "\nAdded:")
 		for _, e := range t.Log {
-			fmt.Printf("  %s %s  %s\n", e.Who, e.At.Local().Format("Jan 2 15:04"), e.Text)
+			fmt.Fprintf(w, "  %s %s  %s\n", task.CleanLabel(e.Who), e.At.Local().Format("Jan 2 15:04"), task.CleanText(e.Text))
 		}
 	}
 	if len(t.Links) > 0 {
-		fmt.Println("\nLinks:")
+		fmt.Fprintln(w, "\nLinks:")
 		for i, l := range t.Links {
-			by := ""
-			if l.By != "" {
-				by = "  (via " + l.By + ")"
+			line := task.CleanLabel(l.Display()) + "  " + l.URL
+			if !task.SafeURL(l.URL) {
+				// Not the URL itself: a terminal could still find a link in it.
+				line = "unsafe link"
+				if label := task.CleanLabel(l.Label); label != "" {
+					line = label + "  " + line
+				}
 			}
-			fmt.Printf("  %d. %s  %s%s\n", i+1, l.Display(), l.URL, by)
+			by := ""
+			if b := task.CleanLabel(l.By); b != "" {
+				by = "  (via " + b + ")"
+			}
+			fmt.Fprintf(w, "  %d. %s%s\n", i+1, line, by)
 		}
 	}
-	return nil
 }
 
 func (a *app) list() error {
@@ -440,19 +491,19 @@ func (a *app) list() error {
 			continue
 		}
 		info := ""
-		if t.Reason != "" {
-			info = "until " + t.Reason
+		if reason := task.CleanLabel(t.Reason); reason != "" {
+			info = "until " + reason
 			if t.Stage == task.Review {
-				info = "waiting for " + t.Reason
+				info = "waiting for " + reason
 			}
 		} else if len(t.Links) > 0 {
-			info = "↗ " + t.Links[0].Display()
+			info = "↗ " + task.CleanLabel(t.Links[0].Display())
 		}
 		pri := " "
 		if t.Priority {
 			pri = "!"
 		}
-		fmt.Printf("%s %s %-7s %-6s %-14s %-32s %s\n", pri, t.Stage.Glyph(), t.Stage, tab.ID, t.Workspace, t.Name(live.Position(tab.ID)), info)
+		fmt.Printf("%s %s %-7s %-6s %-14s %-32s %s\n", pri, t.Stage.Glyph(), task.CleanLabel(string(t.Stage)), tab.ID, task.CleanLabel(t.Workspace), t.Name(live.Position(tab.ID)), info)
 	}
 	return nil
 }
@@ -489,12 +540,13 @@ func (a *app) status() error {
 	}
 	line := strings.Join(parts, " ")
 	if t, ok := st.Tasks[tab]; ok {
+		// herdr shows this in its tab bar, so it's cleaned as the strip is.
 		extra := ""
-		switch {
-		case t.Stage.TakesReason() && t.Reason != "":
-			extra = t.Stage.Glyph() + " " + t.Reason
+		switch reason := task.CleanLabel(t.Reason); {
+		case t.Stage.TakesReason() && reason != "":
+			extra = t.Stage.Glyph() + " " + reason
 		case len(t.Links) > 0:
-			extra = "↗ " + t.Links[0].Display()
+			extra = "↗ " + task.CleanLabel(t.Links[0].Display())
 		}
 		if extra != "" {
 			line += "  " + extra
@@ -521,6 +573,9 @@ func (a *app) hook() error {
 	}
 	if ev != nil && ev.Name == "startup" {
 		a.opts.Startup = true
+		if a.opts.Board {
+			a.startBoard()
+		}
 	}
 	_, err := reconcile.Run(a.host(), a.store, a.opts, time.Now(), nil)
 	return err
@@ -534,7 +589,7 @@ func (a *app) overview() error {
 	if json.Unmarshal([]byte(os.Getenv("HERDR_PLUGIN_CONTEXT_JSON")), &ctx) == nil && ctx.TabID != "" {
 		current = ctx.TabID
 	}
-	return ui.Run(ui.Env{Client: a.client, Store: a.store, Opts: a.opts, CurrentTab: current})
+	return ui.Run(ui.Env{Client: a.client, Store: a.store, Opts: a.opts, CurrentTab: current, Message: os.Getenv("HERDR_TASKS_MESSAGE")})
 }
 
 func printJSON(v any) error {
@@ -558,7 +613,7 @@ func (a *app) setup(noConfig bool) error {
 	if err != nil {
 		return fmt.Errorf("installing herdr-tasks into %s: %w", setup.BinDir(), err)
 	}
-	if command != exe {
+	if command == setup.PathCommand {
 		fmt.Printf("herdr-tasks: installed %s/herdr-tasks\n", setup.BinDir())
 	}
 
@@ -584,6 +639,13 @@ func (a *app) setup(noConfig bool) error {
 			if backup != "" {
 				fmt.Printf("herdr-tasks: your previous config is saved as %s\n", backup)
 			}
+		}
+		note, err := claudeLinks(a.opts.ClaudeLinks, command)
+		if err != nil {
+			note = err.Error()
+		}
+		if note != "" {
+			notes = append(notes, note)
 		}
 	}
 
@@ -618,7 +680,25 @@ func (a *app) setup(noConfig bool) error {
 
 // remove undoes setup in every running session, then uninstalls the plugin.
 // Notes and links stay on disk unless purge is set.
+//
+// It stops the board and takes the Claude links hook out before it changes
+// anything else. When either fails, it stops there, with the board's token
+// and this command still in place, so you can fix the cause and run remove
+// again.
 func (a *app) remove(purge bool) error {
+	// First, while the board's token is still there to stop it with.
+	if err := board.Stop(store.Dir()); err != nil {
+		return fmt.Errorf("couldn't stop the task board, so nothing was removed; stop it (kill its pid) and run remove again: %w", err)
+	}
+	// Settings that don't parse only get a note: Claude Code can't run a hook
+	// from them either.
+	note, err := claudeLinks(false, "")
+	if err != nil {
+		return fmt.Errorf("couldn't take the Claude links hook out, so nothing else was removed: %w", err)
+	}
+	if note != "" {
+		fmt.Println("herdr-tasks: note: " + note)
+	}
 	sessions := herdr.RunningSessions()
 	// Stop hooks first, so they don't put markers back.
 	for _, c := range sessions {
@@ -661,6 +741,9 @@ func (a *app) remove(purge bool) error {
 		fmt.Printf("herdr-tasks: note: couldn't remove %s/herdr-tasks: %v\n", setup.BinDir(), err)
 	}
 	if purge {
+		if err := linear.DeleteKey(); err != nil {
+			fmt.Printf("herdr-tasks: note: couldn't delete the Linear key: %v\n", err)
+		}
 		if err := os.RemoveAll(store.Dir()); err != nil {
 			return err
 		}
@@ -669,6 +752,34 @@ func (a *app) remove(purge bool) error {
 		fmt.Printf("herdr-tasks: notes and links are kept in %s\n", store.Dir())
 	}
 	return nil
+}
+
+// writeSettings is claudehook.WriteSettings; tests replace it.
+var writeSettings = claudehook.WriteSettings
+
+// claudeLinks adds the Claude links hook to Claude Code's settings when on,
+// running command, or takes it out, and says so. When the settings don't
+// parse, it leaves them alone and returns a note saying so. It returns an
+// error when it couldn't change them otherwise, as when they changed while
+// it edited them.
+func claudeLinks(on bool, command string) (note string, err error) {
+	path := claudehook.SettingsPath()
+	edit, did := claudehook.Remove, "took the Claude links hook out of"
+	if on {
+		edit = func(src []byte) ([]byte, error) { return claudehook.Apply(src, claudehook.Command(command)) }
+		did = "added the Claude links hook to"
+	}
+	changed, err := writeSettings(path, store.Dir(), on, edit)
+	var bad *claudehook.ParseError
+	switch {
+	case errors.As(err, &bad):
+		return fmt.Sprintf("your Claude settings don't parse, so the Claude links hook wasn't changed (%s: %v)", path, bad), nil
+	case err != nil:
+		return "", err
+	case changed:
+		fmt.Printf("herdr-tasks: %s %s\n", did, path)
+	}
+	return "", nil
 }
 
 // configCmd prints herdr config lines. With --merge or --unmerge it edits a

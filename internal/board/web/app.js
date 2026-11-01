@@ -1,0 +1,1318 @@
+// The task board page. It signs in with the one-time code in its address,
+// shows the board the server streams, and posts task changes back. Opening
+// a card shows its tab's terminals (term.js) next to the whole card.
+//
+// Titles, notes, recaps, prompts and links come from agents and other
+// people. The page builds its DOM with createElement, textContent and
+// setAttribute only, and makes links of http and https URLs only. A local
+// file's link is a button that asks the server to open it.
+(() => {
+  'use strict';
+
+  // What the page keeps in the browser.
+  const KEY = 'herdr-tasks-board-key';
+  const SESSION = 'herdr-tasks-board-session';
+  const SPACES = 'herdr-tasks-board-spaces';
+  const DONE_OPEN = 'herdr-tasks-board-done-open';
+
+  const COLUMNS = [
+    {id: 'asking', label: 'Asking', hint: 'The agent stopped mid-work, waiting for your answer'},
+    {id: 'yourturn', label: 'Your turn', hint: 'The agent finished, or nothing is running'},
+    {id: 'running', label: 'Working', hint: 'The agent is working'},
+    {id: 'review', label: 'In review', hint: 'Your part is done; waiting on approval, merge, or testing'},
+    {id: 'paused', label: 'Paused', hint: 'On hold until something happens'},
+    {id: 'parked', label: 'Parked', hint: ''},
+    {id: 'done', label: 'Done', hint: 'Close when ready'},
+  ];
+
+  // Where the Move to menu can send a card. Asking, Your turn and Working
+  // are all Active: the agent decides which of them shows the card.
+  const MOVES = [
+    {stage: 'active', label: 'Active'},
+    {stage: 'review', label: 'In review…'},
+    {stage: 'paused', label: 'Paused…'},
+    {stage: 'parked', label: 'Parked'},
+    {stage: 'done', label: 'Done'},
+  ];
+
+  // The stages that record what they wait for, worded as the strip does.
+  const REASONS = {
+    review: {title: 'In review', label: 'Waiting for', lead: 'waiting for', placeholder: 'approval, merge, testing…'},
+    paused: {title: 'Paused', label: 'Until', lead: 'until', placeholder: 'PR review, QA, your own decision…'},
+  };
+
+  // A card's links show in these groups, in this order, as in the strip.
+  // The server gives each link's kind; a kind the page doesn't know goes
+  // with the other links.
+  const SECTIONS = [
+    {id: 'linear', title: 'Linear', kinds: ['linear']},
+    {id: 'slack', title: 'Slack', kinds: ['slack']},
+    {id: 'pages', title: 'Pages', kinds: ['artifact', 'hosted', 'file', 'local']},
+    {id: 'other', title: 'Links', kinds: []},
+  ];
+
+  // The marker on a page's chip: on the web, a file, or on this machine.
+  const PAGE_MARKS = {artifact: 'web', hosted: 'web', file: 'file', local: 'local'};
+
+  const isActive = column => column === 'asking' || column === 'yourturn' || column === 'running';
+  const stageOf = column => (isActive(column) ? 'active' : column);
+
+  // activeColumn is where an Active task shows, by what its tab's agent is doing.
+  function activeColumn(agentStatus) {
+    if (agentStatus === 'working') return 'running';
+    if (agentStatus === 'blocked') return 'asking';
+    return 'yourturn';
+  }
+
+  // Browser storage may be missing or throw. The page then keeps things in
+  // memory for as long as it's open.
+  const memory = new Map();
+  function load(name) {
+    if (memory.has(name)) return memory.get(name);
+    try {
+      return localStorage.getItem(name);
+    } catch (e) {
+      return null;
+    }
+  }
+  function save(name, value) {
+    memory.set(name, value);
+    try {
+      localStorage.setItem(name, value);
+    } catch (e) {
+      // kept in memory only
+    }
+  }
+  const key = () => load(KEY) || '';
+
+  let board = null; // the latest board the server sent
+  let index = new Map(); // card key → that card on the board
+  let signedOut = false;
+  // Changes posted but not on the board yet, by card key. Each changes how
+  // the card shows until the board has it, the post fails, or 5 s pass.
+  const overrides = new Map();
+  const cardEls = new Map(); // card key → its element
+  const columnEls = new Map(); // column id → {section, cards, count, toggle}
+  let session = ''; // the session shown
+  let dragging = null; // {key, stage, el} while a card is dragged
+  let held = false; // a render waits until the drag or the menu ends
+  let menuFor = null; // {key, trigger} while the Move to menu is open
+  let reasonFor = null; // {key, stage} while the reason dialog is open
+  let detailKey = null; // the card the detail panel shows
+  let detailSig = null;
+  let viewing = null; // {session, tab, terms} while a tab's view is open
+
+  const $ = id => document.getElementById(id);
+  const keyOf = c => c.session + '\n' + c.tab;
+
+  // el makes an element with a class and, as text, its content.
+  function el(tag, cls, text) {
+    const e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null && text !== '') e.textContent = String(text);
+    return e;
+  }
+
+  function attrs(e, map) {
+    for (const [name, value] of Object.entries(map)) e.setAttribute(name, value);
+    return e;
+  }
+
+  // age is a time since as task.Age writes it: now, 4m, 3h, 2d.
+  function age(since) {
+    const d = Date.now() - Date.parse(since);
+    if (!(d >= 60e3)) return 'now';
+    if (d < 3600e3) return Math.floor(d / 60e3) + 'm';
+    if (d < 48 * 3600e3) return Math.floor(d / 3600e3) + 'h';
+    return Math.floor(d / 86400e3) + 'd';
+  }
+
+  // clock is a time as the overview writes log entries: 14:03, Mon 14:03.
+  function clock(at) {
+    const t = new Date(at);
+    if (isNaN(t)) return '';
+    const hm = t.toLocaleTimeString([], {hour: 'numeric', minute: '2-digit'});
+    const ago = Date.now() - t;
+    if (ago > 6 * 86400e3) return t.toLocaleDateString([], {month: 'short', day: 'numeric'}) + ' ' + hm;
+    if (ago > 20 * 3600e3) return t.toLocaleDateString([], {weekday: 'short'}) + ' ' + hm;
+    return hm;
+  }
+
+  // ageEl shows how long ago since was, and keeps it current.
+  function ageEl(since, title) {
+    return attrs(el('time', 'age', age(since)), {
+      'data-since': since,
+      datetime: since,
+      title: title + ' ' + new Date(since).toLocaleString(),
+    });
+  }
+
+  function tickAges() {
+    for (const t of document.querySelectorAll('time[data-since]')) t.textContent = age(t.getAttribute('data-since'));
+  }
+
+  function linkable(url) {
+    try {
+      const u = new URL(url);
+      return u.protocol === 'http:' || u.protocol === 'https:';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function sectionOf(l) {
+    return SECTIONS.find(s => s.kinds.includes(l.kind)) || SECTIONS[SECTIONS.length - 1];
+  }
+
+  // linkGroups is the groups that have links, in order, each with its links.
+  function linkGroups(links) {
+    return SECTIONS.map(section => ({section, links: links.filter(l => sectionOf(l) === section)})).filter(g => g.links.length);
+  }
+
+  function reasonText(c) {
+    const r = REASONS[c.stage];
+    return r && c.reason ? r.lead + ' ' + c.reason : '';
+  }
+
+  function firstLine(text) {
+    return (text || '').split('\n').map(l => l.trim()).find(l => l) || '';
+  }
+
+  // glyph is how the sidebar shows an agent's status.
+  function glyph(status) {
+    if (status === 'blocked') return {ch: '?', cls: 'ask', word: 'asking'};
+    if (status === 'working') return {ch: '↻', cls: 'run', word: 'working'};
+    if (status === 'done') return {ch: '●', cls: 'you', word: 'answered'};
+    return {ch: '●', cls: '', word: status === 'idle' ? 'idle' : 'no status'};
+  }
+
+  // ---- Talking to the server
+
+  // signIn swaps the code in the address for the browser key, and takes the
+  // code out of the address.
+  async function signIn() {
+    const code = new URLSearchParams(location.search).get('code');
+    if (code === null) return;
+    try {
+      const res = await fetch('/api/session', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({code}),
+      });
+      if (res.ok) {
+        const reply = await res.json();
+        if (reply && typeof reply.key === 'string' && reply.key) save(KEY, reply.key);
+      }
+    } catch (e) {
+      // The server didn't answer. A key from before may still work.
+    } finally {
+      history.replaceState(null, '', '/');
+    }
+  }
+
+  let stream = null; // the AbortController of the open stream
+  let streamKey = ''; // the key the stream signed in with
+  let retryIn = 0;
+  let retryTimer = 0;
+
+  function connect() {
+    clearTimeout(retryTimer);
+    retryTimer = 0;
+    if (stream) stream.abort();
+    stream = null;
+    const k = key();
+    if (!k) {
+      signOut();
+      return;
+    }
+    streamKey = k;
+    signedOut = false;
+    const ctl = new AbortController();
+    stream = ctl;
+    listen(ctl, k).then(again => {
+      if (again && stream === ctl) retry();
+    });
+  }
+
+  // listen reads the board stream, signed in with k, until it ends, and says
+  // whether to try again.
+  async function listen(ctl, k) {
+    let quiet = 0;
+    // The server pings every 25 s, so a stream silent for longer is gone.
+    const wake = () => {
+      clearTimeout(quiet);
+      quiet = setTimeout(() => ctl.abort(), 70e3);
+    };
+    try {
+      wake();
+      const res = await fetch('/api/events', {
+        headers: {Authorization: 'Bearer ' + k},
+        signal: ctl.signal,
+        cache: 'no-store',
+      });
+      if (res.status === 401) {
+        signOut(k);
+        return false;
+      }
+      if (!res.ok || !res.body) return true;
+      const reader = res.body.getReader();
+      const text = new TextDecoder();
+      let buf = '';
+      for (;;) {
+        const {value, done} = await reader.read();
+        if (done) return true;
+        wake();
+        buf += text.decode(value, {stream: true});
+        for (let end; (end = buf.indexOf('\n\n')) >= 0; ) {
+          const ev = parseEvent(buf.slice(0, end));
+          buf = buf.slice(end + 2);
+          if (ev.event === 'board') gotBoard(ev.data);
+        }
+      }
+    } catch (e) {
+      return true; // the network failed, or the stream was stopped
+    } finally {
+      clearTimeout(quiet);
+    }
+  }
+
+  // parseEvent reads one event-stream block.
+  function parseEvent(block) {
+    const ev = {event: 'message', data: ''};
+    const data = [];
+    for (let line of block.split('\n')) {
+      line = line.replace(/\r$/, '');
+      if (!line || line[0] === ':') continue;
+      const i = line.indexOf(':');
+      const field = i < 0 ? line : line.slice(0, i);
+      let value = i < 0 ? '' : line.slice(i + 1);
+      if (value[0] === ' ') value = value.slice(1);
+      if (field === 'event') ev.event = value;
+      else if (field === 'data') data.push(value);
+    }
+    ev.data = data.join('\n');
+    return ev;
+  }
+
+  function retry() {
+    retryIn = Math.min(retryIn ? retryIn * 2 : 1000, 15000);
+    const lost = retryIn >= 4000;
+    $('conn').textContent = lost ? 'The board server isn’t answering' : board ? 'Reconnecting…' : 'Connecting…';
+    if (!board && lost) {
+      showMessage(
+        document.createTextNode('The board server isn’t answering. Run '),
+        el('code', '', 'herdr-tasks board'),
+        document.createTextNode(' to start it.'),
+      );
+    }
+    retryTimer = setTimeout(connect, retryIn * (0.75 + Math.random() / 2));
+  }
+
+  function gotBoard(data) {
+    let b;
+    try {
+      b = JSON.parse(data);
+    } catch (e) {
+      return;
+    }
+    if (!b || !Array.isArray(b.sessions)) return;
+    board = b;
+    index = new Map();
+    for (const s of b.sessions) for (const c of s.cards) index.set(keyOf(c), c);
+    retryIn = 0;
+    $('conn').textContent = '';
+    render();
+  }
+
+  // signOut shows the page signed out, and says whether it did. A 401 for a
+  // request sent with a key the page has replaced since, as when another
+  // tab signed in, is about that key only: sentWith, when given, is the key
+  // the request used, and the page stays signed in with the new one.
+  function signOut(sentWith) {
+    if (sentWith !== undefined && sentWith !== key()) return false;
+    signedOut = true;
+    clearTimeout(retryTimer);
+    retryTimer = 0;
+    if (stream) stream.abort();
+    stream = null;
+    $('conn').textContent = '';
+    if (viewing) {
+      history.replaceState(null, '', location.pathname + location.search);
+      hideView();
+    }
+    render();
+    return true;
+  }
+
+  // post sends a task request, to /api/task unless path says otherwise, and
+  // fails with the server's message.
+  async function post(body, path) {
+    const k = key();
+    let res;
+    try {
+      res = await fetch(path || '/api/task', {
+        method: 'POST',
+        headers: {Authorization: 'Bearer ' + k, 'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      throw new Error('The board server isn’t answering.');
+    }
+    if (res.ok) return;
+    let msg = '';
+    try {
+      msg = (await res.json()).error || '';
+    } catch (e) {
+      // not JSON
+    }
+    if (res.status === 401 && !signOut(k)) throw new Error('Signed in again. Try that again.');
+    throw new Error(msg || 'That didn’t work (' + res.status + ').');
+  }
+
+  // ---- Changing tasks
+
+  // cardByKey is a card as the page shows it, with changes still on their
+  // way, or null when it isn't on the board.
+  function cardByKey(k) {
+    const c = index.get(k);
+    if (!c) return null;
+    let shown = c;
+    for (const o of overrides.get(k) || []) shown = o.apply(shown);
+    return shown;
+  }
+
+  // prune forgets changes the board has, and ones it should have had by now.
+  // A change the board has replaces every change made to the card before
+  // it, as when Priority is clicked on and off again.
+  function prune() {
+    const now = Date.now();
+    for (const [k, list] of overrides) {
+      const c = index.get(k);
+      let from = 0;
+      if (c) {
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (list[i].done && list[i].settled(c)) {
+            from = i + 1;
+            break;
+          }
+        }
+      }
+      const keep = list.slice(from).filter(o => !o.done || (c && !o.settled(c) && now - o.done < 5000));
+      if (keep.length) overrides.set(k, keep);
+      else overrides.delete(k);
+    }
+  }
+
+  // change shows a change to a card at once and posts it. If the post
+  // fails, the card goes back and a toast says why.
+  function change(c, body, apply, settled) {
+    const k = keyOf(c);
+    const o = {apply, settled, done: 0};
+    overrides.set(k, (overrides.get(k) || []).concat(o));
+    render();
+    post(Object.assign({session: c.session, tab: c.tab}, body)).then(
+      () => {
+        o.done = Date.now();
+        setTimeout(render, 5100);
+        render();
+      },
+      err => {
+        const list = (overrides.get(k) || []).filter(x => x !== o);
+        if (list.length) overrides.set(k, list);
+        else overrides.delete(k);
+        render();
+        toast(err.message);
+      },
+    );
+  }
+
+  function changeStage(c, stage, reason) {
+    const at = new Date().toISOString();
+    change(
+      c,
+      {action: 'stage', stage: stage === 'active' ? activeColumn(c.agentStatus) : stage, reason},
+      x => {
+        const y = Object.assign({}, x, {stage, column: stage === 'active' ? activeColumn(x.agentStatus) : stage});
+        if (x.stage !== stage) y.since = at;
+        if (!REASONS[stage]) y.reason = '';
+        else if (reason) y.reason = reason;
+        if (stage === 'done') y.priority = false;
+        return y;
+      },
+      x => x.stage === stage && (!reason || x.reason === reason),
+    );
+  }
+
+  function setPriority(c, on) {
+    change(c, {action: 'priority', on}, x => Object.assign({}, x, {priority: on}), x => x.priority === on);
+  }
+
+  function unlink(c, url) {
+    change(
+      c,
+      {action: 'unlink', url},
+      x => Object.assign({}, x, {links: x.links.filter(l => l.url !== url)}),
+      x => !x.links.some(l => l.url === url),
+    );
+  }
+
+  function showInHerdr(c) {
+    post({session: c.session, tab: c.tab, action: 'focus'}).catch(err => toast(err.message));
+  }
+
+  // openFile has the board server open a task's local page, as browsers
+  // won't open file links from a web page.
+  function openFile(c, url) {
+    post({session: c.session, tab: c.tab, url}, '/api/open').catch(err => toast(err.message));
+  }
+
+  function copyPath(c, url) {
+    const l = c.links.find(x => x.url === url);
+    if (!l || !l.path) return;
+    const done = () => toast('Copied ' + l.path);
+    const failed = () => toast('Couldn’t copy the path. It’s ' + l.path);
+    if (navigator.clipboard) navigator.clipboard.writeText(l.path).then(done, failed);
+    else failed();
+  }
+
+  // moveTo moves a card to a stage. In review and Paused ask what they
+  // wait for first.
+  function moveTo(k, stage) {
+    const c = cardByKey(k);
+    if (!c) return;
+    if (REASONS[stage]) askReason(c, stage);
+    else if (c.stage !== stage) changeStage(c, stage, '');
+  }
+
+  function askReason(c, stage) {
+    const r = REASONS[stage];
+    reasonFor = {key: keyOf(c), stage};
+    $('reason-title').textContent = r.title;
+    $('reason-task').textContent = c.title;
+    $('reason-label').textContent = r.label;
+    const input = $('reason-text');
+    input.value = c.reason || '';
+    input.setAttribute('placeholder', r.placeholder);
+    $('reason').showModal();
+    input.select();
+  }
+
+  function toast(msg) {
+    const box = $('toasts');
+    const t = el('div', 'toast', msg);
+    box.append(t);
+    setTimeout(() => t.remove(), 5000);
+    while (box.children.length > 3) box.firstElementChild.remove();
+  }
+
+  // ---- Drawing the board
+
+  // sync makes box's children the elements for items, in order. An item's
+  // element is kept while its key stays, so focus and scroll survive.
+  function sync(box, items, keyFn, make, update) {
+    const old = new Map();
+    for (const e of box.children) old.set(e.getAttribute('data-key'), e);
+    let at = box.firstElementChild;
+    for (const item of items) {
+      const k = keyFn(item);
+      let e = old.get(k);
+      if (e) old.delete(k);
+      else e = attrs(make(item), {'data-key': k});
+      update(e, item);
+      if (e === at) at = at.nextElementSibling;
+      else box.insertBefore(e, at);
+    }
+    for (const e of old.values()) e.remove();
+  }
+
+  function showMessage(...nodes) {
+    $('board').hidden = true;
+    $('empty').hidden = false;
+    $('empty-text').replaceChildren(...nodes);
+  }
+
+  function render() {
+    if (dragging || menuFor) {
+      held = true;
+      return;
+    }
+    held = false;
+    if (signedOut) {
+      for (const id of ['sessions', 'spaces', 'stale', 'hint']) $(id).hidden = true;
+      showMessage(
+        document.createTextNode('Sign in again: run '),
+        el('code', '', 'herdr-tasks board'),
+        document.createTextNode(', or use Open task board in herdr.'),
+      );
+      return;
+    }
+    if (!board) return;
+    prune();
+    $('version').textContent = board.version ? 'v' + board.version : '';
+    const sessions = board.sessions;
+    $('hint').hidden = board.linearKey || !sessions.some(s => s.cards.some(c => c.links.some(l => l.kind === 'linear')));
+    const s = sessions.find(x => x.name === load(SESSION)) || sessions[0];
+    session = s ? s.name : '';
+    renderSessions(sessions);
+    $('stale').hidden = !s || !s.stale;
+    if (!s) {
+      $('spaces').hidden = true;
+      showMessage(document.createTextNode('No herdr session is running.'));
+    } else {
+      const cards = s.cards.map(c => cardByKey(keyOf(c)));
+      const space = renderSpaces(s, cards);
+      renderColumns(space ? cards.filter(c => c.space === space) : cards);
+      $('board').hidden = false;
+      $('empty').hidden = true;
+    }
+    renderDetail();
+  }
+
+  function renderSessions(sessions) {
+    const nav = $('sessions');
+    nav.hidden = sessions.length < 2;
+    sync(
+      nav,
+      nav.hidden ? [] : sessions,
+      s => s.name,
+      () => attrs(el('button'), {type: 'button'}),
+      (b, s) => {
+        b.setAttribute('aria-pressed', String(s.name === session));
+        const parts = [el('span', '', s.name)];
+        if (s.stale) parts.push(attrs(el('span', 'badge stale', 'stale'), {title: $('stale').getAttribute('title')}));
+        const asking = s.cards.filter(c => c.column === 'asking').length;
+        if (asking) parts.push(attrs(el('span', 'badge count', asking), {title: asking + ' asking', 'aria-label': asking + ' asking'}));
+        b.replaceChildren(...parts);
+      },
+    );
+  }
+
+  function spaceChoices() {
+    try {
+      const m = JSON.parse(load(SPACES) || '{}');
+      return m && typeof m === 'object' ? m : {};
+    } catch (e) {
+      return {};
+    }
+  }
+
+  // renderSpaces shows the space filter, and returns the space chosen, or
+  // '' for all of them.
+  function renderSpaces(s, cards) {
+    const open = new Map();
+    const used = new Set();
+    for (const c of cards) {
+      used.add(c.space);
+      if (c.column !== 'done') open.set(c.space, (open.get(c.space) || 0) + 1);
+    }
+    let chosen = spaceChoices()[s.name] || '';
+    if (!s.spaces.some(x => x.id === chosen)) chosen = '';
+    const spaces = s.spaces.filter(x => used.has(x.id) || x.id === chosen);
+    const bar = $('spaces');
+    bar.hidden = spaces.length < 2 && !chosen;
+    sync(
+      bar,
+      bar.hidden ? [] : [{id: '', label: 'All'}].concat(spaces),
+      x => x.id || '*',
+      () => attrs(el('button', 'space-filter'), {type: 'button'}),
+      (b, x) => {
+        b.setAttribute('aria-pressed', String(x.id === chosen));
+        const parts = [el('span', '', x.label)];
+        if (x.id && open.get(x.id)) parts.push(el('span', 'n', open.get(x.id)));
+        b.replaceChildren(...parts);
+      },
+    );
+    return chosen;
+  }
+
+  function chooseSpace(id) {
+    const m = spaceChoices();
+    if (!id || m[session] === id) delete m[session];
+    else m[session] = id;
+    save(SPACES, JSON.stringify(m));
+    render();
+  }
+
+  // newer orders a column's cards as the overview does: priority first,
+  // then the newest stage. Ties keep the board's order.
+  const newer = (a, b) => b.priority - a.priority || Date.parse(b.since) - Date.parse(a.since);
+
+  function renderColumns(cards) {
+    const lists = new Map(COLUMNS.map(col => [col.id, []]));
+    for (const c of cards) if (lists.has(c.column)) lists.get(c.column).push(c);
+    const want = new Set();
+    for (const list of lists.values()) for (const c of list) want.add(keyOf(c));
+
+    // Moving an element blurs it, so focus goes back afterwards.
+    const active = document.activeElement;
+    const activeCard = active && active.closest ? active.closest('.card') : null;
+    const act = activeCard && active.getAttribute('data-act');
+
+    for (const col of COLUMNS) {
+      const list = lists.get(col.id).sort(newer);
+      const box = columnEls.get(col.id);
+      box.count.textContent = list.length ? String(list.length) : '';
+      let at = box.cards.firstElementChild;
+      for (const c of list) {
+        const k = keyOf(c);
+        let e = cardEls.get(k);
+        if (!e) {
+          e = attrs(el('article', 'card'), {draggable: 'true', 'data-key': k});
+          cardEls.set(k, e);
+        }
+        const sig = JSON.stringify(c);
+        if (e.sig !== sig) {
+          fillCard(e, c);
+          e.sig = sig;
+        }
+        if (e === at) at = at.nextElementSibling;
+        else box.cards.insertBefore(e, at);
+      }
+      // What's left goes off the board, or to a column drawn later.
+      while (at) {
+        const next = at.nextElementSibling;
+        if (!want.has(at.getAttribute('data-key'))) at.remove();
+        at = next;
+      }
+    }
+    for (const [k, e] of cardEls) {
+      if (!want.has(k)) {
+        e.remove();
+        cardEls.delete(k);
+      }
+    }
+
+    if (activeCard && document.activeElement !== active) {
+      const e = cardEls.get(activeCard.getAttribute('data-key'));
+      let target = active.isConnected ? active : e && act ? e.querySelector('[data-act="' + act + '"]') : null;
+      if (target) target.focus({preventScroll: true});
+      // A card moved into the folded Done column can't hold focus.
+      if (e && document.activeElement !== target && e.closest('.collapsed')) {
+        columnEls.get('done').toggle.focus({preventScroll: true});
+      }
+    }
+  }
+
+  function fillCard(e, c) {
+    e.setAttribute('data-column', c.column);
+    const parts = [];
+
+    const top = el('div', 'card-top');
+    if (c.priority) top.append(attrs(el('span', 'prio', '!'), {role: 'img', 'aria-label': 'Priority', title: 'Priority'}));
+    top.append(el('h3', 'card-title', c.title));
+    parts.push(top);
+
+    const meta = el('div', 'meta');
+    if (c.spaceLabel) meta.append(el('span', 'space', c.spaceLabel));
+    meta.append(ageEl(c.since, 'In this stage since'));
+    const reason = reasonText(c);
+    if (reason) meta.append(el('span', 'reason', reason));
+    parts.push(meta);
+
+    if (c.agents.length) {
+      const list = el('ul', 'agents');
+      for (const a of c.agents) list.append(agentRow(a));
+      parts.push(list);
+    }
+    if (c.links.length) {
+      const links = el('div', 'links');
+      for (const g of linkGroups(c.links)) {
+        const row = attrs(el('div', 'link-row'), {role: 'group', 'aria-label': g.section.title});
+        for (const l of g.links) row.append(linkChip(l));
+        links.append(row);
+      }
+      parts.push(links);
+    }
+    const note = firstLine(c.note);
+    if (note) parts.push(el('p', 'note', note));
+
+    const bar = el('div', 'actions');
+    bar.append(button('act', 'Move to…', 'move', {'aria-haspopup': 'menu', 'aria-expanded': 'false'}));
+    if (c.column !== 'done') {
+      bar.append(
+        button('act prio-toggle end', '!', 'priority', {
+          'aria-pressed': String(Boolean(c.priority)),
+          'aria-label': 'Priority',
+          title: c.priority ? 'Priority: on' : 'Priority: off',
+        }),
+      );
+    }
+    bar.append(button(c.column === 'done' ? 'act end' : 'act', 'Show in herdr', 'focus'));
+    bar.append(button('act', 'Open', 'open'));
+    parts.push(bar);
+
+    e.replaceChildren(...parts);
+  }
+
+  function button(cls, text, act, more) {
+    return attrs(el('button', cls, text), Object.assign({type: 'button', 'data-act': act}, more || {}));
+  }
+
+  function glyphEl(a) {
+    const g = glyph(a.status);
+    return attrs(el('span', 'glyph ' + g.cls, g.ch), {role: 'img', 'aria-label': g.word, title: g.word});
+  }
+
+  // agentHead is the agent's title, and when its recap was written.
+  function agentHead(a) {
+    const head = el('div', 'agent-head');
+    head.append(el('span', 'agent-title', a.title || a.agent));
+    if (a.recap && (a.recapAt || a.recapStale)) {
+      const when = el('span', 'agent-when');
+      if (a.recapAt) when.append(ageEl(a.recapAt, 'Recap written'));
+      if (a.recapStale) when.append(document.createTextNode(a.recapAt ? ' · earlier' : 'earlier'));
+      head.append(when);
+    }
+    return head;
+  }
+
+  function agentRow(a) {
+    const li = el('li', 'agent');
+    const body = el('div', 'agent-body');
+    body.append(agentHead(a));
+    if (a.recap) body.append(el('p', a.recapStale ? 'recap stale' : 'recap', a.recap));
+    if (a.lastPrompt && (!a.recap || a.recapStale)) body.append(el('p', 'prompt', a.lastPrompt));
+    li.append(glyphEl(a), body);
+    return li;
+  }
+
+  // linkChip is a link as a card shows it. A file is a button that has the
+  // board server open it. Other http and https links open in a new tab.
+  function linkChip(l) {
+    let chip;
+    if (l.kind === 'file') chip = button('chip', '', 'openfile', {'data-url': l.url});
+    else if (linkable(l.url)) chip = attrs(el('a', 'chip'), {href: l.url, target: '_blank', rel: 'noopener noreferrer'});
+    else chip = el('span', 'chip');
+    const is = l.linear;
+    if (l.kind === 'linear' && is) {
+      chip.classList.add('linear');
+      if (is.state) {
+        const dot = el('span', 'dot');
+        if (/^#[0-9a-f]{3,8}$/i.test(is.color || '')) dot.style.backgroundColor = is.color;
+        chip.append(dot);
+      }
+      chip.append(el('span', 'id', is.id));
+      if (is.state) chip.append(el('span', 'state', is.state));
+      const tip = [is.title, is.assignee ? 'Assignee: ' + is.assignee : '', l.url];
+      chip.setAttribute('title', tip.filter(Boolean).join('\n'));
+    } else if (l.kind === 'slack') {
+      chip.classList.add('slack');
+      chip.append(el('span', 'kind', 'Slack'), el('span', 'label', l.at ? clock(l.at) : 'channel'));
+      const tip = [l.label, l.at ? new Date(l.at).toLocaleString() : '', l.url];
+      chip.setAttribute('title', tip.filter(Boolean).join('\n'));
+    } else if (PAGE_MARKS[l.kind]) {
+      chip.classList.add('page');
+      chip.append(attrs(el('span', 'mark', PAGE_MARKS[l.kind]), {'aria-hidden': 'true'}), el('span', 'label', l.label || l.url));
+      const tip = l.kind === 'file' ? ['Open in your browser', l.path] : [l.url];
+      if (l.source) tip.push('Published from ' + l.source);
+      chip.setAttribute('title', tip.filter(Boolean).join('\n'));
+      chip.setAttribute('aria-label', PAGE_MARKS[l.kind] + ' page: ' + (l.label || l.url));
+    } else {
+      chip.append(el('span', 'label', l.label || l.url));
+      chip.setAttribute('title', l.url);
+    }
+    return chip;
+  }
+
+  // ---- A tab's view: its terminals, and the whole card next to them
+
+  // The view is at #tab=<session>/<tab>, so a reload keeps it.
+  function viewHash(session, tab) {
+    return '#tab=' + encodeURIComponent(session) + '/' + encodeURIComponent(tab);
+  }
+
+  // hashView is the tab the address shows, or null for the board.
+  function hashView() {
+    const h = location.hash || '';
+    const i = h.indexOf('/');
+    if (!h.startsWith('#tab=') || i < 0) return null;
+    try {
+      return {session: decodeURIComponent(h.slice(5, i)), tab: decodeURIComponent(h.slice(i + 1))};
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function openView(k) {
+    const c = cardByKey(k);
+    if (!c) return;
+    closeMenu(false);
+    history.pushState({view: true}, '', viewHash(c.session, c.tab));
+    route();
+  }
+
+  // closeView goes back to the board.
+  function closeView() {
+    if (history.state && history.state.view) {
+      history.back();
+      return;
+    }
+    history.replaceState(null, '', location.pathname + location.search);
+    route();
+  }
+
+  // route shows what the address asks for: a tab's view, or the board.
+  function route() {
+    const v = signedOut ? null : hashView();
+    if (v && viewing && v.session === viewing.session && v.tab === viewing.tab) return;
+    if (viewing) hideView();
+    if (v) showView(v.session, v.tab);
+  }
+
+  function showView(session, tab) {
+    closeMenu(false);
+    detailKey = session + '\n' + tab;
+    detailSig = null;
+    document.body.classList.add('viewing');
+    $('view').hidden = false;
+    renderDetail();
+    const box = $('terms');
+    let terms = null;
+    if (window.herdrTerm) {
+      terms = window.herdrTerm.mount(box, {session, tab, key, parseEvent, toast, signOut});
+    } else {
+      box.replaceChildren(el('p', 'term-status', 'The terminals didn’t load. Reload the page to try again.'));
+    }
+    viewing = {session, tab, terms};
+    $('view-back').focus();
+  }
+
+  function hideView() {
+    const v = viewing;
+    viewing = null;
+    if (v.terms) v.terms.close();
+    closeMenu(false);
+    detailKey = null;
+    detailSig = null;
+    $('view').hidden = true;
+    document.body.classList.remove('viewing');
+    render();
+    const card = cardEls.get(v.session + '\n' + v.tab);
+    const open = card && card.querySelector('[data-act="open"]');
+    if (open) open.focus();
+  }
+
+  function renderDetail() {
+    if (!detailKey) return;
+    const c = board ? cardByKey(detailKey) : null;
+    const sig = !board ? 'loading' : c ? JSON.stringify(c) : '';
+    if (sig === detailSig) return;
+    detailSig = sig;
+
+    const body = $('detail-body');
+    const active = body.contains(document.activeElement) ? document.activeElement : null;
+    const was = active && {act: active.getAttribute('data-act'), url: active.getAttribute('data-url')};
+    const top = body.scrollTop;
+    fillDetail(body, c);
+    body.scrollTop = top;
+    if (was) {
+      const acts = [...body.querySelectorAll('[data-act]')];
+      const same = acts.find(e => e.getAttribute('data-act') === was.act && e.getAttribute('data-url') === was.url);
+      // A removed link's button is gone; the next one takes its place.
+      const next = acts.find(e => e.getAttribute('data-act') === was.act);
+      (same || next || $('view-back')).focus({preventScroll: true});
+    }
+  }
+
+  function detailSection(title, ...content) {
+    const s = el('section', 'section');
+    s.append(el('h3', 'section-title', title), ...content);
+    return s;
+  }
+
+  function field(label, content) {
+    const f = el('div', 'd-field');
+    f.append(label, content);
+    return f;
+  }
+
+  function fillDetail(body, c) {
+    if (!board) {
+      $('detail-title').textContent = '';
+      body.replaceChildren(el('p', 'empty-line', 'Loading…'));
+      return;
+    }
+    $('detail-title').textContent = c ? c.title : 'This task isn’t on the board any more';
+    if (!c) {
+      body.replaceChildren(el('p', 'empty-line', 'Its tab was closed, or its space was hidden.'));
+      return;
+    }
+    const parts = [];
+
+    const meta = el('div', 'detail-meta');
+    const col = COLUMNS.find(x => x.id === c.column);
+    meta.append(attrs(el('span', 'stage-badge', col ? col.label : c.stage), {'data-column': c.column}));
+    if (c.priority) meta.append(el('span', 'badge prio-badge', '! Priority'));
+    if (c.spaceLabel) meta.append(el('span', 'space', c.spaceLabel));
+    meta.append(ageEl(c.since, 'In this stage since'));
+    parts.push(meta);
+    const reason = reasonText(c);
+    if (reason) parts.push(attrs(el('p', 'detail-reason', reason), {'data-column': c.column}));
+    const acts = el('div', 'detail-actions');
+    acts.append(button('button', 'Move to…', 'move', {'aria-haspopup': 'menu', 'aria-expanded': 'false'}));
+    if (c.column !== 'done') {
+      acts.append(
+        button('button prio-button', '! Priority', 'priority', {
+          'aria-pressed': String(Boolean(c.priority)),
+          title: c.priority ? 'Priority: on' : 'Priority: off',
+        }),
+      );
+    }
+    acts.append(button('button', 'Show in herdr', 'focus'));
+    parts.push(acts);
+
+    parts.push(detailSection('Note', c.note ? el('p', 'text', c.note) : el('p', 'empty-line', 'No note yet.')));
+
+    if (c.log && c.log.length) {
+      const log = el('ul', 'd-log');
+      for (const entry of c.log) {
+        const li = el('li', 'd-entry');
+        li.append(attrs(el('span', 'who', entry.who + ' ' + clock(entry.at)), {title: new Date(entry.at).toLocaleString()}));
+        li.append(el('span', 'what', entry.text));
+        log.append(li);
+      }
+      parts.push(detailSection('Log', log));
+    }
+
+    if (c.agents.length) {
+      const list = el('ul', 'd-agents');
+      for (const a of c.agents) list.append(agentDetail(a));
+      parts.push(detailSection('Agents', list));
+    } else {
+      parts.push(detailSection('Agents', el('p', 'empty-line', 'No agent is running in this tab.')));
+    }
+
+    const groups = linkGroups(c.links);
+    for (const g of groups) {
+      const list = el('ul', 'd-links');
+      for (const l of g.links) list.append(linkRow(l));
+      parts.push(detailSection(g.section.title, list));
+    }
+    if (!groups.length) parts.push(detailSection('Links', el('p', 'empty-line', 'No links yet.')));
+
+    body.replaceChildren(...parts);
+  }
+
+  function agentDetail(a) {
+    const li = el('li', 'd-agent');
+    const head = el('div', 'agent-head');
+    head.append(glyphEl(a), el('span', 'agent-title', a.title || a.agent), el('span', 'agent-when', glyph(a.status).word));
+    li.append(head);
+    if (a.recap) {
+      const label = el('div', 'd-label', 'Recap');
+      if (a.recapAt) label.append(document.createTextNode(' · ' + clock(a.recapAt)));
+      if (a.recapStale) label.append(document.createTextNode(' · earlier: a prompt came after it'));
+      li.append(field(label, el('p', 'text', a.recap)));
+    }
+    if (a.lastPrompt) li.append(field(el('div', 'd-label', 'Last prompt'), el('p', 'text', a.lastPrompt)));
+    if (a.lastReply) li.append(field(el('div', 'd-label', 'Last reply'), el('p', 'text long', a.lastReply)));
+    if (!a.recap && !a.lastPrompt && !a.lastReply) {
+      li.append(el('p', 'empty-line d-field', a.agent === 'claude' ? 'Nothing in its session log yet.' : 'Only Claude agents have a recap.'));
+    }
+    return li;
+  }
+
+  function linkRow(l) {
+    const li = el('li', 'd-link');
+    li.append(linkChip(l));
+    const is = l.linear;
+    let about = l.kind === 'file' ? l.path || l.url : l.url;
+    if (l.kind === 'linear' && is && is.title) about = is.title + (is.assignee ? ' · ' + is.assignee : '');
+    li.append(attrs(el('span', 'url', about), {title: l.source ? about + '\nPublished from ' + l.source : about}));
+    if (l.by) li.append(el('span', 'by', 'via ' + l.by));
+    if (l.kind === 'file') li.append(button('copy', 'Copy path', 'copypath', {'data-url': l.url, title: 'Copy ' + (l.path || '')}));
+    li.append(
+      button('remove', '×', 'unlink', {
+        'data-url': l.url,
+        'aria-label': 'Remove ' + (l.label || l.url),
+        title: 'Remove the link. Claude won’t add it back.',
+      }),
+    );
+    return li;
+  }
+
+  // ---- The Move to menu
+
+  function openMenu(trigger, k) {
+    const c = cardByKey(k);
+    if (!c) return;
+    const menu = $('menu');
+    const items = [attrs(el('div', 'menu-label', 'Move to'), {'aria-hidden': 'true'})];
+    for (const m of MOVES) {
+      const current = c.stage === m.stage;
+      const item = attrs(el('button', 'menu-item'), {
+        type: 'button',
+        role: 'menuitemradio',
+        tabindex: '-1',
+        'aria-checked': String(current),
+        'data-stage': m.stage,
+        'data-column': m.stage === 'active' ? activeColumn(c.agentStatus) : m.stage,
+      });
+      item.append(el('span', '', m.label));
+      if (current) item.append(attrs(el('span', 'check', '✓'), {'aria-hidden': 'true'}));
+      // In review and Paused stay open, to change what they wait for.
+      if (current && !REASONS[m.stage]) item.setAttribute('aria-disabled', 'true');
+      items.push(item);
+    }
+    menu.replaceChildren(...items);
+    menu.hidden = false;
+    const r = trigger.getBoundingClientRect();
+    const left = Math.max(8, Math.min(r.left, innerWidth - menu.offsetWidth - 8));
+    let top = r.bottom + 4;
+    if (top + menu.offsetHeight > innerHeight - 8) top = Math.max(8, r.top - menu.offsetHeight - 4);
+    menu.style.left = left + 'px';
+    menu.style.top = top + 'px';
+    trigger.setAttribute('aria-expanded', 'true');
+    menuFor = {key: k, trigger};
+    const first = menu.querySelector('.menu-item:not([aria-disabled])');
+    if (first) first.focus();
+  }
+
+  function closeMenu(refocus) {
+    if (!menuFor) return;
+    const {trigger} = menuFor;
+    menuFor = null;
+    $('menu').hidden = true;
+    trigger.setAttribute('aria-expanded', 'false');
+    if (refocus) trigger.focus();
+    if (held) render();
+  }
+
+  // ---- Dragging
+
+  function accepts(column, d) {
+    return Boolean(d) && stageOf(column) !== d.stage;
+  }
+
+  function endDrag() {
+    if (!dragging) return;
+    dragging.el.classList.remove('dragging');
+    dragging = null;
+    document.body.classList.remove('dragging');
+    for (const {section} of columnEls.values()) section.classList.remove('drop-ok', 'drop-over');
+    if (held) render();
+  }
+
+  function columnAt(target) {
+    const section = target instanceof Element ? target.closest('.column') : null;
+    return section ? {section, id: section.getAttribute('data-column')} : null;
+  }
+
+  // ---- Setting up
+
+  function buildColumns() {
+    const doneOpen = load(DONE_OPEN) === '1';
+    for (const col of COLUMNS) {
+      const section = attrs(el('section', 'column'), {'data-column': col.id, 'aria-labelledby': 'col-' + col.id});
+      const name = attrs(el('span', 'col-name', col.label), {id: 'col-' + col.id});
+      const count = el('span', 'col-count');
+      const title = el('h2', 'col-title');
+      let toggle = null;
+      if (col.id === 'done') {
+        toggle = attrs(el('button', 'col-head'), {type: 'button', 'aria-expanded': String(doneOpen), 'aria-controls': 'cards-done'});
+        toggle.append(name, count, attrs(el('span', 'col-toggle', '▸'), {'aria-hidden': 'true'}));
+        title.append(toggle);
+        section.classList.toggle('collapsed', !doneOpen);
+        toggle.addEventListener('click', () => {
+          const open = section.classList.toggle('collapsed') === false;
+          toggle.setAttribute('aria-expanded', String(open));
+          save(DONE_OPEN, open ? '1' : '0');
+        });
+      } else {
+        title.classList.add('col-head');
+        title.append(name, count);
+      }
+      if (col.hint) title.setAttribute('title', col.hint);
+      const cards = attrs(el('div', 'col-cards'), {id: 'cards-' + col.id});
+      section.append(title, cards);
+      $('board').append(section);
+      columnEls.set(col.id, {section, cards, count, toggle});
+    }
+  }
+
+  function wire() {
+    const boardEl = $('board');
+
+    boardEl.addEventListener('click', e => {
+      if (!(e.target instanceof Element)) return;
+      const card = e.target.closest('.card');
+      if (!card) return;
+      const k = card.getAttribute('data-key');
+      const btn = e.target.closest('button[data-act]');
+      if (btn) {
+        const c = cardByKey(k);
+        const act = btn.getAttribute('data-act');
+        if (!c) return;
+        if (act === 'move') {
+          if (menuFor && menuFor.trigger === btn) closeMenu(true);
+          else openMenu(btn, k);
+        } else if (act === 'priority') setPriority(c, !c.priority);
+        else if (act === 'focus') showInHerdr(c);
+        else if (act === 'open') openView(k);
+        else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
+        return;
+      }
+      if (e.target.closest('a, button') || String(window.getSelection())) return;
+      openView(k);
+    });
+
+    boardEl.addEventListener('dragstart', e => {
+      const card = e.target instanceof Element ? e.target.closest('.card') : null;
+      // A link dragged out of a card is a link, not the card.
+      if (!card || e.target.closest('a')) return;
+      const c = cardByKey(card.getAttribute('data-key'));
+      if (!c) {
+        e.preventDefault();
+        return;
+      }
+      closeMenu(false);
+      dragging = {key: keyOf(c), stage: c.stage, el: card};
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', c.title);
+      document.body.classList.add('dragging');
+      for (const [id, {section}] of columnEls) section.classList.toggle('drop-ok', accepts(id, dragging));
+      requestAnimationFrame(() => {
+        if (dragging && dragging.el === card) card.classList.add('dragging');
+      });
+    });
+    boardEl.addEventListener('dragover', e => {
+      const at = columnAt(e.target);
+      if (!at || !accepts(at.id, dragging)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      for (const {section} of columnEls.values()) section.classList.toggle('drop-over', section === at.section);
+    });
+    boardEl.addEventListener('dragleave', e => {
+      const at = columnAt(e.target);
+      if (at && !at.section.contains(e.relatedTarget)) at.section.classList.remove('drop-over');
+    });
+    boardEl.addEventListener('drop', e => {
+      const at = columnAt(e.target);
+      const d = dragging;
+      if (!at || !accepts(at.id, d)) return;
+      e.preventDefault();
+      endDrag();
+      moveTo(d.key, stageOf(at.id));
+    });
+    document.addEventListener('dragend', endDrag);
+
+    const menu = $('menu');
+    menu.addEventListener('click', e => {
+      const item = e.target instanceof Element ? e.target.closest('.menu-item') : null;
+      if (!item || item.getAttribute('aria-disabled') === 'true' || !menuFor) return;
+      const k = menuFor.key;
+      closeMenu(true);
+      moveTo(k, item.getAttribute('data-stage'));
+    });
+    menu.addEventListener('keydown', e => {
+      const items = [...menu.querySelectorAll('.menu-item:not([aria-disabled])')];
+      const i = items.indexOf(document.activeElement);
+      let next = -1;
+      if (e.key === 'ArrowDown') next = (i + 1) % items.length;
+      else if (e.key === 'ArrowUp') next = (i - 1 + items.length) % items.length;
+      else if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = items.length - 1;
+      else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeMenu(true);
+      } else if (e.key === 'Tab') closeMenu(false);
+      if (next >= 0 && items[next]) {
+        e.preventDefault();
+        items[next].focus();
+      }
+    });
+    document.addEventListener(
+      'pointerdown',
+      e => {
+        if (menuFor && !menu.contains(e.target) && e.target !== menuFor.trigger) closeMenu(false);
+      },
+      true,
+    );
+    window.addEventListener('resize', () => closeMenu(false));
+    document.addEventListener(
+      'scroll',
+      e => {
+        if (menuFor && !menu.contains(e.target)) closeMenu(false);
+      },
+      true,
+    );
+
+    $('sessions').addEventListener('click', e => {
+      const b = e.target instanceof Element ? e.target.closest('button') : null;
+      if (!b) return;
+      save(SESSION, b.getAttribute('data-key'));
+      render();
+    });
+    $('spaces').addEventListener('click', e => {
+      const b = e.target instanceof Element ? e.target.closest('button') : null;
+      if (b) chooseSpace(b.getAttribute('data-key') === '*' ? '' : b.getAttribute('data-key'));
+    });
+
+    const reason = $('reason');
+    $('reason-form').addEventListener('submit', e => {
+      e.preventDefault();
+      const r = reasonFor;
+      reasonFor = null;
+      reason.close();
+      const c = r && cardByKey(r.key);
+      if (c) changeStage(c, r.stage, $('reason-text').value.trim());
+    });
+    $('reason-cancel').addEventListener('click', () => reason.close());
+    reason.addEventListener('close', () => {
+      reasonFor = null;
+    });
+    reason.addEventListener('click', e => {
+      if (e.target === reason) reason.close();
+    });
+
+    $('detail-body').addEventListener('click', e => {
+      const btn = e.target instanceof Element ? e.target.closest('button[data-act]') : null;
+      const c = btn && detailKey ? cardByKey(detailKey) : null;
+      if (!c) return;
+      const act = btn.getAttribute('data-act');
+      if (act === 'move') {
+        if (menuFor && menuFor.trigger === btn) closeMenu(true);
+        else openMenu(btn, detailKey);
+      } else if (act === 'priority') setPriority(c, !c.priority);
+      else if (act === 'focus') showInHerdr(c);
+      else if (act === 'unlink') unlink(c, btn.getAttribute('data-url'));
+      else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
+      else if (act === 'copypath') copyPath(c, btn.getAttribute('data-url'));
+    });
+    $('view-back').addEventListener('click', closeView);
+    // Esc goes back to the board, unless it's for a terminal, the menu or a
+    // dialog.
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !viewing || e.defaultPrevented || menuFor || document.querySelector('dialog[open]')) return;
+      if (e.target instanceof Element && e.target.closest('.term-pane')) return;
+      e.preventDefault();
+      closeView();
+    });
+    window.addEventListener('popstate', route);
+    window.addEventListener('hashchange', route);
+
+    // Another tab signed in, perhaps with a new token. Storage holds its
+    // key already, so it's told apart by the key the stream signed in with.
+    // A tab signed out tries it whatever it is, and opens the view its
+    // address asks for.
+    window.addEventListener('storage', e => {
+      if (e.key !== KEY || !e.newValue) return;
+      memory.set(KEY, e.newValue);
+      if (signedOut || e.newValue !== streamKey) {
+        connect();
+        route();
+      }
+    });
+    window.addEventListener('online', () => {
+      if (retryTimer) connect();
+    });
+  }
+
+  buildColumns();
+  wire();
+  setInterval(tickAges, 30e3);
+  signIn().then(() => {
+    connect();
+    route();
+  });
+})();
