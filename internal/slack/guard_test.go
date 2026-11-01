@@ -632,7 +632,7 @@ func TestGuardSettingsFailClosed(t *testing.T) {
 func TestLooksSecret(t *testing.T) {
 	for name, want := range map[string]bool{
 		".env": true, ".env.local": true, "server.key": true, "id_rsa": true, ".secrets.json": true, "SERVER.KEY": true, "id_r\u017fa": true, "server.\u212aey": true,
-		"report.html": false, "chart.png": false,
+		"report.html": false, "chart.png": false, "o\ufb03ce.html": false, "Stra\u00dfe.html": false,
 	} {
 		if got := LooksSecret(name); got != want {
 			t.Errorf("LooksSecret(%q) = %v, want %v", name, got, want)
@@ -641,7 +641,7 @@ func TestLooksSecret(t *testing.T) {
 }
 
 func TestSecretPathFoldsCase(t *testing.T) {
-	for _, p := range []string{".\u017fsh/config", ".ssh/id_r\u017fa", ".\u212auBE/config"} {
+	for _, p := range []string{".\u017fsh/config", ".\u00dfh/github", ".\u1e9eh/github", ".ssh/id_r\u017fa", ".\u212auBE/config"} {
 		if !secretPath("/work", p) {
 			t.Errorf("secretPath(%q) = false, want true", p)
 		}

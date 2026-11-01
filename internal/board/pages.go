@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -80,6 +81,8 @@ func (p *pages) href(page string) string {
 // lone reports whether a page in dir, with symlinks resolved, gets only
 // itself served: dir is / or the home folder, holds the home folder, or is or
 // is in a folder of keys under home, as these hold far more than the page.
+// Folders are told apart by identity, as a file system may not tell cases
+// apart in a path.
 func lone(dir string) bool {
 	home, err := os.UserHomeDir()
 	if err == nil {
@@ -88,17 +91,33 @@ func lone(dir string) bool {
 	if err != nil {
 		return true
 	}
-	if dir == home || strings.HasPrefix(home, strings.TrimSuffix(dir, sep)+sep) {
+	hi, errH := os.Stat(home)
+	di, errD := os.Stat(dir)
+	if errH != nil || errD != nil || os.SameFile(di, hi) {
 		return true
 	}
-	if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
-		for _, part := range strings.Split(rel, sep) {
-			if slack.LooksSecretDir(part) {
-				return true
-			}
+	// Home's ancestors, up to /.
+	for p := filepath.Dir(home); ; p = filepath.Dir(p) {
+		if pi, err := os.Stat(p); err != nil || os.SameFile(pi, di) {
+			return true
+		}
+		if p == filepath.Dir(p) {
+			break
 		}
 	}
-	return false
+	// dir's names below home, if it's below home.
+	var below []string
+	for p := dir; ; p = filepath.Dir(p) {
+		if pi, err := os.Stat(p); err != nil {
+			return true
+		} else if os.SameFile(pi, hi) {
+			return slices.ContainsFunc(below, slack.LooksSecretDir)
+		}
+		below = append(below, filepath.Base(p))
+		if p == filepath.Dir(p) {
+			return false
+		}
+	}
 }
 
 const sep = string(filepath.Separator)

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -47,6 +48,11 @@ func startPages(t *testing.T) *pageFixture {
 		".ssh/config":                  "Host acme",
 		"acme/report/id_r\u017fa":      "not a key",
 		"acme/report/.hidden.html":     "<!doctype html>",
+		"acme/report/id_rsa.html":      "<!doctype html>",
+		"acme/report/o\ufb03ce.html":   "<!doctype html><title>Office</title>",
+		"acme/report/Stra\u00dfe.html": "<!doctype html><title>Street</title>",
+		".\u00dfh/x.html":              "<!doctype html>",
+		".\u00dfh/config":              "Host acme",
 	} {
 		p := filepath.Join(home, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -62,6 +68,14 @@ func startPages(t *testing.T) *pageFixture {
 	if err := os.Symlink(filepath.Join(home, "outside.txt"), filepath.Join(dir, "link-out")); err != nil {
 		t.Fatal(err)
 	}
+	big, err := os.Create(filepath.Join(dir, "big.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := big.Truncate(maxPage + 1); err != nil {
+		t.Fatal(err)
+	}
+	big.Close()
 	f := &pageFixture{home: home, report: filepath.Join(dir, "report.html"), top: filepath.Join(home, "top.html")}
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
 		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{
@@ -69,6 +83,11 @@ func startPages(t *testing.T) *pageFixture {
 			{URL: task.FileURL(filepath.Join(home, "second.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(home, ".ssh", "keys.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(dir, ".hidden.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(dir, "id_rsa.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(dir, "big.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(dir, "o\ufb03ce.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(dir, "Stra\u00dfe.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(home, ".\u00dfh", "x.html")), Added: now},
 		}})
 	f.ts = startServer(t, Config{Sessions: running(work)}, nil)
 	f.ts.shows(t, "work", "w1:t1")
@@ -262,6 +281,11 @@ func TestLone(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
+	for _, d := range []string{".aws", ".kube/x", "acme/report"} {
+		if err := os.MkdirAll(filepath.Join(home, filepath.FromSlash(d)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for dir, want := range map[string]bool{
 		"/": true, filepath.Dir(home): true, home: true,
 		filepath.Join(home, ".aws"): true, filepath.Join(home, ".kube", "x"): true,
@@ -303,11 +327,69 @@ func TestPageRefusesAFIFO(t *testing.T) {
 
 func TestOpenRefusesWhatThePageRouteRefuses(t *testing.T) {
 	f := startPages(t)
-	hidden := filepath.Join(filepath.Dir(f.report), ".hidden.html")
-	if code, msg := f.ts.openLink(t, "w1:t1", task.FileURL(hidden)); code != http.StatusBadRequest || msg == "" {
-		t.Errorf("a hidden page: %d %q, want 400 with a message", code, msg)
+	dir := filepath.Dir(f.report)
+	for _, name := range []string{".hidden.html", "id_rsa.html", "big.html"} {
+		if code, msg := f.ts.openLink(t, "w1:t1", task.FileURL(filepath.Join(dir, name))); code != http.StatusBadRequest || msg == "" {
+			t.Errorf("%s: %d %q, want 400 with a message", name, code, msg)
+		}
 	}
 	if dirs := len(f.ts.pages.dirs); dirs != 0 {
 		t.Errorf("a refused page was given an address")
+	}
+}
+
+// Names that only look like secrets, to a file system that folds case, are
+// still served.
+func TestPageServesLigatureNames(t *testing.T) {
+	f := startPages(t)
+	dir := filepath.Dir(f.report)
+	for _, name := range []string{"o\ufb03ce.html", "Stra\u00dfe.html"} {
+		if resp, _ := f.page(t, f.href(t, filepath.Join(dir, name))); resp.StatusCode != 200 {
+			t.Errorf("%s: %d, want 200", name, resp.StatusCode)
+		}
+	}
+}
+
+func TestPageInFoldedKeyFolderServesOnlyItself(t *testing.T) {
+	f := startPages(t)
+	href := f.href(t, filepath.Join(f.home, ".\u00dfh", "x.html"))
+	if resp, _ := f.page(t, pageHref.FindString(href)+"config"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a file beside it: %d, want 404", resp.StatusCode)
+	}
+}
+
+// A path spelled in another case is the same folder to the file system, and
+// is judged as it.
+func TestLoneByIdentity(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	upper := strings.ToUpper(home)
+	if _, err := os.Stat(upper); err != nil {
+		t.Skip("the file system tells cases apart")
+	}
+	for _, d := range []string{".ssh", "acme"} {
+		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for dir, want := range map[string]bool{
+		upper: true, filepath.Dir(upper): true,
+		filepath.Join(upper, ".SSH"): true, filepath.Join(upper, ".ssh"): true,
+		filepath.Join(upper, "ACME"): false,
+	} {
+		if got := lone(dir); got != want {
+			t.Errorf("lone(%s) = %v, want %v", dir, got, want)
+		}
+	}
+}
+
+func TestLooksLikeAFolderOfKeysIsFolded(t *testing.T) {
+	for _, n := range []string{".\u00dfh", ".\u1e9eh"} {
+		if !slack.LooksSecretDir(n) {
+			t.Errorf("LooksSecretDir(%q) = false", n)
+		}
 	}
 }

@@ -291,9 +291,14 @@ func secretParts(parts []string) bool {
 	return false
 }
 
+// fullFolds are the full case foldings (CaseFolding.txt, status F) that give
+// ASCII. Secret names are ASCII, and the other full folds give non-ASCII.
+var fullFolds = strings.NewReplacer("ß", "ss", "ẞ", "ss", "ﬀ", "ff", "ﬁ", "fi", "ﬂ", "fl", "ﬃ", "ffi", "ﬄ", "ffl", "ﬅ", "st", "ﬆ", "st")
+
 // fold makes a name the same for every case a file system may treat as
-// equal: each rune becomes the lower case of the first in its fold orbit, so
-// the long s and the Kelvin sign match s and k, as APFS matches them.
+// equal: ß and the ligatures become their letters, and each rune becomes the
+// lower case of the first in its fold orbit, so the long s and the Kelvin
+// sign match s and k, as APFS matches them.
 func fold(name string) string {
 	return strings.Map(func(r rune) rune {
 		m := r
@@ -301,7 +306,7 @@ func fold(name string) string {
 			m = min(m, f)
 		}
 		return unicode.ToLower(m)
-	}, name)
+	}, fullFolds.Replace(name))
 }
 
 // LooksSecretDir reports whether a folder name is one keys commonly are in:
