@@ -124,7 +124,7 @@ func termTab(t *testing.T) *fakeConn {
 		&task.Task{TabID: "w1:t2", Stage: task.Tool, Since: now})
 	work.panes = []herdr.Pane{
 		{ID: "w1:p1", TabID: "w1:t1", Agent: "claude", Title: "Fixing the login page", Scroll: herdr.Scroll{Rows: 10}},
-		{ID: "w1:p2", TabID: "w1:t1", Scroll: herdr.Scroll{Rows: 10}},
+		{ID: "w1:p2", TabID: "w1:t1", Label: "dev server", Scroll: herdr.Scroll{Rows: 10}},
 		{ID: "w1:p3", TabID: "w1:t1", Label: strip.Label, Scroll: herdr.Scroll{Rows: 6}},
 		{ID: "w1:p4", TabID: "w1:t2", Scroll: herdr.Scroll{Rows: 20}},
 	}
@@ -301,7 +301,7 @@ func TestStreamSendsLayoutThenScreens(t *testing.T) {
 	}
 	want := termLayout{Area: herdr.Rect{X: 26, Y: 1, Width: 80, Height: 20}, Panes: []termPane{
 		{Pane: "w1:p1", X: 26, Y: 1, Width: 42, Height: 12, Cols: 40, Rows: 10, Agent: "claude", Title: "Fixing the login page", Focused: true},
-		{Pane: "w1:p2", X: 68, Y: 1, Width: 38, Height: 12, Cols: 36, Rows: 10},
+		{Pane: "w1:p2", X: 68, Y: 1, Width: 38, Height: 12, Cols: 36, Rows: 10, Name: "dev server"},
 	}}
 	if !reflect.DeepEqual(l, want) {
 		t.Errorf("layout =\n%+v\nwant\n%+v", l, want)
@@ -415,7 +415,7 @@ func TestZoomedTabShowsTheFocusedPane(t *testing.T) {
 	l, screens := opening(t, events)
 	// herdr gives the panes' unzoomed rects, so the pane fills the area.
 	want := termLayout{Zoomed: true, Area: herdr.Rect{X: 26, Y: 1, Width: 80, Height: 20}, Panes: []termPane{
-		{Pane: "w1:p2", X: 26, Y: 1, Width: 80, Height: 20, Cols: 78, Rows: 10, Focused: true},
+		{Pane: "w1:p2", X: 26, Y: 1, Width: 80, Height: 20, Cols: 78, Rows: 10, Name: "dev server", Focused: true},
 	}}
 	if !reflect.DeepEqual(l, want) {
 		t.Errorf("layout =\n%+v\nwant\n%+v", l, want)

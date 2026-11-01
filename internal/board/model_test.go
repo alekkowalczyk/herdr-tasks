@@ -115,7 +115,7 @@ func TestBuildAgentsSkipStripAndStoppedAgents(t *testing.T) {
 		return &herdr.AgentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: id}
 	}
 	panes := []herdr.Pane{
-		{ID: "w1:p1", TabID: "w1:t1", Agent: "claude", AgentStatus: "working", Session: claude("11111111-aaaa")},
+		{ID: "w1:p1", TabID: "w1:t1", Label: "Board model", Agent: "claude", AgentStatus: "working", Session: claude("11111111-aaaa")},
 		{ID: "w1:p2", TabID: "w1:t1", Label: "Task strip", Agent: "claude", Session: claude("22222222-bbbb")},
 		// Claude exited: herdr keeps the session but clears the agent.
 		{ID: "w1:p3", TabID: "w1:t1", AgentStatus: "unknown", Session: claude("33333333-cccc")},
@@ -147,7 +147,7 @@ func TestBuildAgentsSkipStripAndStoppedAgents(t *testing.T) {
 		t.Fatalf("summary asked for %v, want %v", asked, want)
 	}
 	want := []Agent{
-		{Pane: "w1:p1", Agent: "claude", Status: "working", Title: "Plan the board", Recap: "You're adding the board model.",
+		{Pane: "w1:p1", Name: "Board model", Agent: "claude", Status: "working", Title: "Plan the board", Recap: "You're adding the board model.",
 			RecapAt: &recapAt, RecapStale: true, LastPrompt: "add the tests", LastReply: "Done."},
 		{Pane: "w1:p4", Agent: "codex", Status: "idle", Title: "Fix the build"},
 		{Pane: "w1:p5", Agent: "claude", Status: "idle", Title: "Reading files", Recap: "Old recap."},
@@ -307,7 +307,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		Priority: true, Note: "Keep it small.", Log: []task.Entry{{Who: "claude", At: now, Text: "started"}},
 		Links: []task.Link{{URL: "https://linear.app/acme/issue/ABC-12", By: "claude", Added: now}}}
 	state := &store.State{Tasks: map[string]*task.Task{"w1:t1": tk}}
-	panes := []herdr.Pane{{ID: "w1:p1", TabID: "w1:t1", Agent: "claude", AgentStatus: "working",
+	panes := []herdr.Pane{{ID: "w1:p1", TabID: "w1:t1", Label: "Planning", Agent: "claude", AgentStatus: "working",
 		Session: &herdr.AgentSession{Agent: "claude", Kind: "id", Value: "11111111-aaaa"}}}
 	summary := func(herdr.Pane) (claudelog.Summary, bool) {
 		return claudelog.Summary{Title: "Plan", Recap: "Recap.", RecapAt: now, RecapStale: true, LastPrompt: "go", LastReply: "ok"}, true
@@ -338,7 +338,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		{"card", card, "agentStatus agents column links log note priority reason session since space spaceLabel stage tab title"},
 		{"link", link, "by kind label linear url"},
 		{"issue", link["linear"], "assignee color id state stateType title url"},
-		{"agent", card["agents"].([]any)[0], "agent lastPrompt lastReply pane recap recapAt recapStale status title"},
+		{"agent", card["agents"].([]any)[0], "agent lastPrompt lastReply name pane recap recapAt recapStale status title"},
 		{"log entry", card["log"].([]any)[0], "at text who"},
 	}
 	for _, c := range checks {

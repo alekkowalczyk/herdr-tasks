@@ -17,6 +17,7 @@
   const KEY = 'herdr-tasks-board-key';
   const SPACES = 'herdr-tasks-board-spaces';
   const DONE_OPEN = 'herdr-tasks-board-done-open';
+  const PRIO_ONLY = 'herdr-tasks-board-priority-only';
 
   const COLUMNS = [
     {id: 'asking', label: 'Asking', hint: 'The agent stopped mid-work, waiting for your answer'},
@@ -87,6 +88,8 @@
     }
   }
   const key = () => load(KEY) || '';
+  // prioOnly is whether the board shows only the priority tasks.
+  const prioOnly = () => load(PRIO_ONLY) === '1';
 
   let board = null; // the latest board the server sent
   let list = null; // at /, the latest list of sessions
@@ -842,7 +845,8 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['spaces', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      for (const id of ['spaces', 'prio-only', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      hidePop();
       shareEls.box.hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
@@ -862,13 +866,22 @@
     $('stale').hidden = !s || !s.stale;
     if (!s) {
       $('spaces').hidden = true;
+      $('prio-only').hidden = true;
+      hidePop();
       showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
-      const space = renderSpaces(s, cards);
-      renderColumns(space ? cards.filter(c => c.space === space) : cards);
+      const shown = prioOnly() ? cards.filter(c => c.priority) : cards;
+      const toggle = $('prio-only');
+      toggle.hidden = false;
+      toggle.setAttribute('aria-pressed', String(prioOnly()));
+      const space = renderSpaces(s, cards, shown);
+      renderColumns(space ? shown.filter(c => c.space === space) : shown);
       $('board').hidden = false;
       $('empty').hidden = true;
+      pop.spaces = s.spaces;
+      pop.cards = shown;
+      if (pop.space) fillPop();
     }
     renderDetail();
   }
@@ -1021,12 +1034,12 @@
   }
 
   // renderSpaces shows the space filter, and returns the space chosen, or
-  // '' for all of them.
-  function renderSpaces(s, cards) {
+  // '' for all of them. Each space of cards has a button, with how many of
+  // the cards shown in it are open.
+  function renderSpaces(s, cards, shown) {
     const open = new Map();
-    const used = new Set();
-    for (const c of cards) {
-      used.add(c.space);
+    const used = new Set(cards.map(c => c.space));
+    for (const c of shown) {
       if (c.column !== 'done') open.set(c.space, (open.get(c.space) || 0) + 1);
     }
     let chosen = spaceChoices()[s.name] || '';
@@ -1047,6 +1060,64 @@
       },
     );
     return chosen;
+  }
+
+  // ---- The tasks of a space, shown while its button is hovered or focused
+
+  // pop is what the list shows: the space, its button, and the spaces and
+  // cards the board shows now.
+  const pop = {space: null, anchor: null, timer: 0, spaces: [], cards: []};
+
+  // order puts a space's open tasks as the list shows them: priority first,
+  // then by column, newest first.
+  const columnIndex = c => COLUMNS.findIndex(x => x.id === c.column);
+  const popOrder = (a, b) => b.priority - a.priority || columnIndex(a) - columnIndex(b) || Date.parse(b.since) - Date.parse(a.since);
+
+  function showPop(b) {
+    clearTimeout(pop.timer);
+    const id = b.getAttribute('data-key');
+    if (id === '*') return hidePop();
+    pop.space = id;
+    pop.anchor = b;
+    fillPop();
+  }
+
+  function hidePop() {
+    clearTimeout(pop.timer);
+    pop.space = null;
+    pop.anchor = null;
+    $('space-pop').hidden = true;
+  }
+
+  // hidePopSoon gives the pointer time to cross from the button to the list.
+  function hidePopSoon() {
+    clearTimeout(pop.timer);
+    pop.timer = setTimeout(hidePop, 200);
+  }
+
+  function fillPop() {
+    const box = $('space-pop');
+    const space = pop.spaces.find(x => x.id === pop.space);
+    if (!space || !pop.anchor.isConnected || viewing) return hidePop();
+    const tasks = pop.cards.filter(c => c.space === pop.space && c.column !== 'done').sort(popOrder);
+    const n = tasks.length;
+    let count = n + ' open';
+    if (prioOnly()) count = n ? n + (n === 1 ? ' priority task' : ' priority tasks') : 'no priority tasks';
+    else if (!n) count = 'nothing open';
+    const rows = tasks.map(c => {
+      const row = attrs(el('button', 'pop-row'), {type: 'button', 'data-key': keyOf(c)});
+      if (c.priority) row.append(attrs(el('span', 'prio', '!'), {role: 'img', 'aria-label': 'Priority', title: 'Priority'}));
+      else row.append(el('span', 'pop-gap'));
+      const column = COLUMNS[columnIndex(c)];
+      row.append(attrs(el('span', 'pop-dot'), {'data-column': c.column}), el('span', 'pop-title', c.title), el('span', 'pop-col', column ? column.label : ''));
+      return row;
+    });
+    box.replaceChildren(el('div', 'pop-head', space.label + ' · ' + count), ...rows);
+    box.setAttribute('aria-label', 'Tasks in ' + space.label);
+    box.hidden = false;
+    const r = pop.anchor.getBoundingClientRect();
+    box.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 336)) + 'px';
+    box.style.top = r.bottom + 6 + 'px';
   }
 
   function chooseSpace(id) {
@@ -1177,10 +1248,16 @@
     return attrs(el('span', 'glyph ' + g.cls, g.ch), {role: 'img', 'aria-label': g.word, title: g.word});
   }
 
-  // agentHead is the agent's title, and when its recap was written.
+  // agentName is what heads an agent: its pane's name in herdr, or else its
+  // title. agentSub is the title under the pane's name, when it has one
+  // that says more.
+  const agentName = a => a.name || a.title || a.agent;
+  const agentSub = a => (a.name && a.title && a.title !== a.name ? el('p', 'agent-sub', a.title) : null);
+
+  // agentHead is the agent's name, and when its recap was written.
   function agentHead(a) {
     const head = el('div', 'agent-head');
-    head.append(el('span', 'agent-title', a.title || a.agent));
+    head.append(el('span', 'agent-title', agentName(a)));
     if (a.recap && (a.recapAt || a.recapStale)) {
       const when = el('span', 'agent-when');
       if (a.recapAt) when.append(ageEl(a.recapAt, 'Recap written'));
@@ -1194,6 +1271,8 @@
     const li = el('li', 'agent');
     const body = el('div', 'agent-body');
     body.append(agentHead(a));
+    const sub = agentSub(a);
+    if (sub) body.append(sub);
     if (a.recap) body.append(el('p', a.recapStale ? 'recap stale' : 'recap', a.recap));
     if (a.lastPrompt && (!a.recap || a.recapStale)) body.append(el('p', 'prompt', a.lastPrompt));
     li.append(glyphEl(a), body);
@@ -1437,8 +1516,10 @@
   function agentDetail(a) {
     const li = el('li', 'd-agent');
     const head = el('div', 'agent-head');
-    head.append(glyphEl(a), el('span', 'agent-title', a.title || a.agent), el('span', 'agent-when', glyph(a.status).word));
+    head.append(glyphEl(a), el('span', 'agent-title', agentName(a)), el('span', 'agent-when', glyph(a.status).word));
     li.append(head);
+    const sub = agentSub(a);
+    if (sub) li.append(sub);
     if (a.recap) {
       const label = el('div', 'd-label', 'Recap');
       if (a.recapAt) label.append(document.createTextNode(' · ' + clock(a.recapAt)));
@@ -1837,6 +1918,44 @@
     $('spaces').addEventListener('click', e => {
       const b = e.target instanceof Element ? e.target.closest('button') : null;
       if (b) chooseSpace(b.getAttribute('data-key') === '*' ? '' : b.getAttribute('data-key'));
+    });
+
+    // A space's tasks show while its button is hovered or focused, and while
+    // the pointer or focus is in the list. Esc closes it.
+    const spaceBox = $('spaces');
+    const popBox = $('space-pop');
+    const spaceButtonOf = e => (e.target instanceof Element ? e.target.closest('button') : null);
+    const inPop = t => t instanceof Element && (spaceBox.contains(t) || popBox.contains(t));
+    for (const type of ['mouseover', 'focusin']) {
+      spaceBox.addEventListener(type, e => {
+        const b = spaceButtonOf(e);
+        if (b) showPop(b);
+      });
+      popBox.addEventListener(type, () => clearTimeout(pop.timer));
+    }
+    for (const box of [spaceBox, popBox]) {
+      for (const type of ['mouseout', 'focusout']) {
+        box.addEventListener(type, e => {
+          if (pop.space && !inPop(e.relatedTarget)) hidePopSoon();
+        });
+      }
+    }
+    popBox.addEventListener('click', e => {
+      const row = e.target instanceof Element ? e.target.closest('.pop-row') : null;
+      if (!row) return;
+      hidePop();
+      openView(row.getAttribute('data-key'));
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || !pop.space) return;
+      const back = popBox.contains(document.activeElement) ? pop.anchor : null;
+      hidePop();
+      if (back) back.focus();
+    });
+
+    $('prio-only').addEventListener('click', () => {
+      save(PRIO_ONLY, prioOnly() ? '' : '1');
+      render();
     });
 
     const reason = $('reason');

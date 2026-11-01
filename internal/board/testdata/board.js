@@ -454,8 +454,30 @@ function page(stored, path, hash, search, tailnet) {
   pg.item = act => pg.$('menu').querySelector('[data-act="' + act + '"]');
   pg.toasts = () => pg.$('toasts').children.map(t => t.textContent);
   pg.query = sel => document.querySelector(sel);
+  pg.storage = storage;
   return pg;
 }
+
+// spaceButton is the workspace filter at the top whose label starts with label.
+const spaceButton = (pg, label) =>
+  pg
+    .$('spaces')
+    .querySelectorAll('button')
+    .find(b => b.textContent.startsWith(label));
+
+// popRows is what the workspace's task list shows: each task's title and column.
+const popRows = pg =>
+  pg
+    .$('space-pop')
+    .querySelectorAll('.pop-row')
+    .map(r => r.querySelector('.pop-title').textContent + ' · ' + r.querySelector('.pop-col').textContent);
+
+// agentLines is each agent's heading on el, and the line under it, if any.
+const agentLines = (el, sel) =>
+  el.querySelectorAll(sel).map(a => {
+    const sub = a.querySelector('.agent-sub');
+    return sub ? [a.querySelector('.agent-title').textContent, sub.textContent] : [a.querySelector('.agent-title').textContent];
+  });
 
 // onTailnet is a page on the board's tailnet address, signed in as its
 // owner, with a card that links to localhost:4100, and the board shared
@@ -1267,6 +1289,128 @@ const tests = {
     assert.equal(pg.posts.length, 0, 'asked the board anyway');
     assert.equal(pg.toasts().length, 1);
     assert.match(pg.toasts()[0], /blocked/);
+  },
+
+  // An agent's pane shows its name in herdr, with the agent's title under
+  // it; a pane without a name, or named as its title, shows the title alone,
+  // as before. The task's view shows the same.
+  async 'a card shows the name of each agent pane'() {
+    const pg = page('k1');
+    await settle();
+    const agents = [
+      {pane: 'w1:p1', agent: 'claude', status: 'done', name: 'Card audit', title: 'Payments platform audit', recap: 'The plan.'},
+      {pane: 'w1:p2', agent: 'claude', status: 'idle', name: 'Login', title: 'Login'},
+      {pane: 'w1:p3', agent: 'codex', status: 'idle', title: 'Fix the build'},
+      {pane: 'w1:p4', agent: 'claude', status: 'idle', name: 'Scratch', title: ''},
+    ];
+    pg.send(board(card({agents})));
+    await settle();
+    const want = [['Card audit', 'Payments platform audit'], ['Login'], ['Fix the build'], ['Scratch']];
+    assert.deepEqual(agentLines(pg.$('board').querySelector('.card'), '.agent'), want);
+    pg.$('board').querySelector('.card').click();
+    assert.deepEqual(agentLines(pg.$('detail-body'), '.d-agent'), want);
+  },
+
+  // Hovering a workspace lists its open tasks: priority first, then by
+  // column, newest first, each with its column. Done tasks are left out,
+  // as from the count. The list follows new boards, goes when the pointer
+  // leaves, shows for keyboard focus too, and Esc closes it. A task in it
+  // opens its view.
+  async 'hovering a workspace lists its open tasks'() {
+    const pg = page('k1');
+    await settle();
+    const billing = more => card(Object.assign({space: 'w1', spaceLabel: 'billing'}, more));
+    const cards = [
+      billing({tab: 'w1:t1', title: 'Older', since: '2026-10-30T09:00:00Z'}),
+      billing({tab: 'w1:t2', title: 'Newer', since: '2026-10-31T09:00:00Z'}),
+      billing({tab: 'w1:t3', title: 'Asks', column: 'asking', agentStatus: 'blocked'}),
+      billing({tab: 'w1:t4', title: 'Urgent', column: 'review', stage: 'review', priority: true}),
+      billing({tab: 'w1:t5', title: 'Shipped', column: 'done', stage: 'done'}),
+      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
+    ];
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    const pop = pg.$('space-pop');
+    spaceButton(pg, 'All').dispatch('mouseover');
+    assert.equal(pop.hidden, true, 'All has a list');
+    spaceButton(pg, 'billing').dispatch('mouseover');
+    assert.equal(pop.hidden, false);
+    assert.equal(pop.querySelector('.pop-head').textContent, 'billing · 4 open');
+    assert.deepEqual(popRows(pg), ['Urgent · In review', 'Asks · Asking', 'Newer · Your turn', 'Older · Your turn']);
+    assert.equal(pop.querySelectorAll('.pop-row')[0].querySelectorAll('.prio').length, 1);
+    assert.equal(pop.querySelectorAll('.pop-row')[1].querySelectorAll('.prio').length, 0);
+
+    pg.send(spaced([cards[0], cards[1], billing({tab: 'w1:t3', title: 'Asks', column: 'done', stage: 'done'}), cards[3], cards[5]], SPACES));
+    await settle();
+    assert.deepEqual(popRows(pg), ['Urgent · In review', 'Newer · Your turn', 'Older · Your turn'], 'the list kept the old board');
+
+    // Moving onto the list keeps it; leaving it closes it.
+    spaceButton(pg, 'billing').dispatch('mouseout', {relatedTarget: pop});
+    pop.dispatch('mouseover');
+    pg.runTimers(1000);
+    assert.equal(pop.hidden, false, 'closed on the way to it');
+    pop.dispatch('mouseout', {relatedTarget: null});
+    pg.runTimers(1000);
+    assert.equal(pop.hidden, true);
+
+    spaceButton(pg, 'infra').dispatch('focusin');
+    assert.deepEqual(popRows(pg), ['Infra work · Your turn']);
+    spaceButton(pg, 'infra').dispatch('keydown', {key: 'Escape'});
+    assert.equal(pop.hidden, true);
+
+    spaceButton(pg, 'billing').dispatch('mouseover');
+    pop.querySelectorAll('.pop-row')[1].click();
+    assert.equal(pg.location.hash, '#tab=w1%3At2');
+    assert.equal(pop.hidden, true, 'the list stays over the view');
+  },
+
+  // Priority only shows the priority tasks alone. The workspaces stay, but
+  // count those, and their lists show those. The browser keeps the choice,
+  // and a page opened with it starts with it.
+  async 'Priority only shows only priority tasks'() {
+    const PRIO = 'herdr-tasks-board-priority-only';
+    const cards = [
+      card({tab: 'w1:t1', title: 'Urgent fix', space: 'w1', spaceLabel: 'billing', priority: true}),
+      card({tab: 'w1:t2', title: 'Later', space: 'w1', spaceLabel: 'billing'}),
+      card({tab: 'w2:t1', title: 'Infra work', space: 'w2', spaceLabel: 'infra'}),
+    ];
+    const titles = pg => pg.$('board').querySelectorAll('.card').map(c => c.querySelector('.card-title').textContent).sort();
+    const spaces = pg => pg.$('spaces').querySelectorAll('button').map(b => b.textContent);
+
+    let pg = page('k1');
+    await settle();
+    const toggle = pg.$('prio-only');
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.equal(toggle.hidden, false);
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+    assert.deepEqual(titles(pg), ['Infra work', 'Later', 'Urgent fix']);
+    assert.deepEqual(spaces(pg), ['All', 'billing2', 'infra1']);
+
+    toggle.click();
+    assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(titles(pg), ['Urgent fix']);
+    assert.deepEqual(spaces(pg), ['All', 'billing1', 'infra']);
+    assert.equal(pg.storage.get(PRIO), '1');
+    spaceButton(pg, 'billing').dispatch('mouseover');
+    assert.equal(pg.$('space-pop').querySelector('.pop-head').textContent, 'billing · 1 priority task');
+    assert.deepEqual(popRows(pg), ['Urgent fix · Your turn']);
+    spaceButton(pg, 'infra').dispatch('mouseover');
+    assert.equal(pg.$('space-pop').querySelector('.pop-head').textContent, 'infra · no priority tasks');
+    assert.deepEqual(popRows(pg), []);
+
+    toggle.click();
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false');
+    assert.deepEqual(titles(pg), ['Infra work', 'Later', 'Urgent fix']);
+    assert.equal(pg.storage.get(PRIO), '');
+
+    pg = page('k1');
+    pg.storage.set(PRIO, '1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.equal(pg.$('prio-only').getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(titles(pg), ['Urgent fix']);
   },
 };
 

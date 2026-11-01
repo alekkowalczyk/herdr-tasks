@@ -236,10 +236,12 @@
           panes.set(info.pane, p);
         }
         p.info = info;
+        p.name.textContent = info.name || '';
+        p.name.hidden = !info.name;
         p.agent.textContent = info.agent || '';
         p.agent.hidden = !info.agent;
-        p.title.textContent = info.title || (info.agent ? '' : 'Shell');
-        p.el.setAttribute('aria-label', [info.agent, info.title].filter(Boolean).join(': ') || 'Terminal');
+        p.title.textContent = info.title || (info.agent || info.name ? '' : 'Shell');
+        p.el.setAttribute('aria-label', [info.name, info.agent, info.title].filter(Boolean).join(': ') || 'Terminal');
       }
       setStatus(l.panes.length ? '' : 'This tab has no panes to show. It may have closed.');
       place();
@@ -263,11 +265,13 @@
       const p = {id: info.pane, info, pending: null};
       p.el = el('section', 'term-pane');
       const head = el('div', 'term-head');
+      // The pane's name in herdr leads, as in herdr's borders.
+      p.name = el('span', 'term-name');
       p.agent = el('span', 'term-agent');
       p.title = el('span', 'term-title');
       p.badge = el('span', 'term-badge', 'scrolled back in herdr');
       p.badge.hidden = true;
-      head.append(p.agent, p.title, p.badge);
+      head.append(p.name, p.agent, p.title, p.badge);
       p.head = head;
       p.screen = el('div', 'term-screen');
       p.el.append(head, p.screen);

@@ -57,6 +57,7 @@ type termPane struct {
 	Rows    int    `json:"rows"`
 	Agent   string `json:"agent"`
 	Title   string `json:"title"`
+	Name    string `json:"name,omitempty"` // the pane's name in herdr
 	Focused bool   `json:"focused"`
 }
 
@@ -438,7 +439,7 @@ func (p *poller) readLayout() (read, gone bool) {
 		ev.Panes = append(ev.Panes, termPane{
 			Pane: id, X: sp.rect.X, Y: sp.rect.Y, Width: sp.rect.Width, Height: sp.rect.Height,
 			Cols: max(g.cols, sc.widest), Rows: max(g.rows, sc.rows),
-			Agent: sp.pane.Agent, Title: sp.pane.Title, Focused: sp.focused,
+			Agent: sp.pane.Agent, Title: sp.pane.Title, Name: sp.pane.Label, Focused: sp.focused,
 		})
 	}
 	for id := range p.screens {

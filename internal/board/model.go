@@ -180,7 +180,9 @@ type LinkView struct {
 // Agent is an agent running in one of the task's panes. The recap and the
 // last prompt and reply come from Claude's session log.
 type Agent struct {
-	Pane       string     `json:"pane"`
+	Pane string `json:"pane"`
+	// The name the pane has in herdr, when it has one.
+	Name       string     `json:"name,omitempty"`
 	Agent      string     `json:"agent"`
 	Status     string     `json:"status"`
 	Title      string     `json:"title"`
@@ -293,7 +295,7 @@ func linkView(l task.Link, issues map[string]linear.Issue) LinkView {
 }
 
 func buildAgent(p herdr.Pane, summary func(herdr.Pane) (claudelog.Summary, bool)) Agent {
-	a := Agent{Pane: p.ID, Agent: p.Agent, Status: p.AgentStatus, Title: p.Title}
+	a := Agent{Pane: p.ID, Name: p.Label, Agent: p.Agent, Status: p.AgentStatus, Title: p.Title}
 	if summary == nil || p.Agent != "claude" || p.Session == nil || p.Session.Kind != "id" {
 		return a
 	}

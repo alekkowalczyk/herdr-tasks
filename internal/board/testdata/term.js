@@ -355,7 +355,42 @@ async function opened(platform = 'MacIntel') {
   return pg;
 }
 
+// heads is what each pane's header shows, in order, and its label.
+function heads(pg) {
+  const out = [];
+  const walk = e => {
+    for (const c of e.children) {
+      if (c.className === 'term-pane') {
+        const head = c.children.find(h => h.className === 'term-head');
+        out.push([...head.children.filter(h => !h.hidden && h.textContent).map(h => h.textContent), c.attrs['aria-label']]);
+      }
+      walk(c);
+    }
+  };
+  walk(pg.box);
+  return out;
+}
+
 const tests = {
+  // A pane's name in herdr heads its terminal, before the agent and its
+  // title, as in herdr's borders; a shell with a name isn't called Shell.
+  async "a pane's name heads its terminal"() {
+    const pg = page('MacIntel');
+    await settle();
+    pg.server.send('layout', {zoomed: false, area, panes: [{...A, name: 'Card audit'}, {...B, name: 'dev server'}]});
+    await settle();
+    assert.deepEqual(heads(pg), [
+      ['Card audit', 'claude', 'Fixing it', 'Card audit: claude: Fixing it'],
+      ['dev server', 'dev server'],
+    ]);
+    pg.server.send('layout', {zoomed: false, area, panes: [A, B]});
+    await settle();
+    assert.deepEqual(heads(pg), [
+      ['claude', 'Fixing it', 'claude: Fixing it'],
+      ['Shell', 'Terminal'],
+    ]);
+  },
+
   // Keys typed into a pane go in order, one request at a time, even when
   // the pane leaves the layout and comes back while they're on their way,
   // as when another pane is zoomed and then isn't.
