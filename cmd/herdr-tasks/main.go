@@ -24,6 +24,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
+	"github.com/alekkowalczyk/herdr-tasks/internal/tailnet"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
@@ -791,6 +792,11 @@ func (a *app) remove(purge bool) error {
 	if note != "" {
 		fmt.Println("herdr-tasks: note: " + note)
 	}
+	// Only the tailscale serve entries the board recorded, and only those
+	// still as recorded.
+	if err := board.Unshare(store.Dir(), tailscaleCLI); err != nil {
+		fmt.Println("herdr-tasks: note: couldn't take the board off your tailnet: " + err.Error())
+	}
 	sessions := herdr.RunningSessions()
 	// Stop hooks first, so they don't put markers back.
 	for _, c := range sessions {
@@ -848,6 +854,9 @@ func (a *app) remove(purge bool) error {
 
 // writeSettings is claudehook.WriteSettings; tests replace it.
 var writeSettings = claudehook.WriteSettings
+
+// tailscaleCLI is the tailscale command remove runs; tests replace it.
+var tailscaleCLI board.Tailscale = tailnet.CLI{}
 
 // claudeLinks adds the Claude links hook to Claude Code's settings when on,
 // running command, or takes it out, and says so. When the settings don't

@@ -30,6 +30,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
+	"github.com/alekkowalczyk/herdr-tasks/internal/tailnet"
 )
 
 // errShown is returned once you've been told what went wrong, so the command
@@ -112,8 +113,11 @@ func currentSession(getenv func(string) string) string {
 
 // run starts the board server if it isn't running, and signs the browser in
 // to it with a one-time code, at the board of session, or at the list of
-// sessions when it's "". With print it only prints the address. With
-// newToken it first replaces the token, which signs every browser out.
+// sessions when it's "". With print it only prints the address, and the
+// address on the tailnet while the board is shared there. When no browser
+// opens, as on a machine without a display, it shows the address on the
+// tailnet, or else the local one. With newToken it first replaces the
+// token, which signs every browser out.
 func (b boardCmd) run(print, newToken bool, session string) error {
 	if !b.opts.Board {
 		b.show("The task board is off. Add board = true to " + configFile() + ".")
@@ -135,13 +139,19 @@ func (b boardCmd) run(print, newToken bool, session string) error {
 	if err != nil {
 		return b.fail(err.Error())
 	}
-	url := login.Local
 	if print {
-		fmt.Fprintln(b.out, url)
+		fmt.Fprintln(b.out, login.Local)
+		if login.Tailnet != "" {
+			fmt.Fprintln(b.out, login.Tailnet)
+		}
 		return nil
 	}
-	if err := b.open(url); err != nil {
-		b.show("Open this in your browser: " + url + " (valid for a minute)")
+	if err := b.open(login.Local); err != nil {
+		url := login.Local
+		if login.Tailnet != "" {
+			url = login.Tailnet
+		}
+		b.show("Open this in your browser: " + url + " (the code works for a minute)")
 	}
 	return nil
 }
@@ -236,10 +246,11 @@ func browserCommand(goos string, getenv func(string) string, url string) (cmd *e
 }
 
 // serve runs the board server, for every running herdr session, and the
-// Slack watcher, which logs to slack.log. The startup hook and `herdr-tasks
-// board` start it, detached. It stops on SIGTERM, when the board and the
-// Slack watcher are turned off, when the board is moved to another port, or
-// when no herdr session has run for a while. It logs to stderr, which is
+// Slack watcher, which logs to slack.log. With board_tailnet on, it shares
+// the boards with the tailnet too. The startup hook and `herdr-tasks board`
+// start it, detached. It stops on SIGTERM, when the board and the Slack
+// watcher are turned off, when the board is moved to another port, or when
+// no herdr session has run for a while. It logs to stderr, which is
 // board.log.
 func (a *app) serve() error {
 	exe, err := executable()
@@ -297,6 +308,7 @@ func (a *app) serve() error {
 			}
 			return d.TookLine(), nil
 		},
+		Tailscale: tailnet.CLI{},
 	}, board.NewAuth(token), lock)
 	w.Changed = s.Refresh
 	watching := make(chan struct{})

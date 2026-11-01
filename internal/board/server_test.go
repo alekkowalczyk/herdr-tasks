@@ -253,8 +253,9 @@ type testServer struct {
 var plain = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 10 * time.Second}
 
 // startServer runs a server with cfg, timed for tests: sessions are read
-// once at the start and then only when something asks. The board is on, at
-// the server's port, until the test says otherwise. tune may change the
+// once at the start and then only when something asks. Unless cfg says
+// otherwise, it's in a temp state dir, and the board is on, at the port the
+// server listens on, until the test says otherwise. tune may change the
 // timings before it starts.
 func startServer(t *testing.T, cfg Config, tune func(*Server)) *testServer {
 	t.Helper()
@@ -265,12 +266,20 @@ func startServer(t *testing.T, cfg Config, tune func(*Server)) *testServer {
 	ts := &testServer{port: ln.Addr().(*net.TCPAddr).Port, stopped: make(chan struct{})}
 	auth := NewAuth(testToken)
 	ts.key = auth.key
-	ts.opts = reconcile.Options{Board: true, BoardPort: ts.port}
-	cfg.StateDir, cfg.Port, cfg.Version = t.TempDir(), ts.port, testVersion
-	cfg.Options = func() (reconcile.Options, error) {
-		ts.mu.Lock()
-		defer ts.mu.Unlock()
-		return ts.opts, nil
+	if cfg.StateDir == "" {
+		cfg.StateDir = t.TempDir()
+	}
+	if cfg.Port == 0 {
+		cfg.Port = ts.port
+	}
+	cfg.Version = testVersion
+	ts.opts = reconcile.Options{Board: true, BoardPort: cfg.Port}
+	if cfg.Options == nil {
+		cfg.Options = func() (reconcile.Options, error) {
+			ts.mu.Lock()
+			defer ts.mu.Unlock()
+			return ts.opts, nil
+		}
 	}
 	ts.Server = NewServer(cfg, auth, nil)
 	ts.tick, ts.poll, ts.quiet, ts.timeout, ts.retry = 50*time.Millisecond, time.Hour, 20*time.Millisecond, time.Second, 50*time.Millisecond

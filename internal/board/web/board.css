@@ -239,6 +239,14 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .slack-said.problem { color: var(--ink-ask); }
 
 .top-end { display: flex; align-items: center; gap: 12px; margin-left: auto; color: var(--faint); font-size: 12px; }
+/* Where the board is on the tailnet, or why it isn't there. */
+.tailnet-line {
+  max-width: min(32em, 60vw);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.tailnet-line.problem { color: var(--ink-ask); }
 .conn:not(:empty)::before {
   content: "";
   display: inline-block;

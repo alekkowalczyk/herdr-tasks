@@ -1,15 +1,20 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudehook"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
+	"github.com/alekkowalczyk/herdr-tasks/internal/tailnet"
 )
 
 // installed is what setup leaves for remove to take away, in a temp HOME.
@@ -17,12 +22,42 @@ type installed struct {
 	home, state, bin, config, settings string
 	// calls is where the fake herdr writes each command it's given.
 	calls string
+	// tailscale is the tailscale command remove runs.
+	tailscale *fakeTailscale
+}
+
+// fakeTailscale is the tailscale command in memory: what it serves, and the
+// calls that change that, as "serve <port> <target>" and "off <port>".
+type fakeTailscale struct {
+	served map[int]string
+	calls  []string
+}
+
+func (f *fakeTailscale) Self(context.Context) (tailnet.Self, error) {
+	return tailnet.Self{DNSName: "devbox.tail0000.ts.net", Owner: "dana@acme.test"}, nil
+}
+
+func (f *fakeTailscale) Served(context.Context) (map[int]string, error) {
+	return maps.Clone(f.served), nil
+}
+
+func (f *fakeTailscale) Serve(_ context.Context, port int, target string) error {
+	f.calls = append(f.calls, fmt.Sprintf("serve %d %s", port, target))
+	f.served[port] = target
+	return nil
+}
+
+func (f *fakeTailscale) Off(_ context.Context, port int) error {
+	f.calls = append(f.calls, fmt.Sprintf("off %d", port))
+	delete(f.served, port)
+	return nil
 }
 
 // install sets up herdr-tasks in a temp HOME: a copy on PATH, the
 // herdr-tasks lines in herdr's config, the Claude links hook in Claude's
 // settings, and the board's token. herdr is a script that only records its
-// calls, and no herdr session is running.
+// calls, and no herdr session is running. tailscale is a fake that serves
+// nothing.
 func install(t *testing.T) installed {
 	t.Helper()
 	home := t.TempDir()
@@ -59,6 +94,10 @@ func install(t *testing.T) installed {
 	}
 	write(t, in.settings, string(settings), 0o644)
 	write(t, filepath.Join(in.state, "board-token"), "0123abcd\n", 0o600)
+	in.tailscale = &fakeTailscale{served: map[int]string{}}
+	was := tailscaleCLI
+	tailscaleCLI = in.tailscale
+	t.Cleanup(func() { tailscaleCLI = was })
 	return in
 }
 
@@ -159,5 +198,27 @@ func TestRemoveGoesOnWhenClaudeSettingsDontParse(t *testing.T) {
 	}
 	if got := read(t, in.settings); got != "{ not json" {
 		t.Errorf("Claude settings = %q, want them left alone", got)
+	}
+}
+
+// remove takes out the tailscale serve entries the board made, and only
+// those still pointing where it recorded.
+func TestRemoveUnsharesOnlyOwnEntries(t *testing.T) {
+	in := install(t)
+	sockets := filepath.Join(in.state, "board", "sockets")
+	ours := "unix:" + filepath.Join(sockets, "board.sock")
+	record := filepath.Join(in.state, "board", "tailnet.json")
+	write(t, record, fmt.Sprintf(`{"board":{"port":7391,"target":%q,"at":"2026-11-01T09:00:00Z"},`+
+		`"shares":[{"port":4100,"target":%q,"at":"2026-11-01T09:05:00Z"}]}`, ours, "unix:"+filepath.Join(sockets, "share-4100.sock")), 0o600)
+	in.tailscale.served = map[int]string{7391: ours, 4100: "http://127.0.0.1:4100"}
+
+	if err := (&app{}).remove(false); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"off 7391"}; !slices.Equal(in.tailscale.calls, want) {
+		t.Errorf("tailscale was asked %q, want %q", in.tailscale.calls, want)
+	}
+	if _, err := os.Stat(record); !os.IsNotExist(err) {
+		t.Errorf("the record is still there: %v", err)
 	}
 }

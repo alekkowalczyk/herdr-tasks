@@ -514,7 +514,9 @@ type Login struct {
 
 // LoginURL asks the running server for a one-time login code, and returns
 // the addresses that sign a browser in with it, at the board of session, or
-// at the list of sessions when session is "". It works once, for a minute.
+// at the list of sessions when session is "": on this machine, and on the
+// tailnet while the board is shared there. The code works once, for a
+// minute.
 func LoginURL(stateDir, session string) (Login, error) {
 	token, err := adminToken(stateDir)
 	if err != nil {
@@ -533,7 +535,8 @@ func LoginURL(stateDir, session string) (Login, error) {
 		return Login{}, fmt.Errorf("port %d answered %s", m.Port, resp.Status)
 	}
 	var r struct {
-		Code string `json:"code"`
+		Code    string `json:"code"`
+		Tailnet string `json:"tailnet"` // the board's address on the tailnet, while it's shared
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r); err != nil {
 		return Login{}, fmt.Errorf("port %d: %w", m.Port, err)
@@ -545,7 +548,12 @@ func LoginURL(stateDir, session string) (Login, error) {
 	if session != "" {
 		at = "/" + url.PathEscape(session) + "/"
 	}
-	return Login{Local: fmt.Sprintf("http://127.0.0.1:%d%s?code=%s", m.Port, at, url.QueryEscape(r.Code))}, nil
+	code := url.QueryEscape(r.Code)
+	login := Login{Local: fmt.Sprintf("http://127.0.0.1:%d%s?code=%s", m.Port, at, code)}
+	if r.Tailnet != "" {
+		login.Tailnet = r.Tailnet + at + "?code=" + code
+	}
+	return login, nil
 }
 
 // adminToken is the token to ask the running server with, once it's sure

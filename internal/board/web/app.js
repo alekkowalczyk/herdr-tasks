@@ -221,15 +221,17 @@
   // ---- Talking to the server
 
   // signIn swaps the code in the address for the browser key, and takes the
-  // code out of the address. The page stays where it is.
+  // code out of the address. The page stays where it is. Opened through the
+  // tailnet, which is https, it asks without a code: the machine's owner
+  // needs none.
   async function signIn() {
     const code = new URLSearchParams(location.search).get('code');
-    if (code === null) return;
+    if (code === null && location.protocol !== 'https:') return;
     try {
       const res = await fetch('/api/session', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({code}),
+        body: JSON.stringify(code === null ? {} : {code}),
       });
       if (res.ok) {
         const reply = await res.json();
@@ -395,6 +397,7 @@
     retryIn = 0;
     $('conn').textContent = '';
     $('version').textContent = l.version ? 'v' + l.version : '';
+    renderTailnet(l.tailnet);
     const only = l.sessions.length === 1 ? l.sessions[0] : null;
     if (only && hasPage(only.name)) {
       location.replace(pageOf(only.name));
@@ -748,7 +751,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['spaces', 'slack-bar', 'stale', 'hint']) $(id).hidden = true;
+      for (const id of ['spaces', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
         el('code', '', 'herdr-tasks board'),
@@ -760,6 +763,7 @@
     prune();
     $('version').textContent = board.version ? 'v' + board.version : '';
     renderSlack(board.slack, board.slackWaiting);
+    renderTailnet(board.tailnet);
     const sessions = board.sessions;
     $('hint').hidden = board.linearKey || !sessions.some(s => s.cards.some(c => c.links.some(l => l.kind === 'linear')));
     const s = sessions.find(x => x.name === session);
@@ -794,6 +798,18 @@
     slackEls.skipped.hidden = !skipped.length;
     slackEls.skipped.textContent = skipped.length + ' skipped';
     drawFetch();
+  }
+
+  // renderTailnet shows, while board_tailnet is on, why the board isn't on
+  // the tailnet, or else its address there.
+  function renderTailnet(line) {
+    const e = $('tailnet');
+    const problem = line && line.problem ? line.problem : '';
+    const text = problem || (line && line.address) || '';
+    e.hidden = !text;
+    e.textContent = text;
+    e.setAttribute('title', problem || (text ? 'The board on your tailnet' : ''));
+    e.classList.toggle('problem', Boolean(problem));
   }
 
   // drawFetch shows Fetch as the fetch is, and what the last fetch or take

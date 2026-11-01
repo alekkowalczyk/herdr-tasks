@@ -28,6 +28,23 @@ type Board struct {
 	// SlackWaiting says why the Slack line has no session to show it on:
 	// the session Slack asks go to isn't running. It's only set by For.
 	SlackWaiting string `json:"slackWaiting,omitempty"`
+	// Tailnet is the board on the tailnet, while board_tailnet is on.
+	Tailnet *TailnetLine `json:"tailnet,omitempty"`
+}
+
+// TailnetLine is the board on the tailnet, as the header shows it: its
+// address while it's shared, or why it isn't, and the ports herdr-tasks
+// shares.
+type TailnetLine struct {
+	Address string       `json:"address"`
+	Problem string       `json:"problem,omitempty"`
+	Shares  []SharedPort `json:"shares,omitempty"`
+}
+
+// SharedPort is a localhost port herdr-tasks shares with the tailnet.
+type SharedPort struct {
+	Port  int       `json:"port"`
+	Since time.Time `json:"since"`
 }
 
 // For is the board of one running session: only that session, and the Slack
@@ -55,6 +72,7 @@ type SessionList struct {
 	Version  string         `json:"version"`
 	Slack    string         `json:"slack"` // the session Slack asks go to
 	Sessions []SessionEntry `json:"sessions"`
+	Tailnet  *TailnetLine   `json:"tailnet,omitempty"`
 }
 
 // SessionEntry is one running session in the list.
@@ -66,7 +84,7 @@ type SessionEntry struct {
 
 // List is the running sessions, by name.
 func (b Board) List() SessionList {
-	l := SessionList{Version: b.Version, Slack: b.SlackSession, Sessions: []SessionEntry{}}
+	l := SessionList{Version: b.Version, Slack: b.SlackSession, Sessions: []SessionEntry{}, Tailnet: b.Tailnet}
 	for _, s := range b.Sessions {
 		l.Sessions = append(l.Sessions, SessionEntry{Name: s.Name, Cards: len(s.Cards), Stale: s.Stale})
 	}

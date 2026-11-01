@@ -373,3 +373,20 @@ func TestPageShowsSlackWaiting(t *testing.T) {
 		t.Error("app.js doesn't read slackWaiting")
 	}
 }
+
+// The header shows where the board is on the tailnet, or why it isn't
+// there.
+func TestPageShowsTailnet(t *testing.T) {
+	src := withoutComments(pageScripts(t)["web/app.js"])
+	body := jsFunction(t, src, "renderTailnet")
+	for _, want := range []string{"line.problem", "line.address"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("renderTailnet doesn't read %s:\n%s", want, body)
+		}
+	}
+	for _, want := range []string{"renderTailnet(board.tailnet)", "renderTailnet(l.tailnet)"} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js doesn't call %s", want)
+		}
+	}
+}

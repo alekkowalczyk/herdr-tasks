@@ -79,8 +79,12 @@ type Config struct {
 	Now       func() time.Time
 	// TailnetOwner is the Tailscale login that owns this machine: "" when
 	// it's unknown or the machine is tagged, and nil for none. A request on
-	// the tailnet door with that login signs in without a login code.
+	// the tailnet door with that login signs in without a login code. With
+	// Tailscale set, nil is the owner Tailscale names.
 	TailnetOwner func() string
+	// Tailscale shares the board with the tailnet while board_tailnet is
+	// on. nil never does.
+	Tailscale Tailscale
 }
 
 // Server is the board's web server, for every running herdr session.
@@ -103,6 +107,7 @@ type Server struct {
 	terms    terminals
 	fetching atomic.Bool // a fetch from the board runs
 	pages    pages
+	tailnet  tailnetState // the board's door on the tailnet
 
 	// How often things happen and how long they may take. Tests shorten them.
 	tick        time.Duration // look for sessions and read the settings
@@ -133,6 +138,9 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 		linger:      5 * time.Second,
 	}
 	s.ctx, s.cancel = context.WithCancel(context.Background())
+	if cfg.Tailscale != nil && cfg.TailnetOwner == nil {
+		s.cfg.TailnetOwner = s.tailnetOwner
+	}
 	page, err := fs.Sub(web, "web")
 	if err != nil {
 		panic(err) // web is embedded
@@ -230,12 +238,13 @@ func (s *Server) now() time.Time {
 // Run serves on ln until ctx ends, POST /api/shutdown, or the hub decides
 // the server isn't needed. It records the server in board.json while it
 // runs. Shutting down removes board.json, ends every stream, waits up to 2 s
-// for requests to finish, then closes what's left.
+// for requests to finish, then closes what's left, the tailnet door too.
 func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	defer runtime.KeepAlive(s.lock)
 	stop := context.AfterFunc(ctx, s.cancel)
 	defer stop()
 	defer s.cancel()
+	defer s.closeTailnet()
 
 	// Written before serving, so whoever gets an answer finds it.
 	if err := writeMeta(s.cfg.StateDir, s.meta()); err != nil {
@@ -276,8 +285,14 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, healthReply{App: "herdr-tasks", Meta: s.meta()})
 }
 
+// loginCode makes a login code, and says where the board is on the tailnet
+// while it's shared there.
 func (s *Server) loginCode(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"code": s.auth.LoginCode(time.Now())})
+	reply := map[string]string{"code": s.auth.LoginCode(time.Now())}
+	if a := s.tailnetOrigin(); a != "" {
+		reply["tailnet"] = a
+	}
+	writeJSON(w, http.StatusOK, reply)
 }
 
 // session swaps a login code for the browser key. On the tailnet door, the

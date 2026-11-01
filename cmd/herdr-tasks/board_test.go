@@ -138,8 +138,43 @@ func TestBoardPrintsAURLWithACode(t *testing.T) {
 	if err := f.run(false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	if want := "Open this in your browser: " + testURL + " (valid for a minute)"; !slices.Equal(f.shown, []string{want}) {
+	if want := "Open this in your browser: " + testURL + " (the code works for a minute)"; !slices.Equal(f.shown, []string{want}) {
 		t.Errorf("showed %q, want %q", f.shown, want)
+	}
+}
+
+// With the board on the tailnet, a machine that can't open a browser, as
+// one without a display, shows the tailnet address, and --print prints it
+// on a second line.
+func TestBoardShowsTailnetWhenNoBrowser(t *testing.T) {
+	const tailnetURL = "https://devbox.tail0000.ts.net:7391/work/?code=0123abcd"
+	login := func(string, string) (board.Login, error) {
+		return board.Login{Local: testURL, Tailnet: tailnetURL}, nil
+	}
+	f := newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	f.loginURL = login
+	var opened []string
+	f.open = func(url string) error {
+		opened = append(opened, url)
+		return errors.New("no display to open a browser on")
+	}
+	if err := f.run(false, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(opened, []string{testURL}) {
+		t.Errorf("opened %q, want the local address", opened)
+	}
+	if want := "Open this in your browser: " + tailnetURL + " (the code works for a minute)"; !slices.Equal(f.shown, []string{want}) {
+		t.Errorf("showed %q, want %q", f.shown, want)
+	}
+
+	f = newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	f.loginURL = login
+	if err := f.run(true, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := f.out.String(), testURL+"\n"+tailnetURL+"\n"; got != want {
+		t.Errorf("printed %q, want %q", got, want)
 	}
 }
 

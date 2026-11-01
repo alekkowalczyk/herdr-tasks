@@ -40,6 +40,9 @@ type Options struct {
 	Board bool `toml:"board"`
 	// The board's port on 127.0.0.1; 0 means DefaultBoardPort.
 	BoardPort int `toml:"board_port"`
+	// Also share the board with your tailnet, with tailscale serve. Off by
+	// default.
+	BoardTailnet bool `toml:"board_tailnet"`
 	// Link the Linear issues, Slack links and pages Claude Code works with to
 	// the task. Off by default.
 	ClaudeLinks bool `toml:"claude_links"`

@@ -964,6 +964,43 @@ func TestLoginURLHasSession(t *testing.T) {
 	}
 }
 
+// While the board is shared with the tailnet, the server says where, and
+// the login has that address too, with the same code.
+func TestLoginURLHasTailnet(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := EnsureToken(dir); err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/api/login-code" {
+			t.Errorf("asked %s %s", r.Method, r.URL)
+		}
+		io.WriteString(w, `{"code":"0123abcd","tailnet":"https://devbox.tail0000.ts.net:7391"}`)
+	}))
+	defer srv.Close()
+	port := srv.Listener.Addr().(*net.TCPAddr).Port
+	// As a server holds board.lock while it runs.
+	lock, err := tryLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Close()
+	if err := writeMeta(dir, Meta{PID: 1, Port: port}); err != nil {
+		t.Fatal(err)
+	}
+	login, err := LoginURL(dir, "work")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Login{
+		Local:   fmt.Sprintf("http://127.0.0.1:%d/work/?code=0123abcd", port),
+		Tailnet: "https://devbox.tail0000.ts.net:7391/work/?code=0123abcd",
+	}
+	if login != want {
+		t.Errorf("LoginURL = %+v, want %+v", login, want)
+	}
+}
+
 // redeem swaps a login code for the browser key at the server on port, as
 // the page does, and returns the status and the key.
 func redeem(t *testing.T, port int, code string) (int, string) {

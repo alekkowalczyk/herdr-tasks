@@ -32,12 +32,14 @@ const unref = t => (t && t.unref ? t.unref() : t);
 
 // page runs the script as a tab opened at /work/, or at hash, with storage
 // holding stored. The server takes only the key good. A stream it takes
-// stays open.
-function page(stored, good, hash) {
+// stays open. With https, the tab is opened through the tailnet; with
+// owner, the server signs it in without a code, as the machine's owner.
+function page(stored, good, hash, {https, owner} = {}) {
   const storage = new Map(stored ? [[KEY, stored]] : []);
   const listeners = {};
   const streams = []; // the key each connection's first request, for the board, was sent with
   const views = []; // each tab view the page opened, as session/tab
+  const signIns = []; // the body of each sign-in
   const ok = {ok: true, status: 200, text: async () => '', body: {getReader: () => ({read: () => new Promise(() => {})})}};
   const denied = {ok: false, status: 401, json: async () => ({error: 'Sign in again'})};
   const window = {
@@ -53,13 +55,17 @@ function page(stored, good, hash) {
     window,
     document: fake(),
     Element: class Element {},
-    location: {search: '', hash: hash || '', pathname: '/work/'},
+    location: {search: '', hash: hash || '', pathname: '/work/', protocol: https ? 'https:' : 'http:'},
     history: {replaceState() {}},
     localStorage: {
       getItem: k => (storage.has(k) ? storage.get(k) : null),
       setItem: (k, v) => storage.set(k, String(v)),
     },
     fetch: async (url, opts) => {
+      if (url === '/api/session') {
+        signIns.push(opts.body);
+        return owner ? {ok: true, status: 200, json: async () => ({key: good})} : denied;
+      }
       const auth = ((opts && opts.headers) || {}).Authorization || '';
       if (url === '/api/board?session=work') streams.push(auth.replace(/^Bearer /, ''));
       return auth === 'Bearer ' + good ? ok : denied;
@@ -78,6 +84,7 @@ function page(stored, good, hash) {
   return {
     streams,
     views,
+    signIns,
     // otherTab stores key, as a tab that signs in does, and tells this one.
     otherTab(key) {
       storage.set(KEY, key);
@@ -126,6 +133,22 @@ async function main() {
   p.otherTab('new-key');
   await settle();
   expect('views after another tab signed in', p.views, ['work/api']);
+
+  // Opened through the tailnet with no code, the page asks to sign in
+  // without one, and the machine's owner is signed in.
+  p = page(null, 'new-key', '', {https: true, owner: true});
+  await settle();
+  expect('sign-ins of the owner', p.signIns, ['{}']);
+  expect('streams of the owner', p.streams, ['new-key']);
+
+  // Anyone else isn't, and on 127.0.0.1 the page doesn't ask.
+  p = page(null, 'new-key', '', {https: true});
+  await settle();
+  expect('sign-ins of someone else', p.signIns, ['{}']);
+  expect('streams of someone else', p.streams, []);
+  p = page(null, 'new-key');
+  await settle();
+  expect('sign-ins on 127.0.0.1', p.signIns, []);
 }
 
 main().then(

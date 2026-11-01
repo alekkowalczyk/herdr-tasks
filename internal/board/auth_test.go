@@ -381,9 +381,9 @@ func TestLoopbackAcceptsAnyPort(t *testing.T) {
 	}
 }
 
-// tailnet is a handler that answers "ok" behind WrapTailnet, as tailscale
+// onTailnet is a handler that answers "ok" behind WrapTailnet, as tailscale
 // serve reaches it: with Host localhost.
-func tailnet(origin string) (http.Handler, *Auth) {
+func onTailnet(origin string) (http.Handler, *Auth) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "ok") })
 	a := NewAuth(testToken)
 	return a.WrapTailnet(ok, func(p string) bool { return p == "/api/login-code" }, func() string { return origin }), a
@@ -392,7 +392,7 @@ func tailnet(origin string) (http.Handler, *Auth) {
 const tailnetOrigin = "https://devbox.tail0000.ts.net:7391"
 
 func TestTailnetDoorChecksOrigin(t *testing.T) {
-	h, a := tailnet(tailnetOrigin)
+	h, a := onTailnet(tailnetOrigin)
 	key := func() map[string]string { return with(bearer(a.BrowserKey()), "Host", "localhost") }
 	if w := send(h, "GET", "/api/board", with(key(), "Origin", tailnetOrigin), ""); w.Code != http.StatusOK {
 		t.Errorf("the tailnet Origin: got %d, want 200", w.Code)
@@ -413,7 +413,7 @@ func TestTailnetDoorChecksOrigin(t *testing.T) {
 	if w := send(h, "GET", "/-/static/app.js", map[string]string{"Host": "localhost"}, ""); w.Header().Get("X-Frame-Options") != "DENY" {
 		t.Error("the tailnet door sets no X-Frame-Options")
 	}
-	none, a := tailnet("")
+	none, a := onTailnet("")
 	for _, origin := range []string{tailnetOrigin, ""} {
 		hs := with(bearer(a.BrowserKey()), "Host", "localhost")
 		if origin != "" {

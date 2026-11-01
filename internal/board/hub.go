@@ -273,8 +273,9 @@ func (s *Server) watch(ctx context.Context) {
 	}
 }
 
-// check reads the settings and looks for sessions. It says why the server
-// should shut down, if it should.
+// check reads the settings, shares the board with the tailnet or takes it
+// off as they say, and looks for sessions. It says why the server should
+// shut down, if it should.
 func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) string {
 	if s.cfg.Options != nil {
 		opts, err := s.cfg.Options()
@@ -282,11 +283,14 @@ func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) st
 		case err != nil:
 			logOnce(problem, fmt.Sprintf("reading config: %v", err))
 		case !opts.Board && !opts.SlackWatch:
+			// No server will be there, so the board comes off the tailnet.
+			s.syncTailnet(ctx, opts)
 			return "the board and the Slack watcher are turned off"
 		case opts.Port() != s.cfg.Port:
 			return fmt.Sprintf("the board moved to port %d", opts.Port())
 		default:
 			*problem = ""
+			s.syncTailnet(ctx, opts)
 		}
 	}
 	var conns []SessionConn
@@ -500,6 +504,7 @@ func (s *Server) builder(ctx context.Context) {
 		h.mu.Unlock()
 		b := Build(snaps, s.summary, issues, key, s.cfg.Version)
 		s.addSlack(&b)
+		b.Tailnet = s.tailnetLine()
 		h.publish(b)
 	}
 }

@@ -12,8 +12,8 @@ func TestNewSettingsAreOffByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opt.Board || opt.ClaudeLinks {
-		t.Fatalf("board and claude_links should be off: %+v", opt)
+	if opt.Board || opt.ClaudeLinks || opt.BoardTailnet {
+		t.Fatalf("board, claude_links and board_tailnet should be off: %+v", opt)
 	}
 	if opt.Port() != 7391 {
 		t.Fatalf("port = %d, want 7391", opt.Port())
@@ -26,7 +26,7 @@ func TestNewSettingsAreOffByDefault(t *testing.T) {
 func TestSettingsTurnOn(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", dir)
-	conf := "board = true\nclaude_links = true\nboard_port = 7777\n"
+	conf := "board = true\nclaude_links = true\nboard_port = 7777\nboard_tailnet = true\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(conf), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -34,8 +34,8 @@ func TestSettingsTurnOn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !opt.Board || !opt.ClaudeLinks {
-		t.Fatalf("board and claude_links should be on: %+v", opt)
+	if !opt.Board || !opt.ClaudeLinks || !opt.BoardTailnet {
+		t.Fatalf("board, claude_links and board_tailnet should be on: %+v", opt)
 	}
 	if opt.Port() != 7777 {
 		t.Fatalf("port = %d, want 7777", opt.Port())
