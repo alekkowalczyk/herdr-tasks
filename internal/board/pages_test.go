@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
@@ -41,6 +43,10 @@ func startPages(t *testing.T) *pageFixture {
 		"outside.txt":                  "outside",
 		"top.html":                     "<!doctype html><title>Top</title>",
 		"second.html":                  "<!doctype html><title>Second</title>",
+		".ssh/keys.html":               "<!doctype html><title>Keys</title>",
+		".ssh/config":                  "Host acme",
+		"acme/report/id_r\u017fa":      "not a key",
+		"acme/report/.hidden.html":     "<!doctype html>",
 	} {
 		p := filepath.Join(home, filepath.FromSlash(name))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -61,6 +67,8 @@ func startPages(t *testing.T) *pageFixture {
 		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{
 			{URL: task.FileURL(f.report), Added: now}, {URL: task.FileURL(f.top), Added: now},
 			{URL: task.FileURL(filepath.Join(home, "second.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(home, ".ssh", "keys.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(dir, ".hidden.html")), Added: now},
 		}})
 	f.ts = startServer(t, Config{Sessions: running(work)}, nil)
 	f.ts.shows(t, "work", "w1:t1")
@@ -70,7 +78,7 @@ func startPages(t *testing.T) *pageFixture {
 // href asks for the address of a page of the task.
 func (f *pageFixture) href(t *testing.T, file string) string {
 	t.Helper()
-	var reply struct{ Href string }
+	var reply map[string]string
 	b := `{"session":"work","tab":"w1:t1","url":"` + task.FileURL(file) + `"}`
 	req, err := http.NewRequest("POST", f.ts.url("/api/open"), strings.NewReader(b))
 	if err != nil {
@@ -89,7 +97,10 @@ func (f *pageFixture) href(t *testing.T, file string) string {
 	if err := json.Unmarshal(raw, &reply); err != nil {
 		t.Fatal(err)
 	}
-	return reply.Href
+	if len(reply) != 1 || reply["href"] == "" {
+		t.Fatalf("open reply %s, want only an href", raw)
+	}
+	return reply["href"]
 }
 
 // page gets a path of the board without the key, as a page's browser does.
@@ -165,7 +176,7 @@ func TestPageRefuses(t *testing.T) {
 	dir := strings.TrimSuffix(f.href(t, f.report), "report.html")
 	for _, p := range []string{
 		dir + "%2e%2e/outside.txt", dir + "..%2foutside.txt", dir + "../outside.txt", dir + ".git/config",
-		dir + "certs/server.key", dir + ".env", dir + "notes/", dir + "notes", dir + "link-out", dir + "nothing.txt", dir,
+		dir + "certs/server.key", dir + ".env", dir + "notes/", dir + "notes", dir + "link-out", dir + "id_r%C5%BFa", dir + "nothing.txt", dir,
 		"/-/page/" + strings.Repeat("0", 32) + "/report.html",
 	} {
 		if resp, _ := f.page(t, p); resp.StatusCode != http.StatusNotFound {
@@ -231,5 +242,72 @@ func TestPageGoneAfterDelete(t *testing.T) {
 	}
 	if resp, _ := f.page(t, href); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("a deleted page: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPageInKeyFolderServesOnlyItself(t *testing.T) {
+	f := startPages(t)
+	href := f.href(t, filepath.Join(f.home, ".ssh", "keys.html"))
+	if resp, _ := f.page(t, href); resp.StatusCode != 200 {
+		t.Fatalf("keys.html: %d", resp.StatusCode)
+	}
+	if resp, _ := f.page(t, pageHref.FindString(href)+"config"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a file beside it: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestLone(t *testing.T) {
+	home, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	for dir, want := range map[string]bool{
+		"/": true, filepath.Dir(home): true, home: true,
+		filepath.Join(home, ".aws"): true, filepath.Join(home, ".kube", "x"): true,
+		filepath.Join(home, "acme"): false, filepath.Join(home, "acme", "report"): false,
+	} {
+		if got := lone(dir); got != want {
+			t.Errorf("lone(%s) = %v, want %v", dir, got, want)
+		}
+	}
+}
+
+func TestPageRefusesAFolderMadeALink(t *testing.T) {
+	f := startPages(t)
+	href := f.href(t, f.report)
+	dir := filepath.Dir(f.report)
+	moved := dir + "-moved"
+	if err := os.Rename(dir, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, dir); err != nil {
+		t.Fatal(err)
+	}
+	if resp, _ := f.page(t, href); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a folder that is now a link: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPageRefusesAFIFO(t *testing.T) {
+	f := startPages(t)
+	dir := strings.TrimSuffix(f.href(t, f.report), "report.html")
+	if err := syscall.Mkfifo(filepath.Join(filepath.Dir(f.report), "pipe.txt"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if resp, _ := f.page(t, dir+"pipe.txt"); resp.StatusCode != http.StatusNotFound || time.Since(start) > 3*time.Second {
+		t.Errorf("a FIFO: %d after %v, want a prompt 404", resp.StatusCode, time.Since(start))
+	}
+}
+
+func TestOpenRefusesWhatThePageRouteRefuses(t *testing.T) {
+	f := startPages(t)
+	hidden := filepath.Join(filepath.Dir(f.report), ".hidden.html")
+	if code, msg := f.ts.openLink(t, "w1:t1", task.FileURL(hidden)); code != http.StatusBadRequest || msg == "" {
+		t.Errorf("a hidden page: %d %q, want 400 with a message", code, msg)
+	}
+	if dirs := len(f.ts.pages.dirs); dirs != 0 {
+		t.Errorf("a refused page was given an address")
 	}
 }

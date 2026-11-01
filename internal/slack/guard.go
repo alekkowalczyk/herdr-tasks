@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
 )
 
 // Profile is what a Claude session run with the guard may do.
@@ -279,8 +280,8 @@ func secretPath(base, path string) bool {
 // secretParts reports whether any of a path's parts names a secret.
 func secretParts(parts []string) bool {
 	for i, p := range parts {
-		p = strings.ToLower(p)
-		if slices.Contains(secretDirs, p) || (p == "gcloud" && i > 0 && strings.EqualFold(parts[i-1], ".config")) {
+		p = fold(p)
+		if LooksSecretDir(p) || (p == "gcloud" && i > 0 && strings.EqualFold(parts[i-1], ".config")) {
 			return true
 		}
 		if LooksSecret(p) {
@@ -290,10 +291,27 @@ func secretParts(parts []string) bool {
 	return false
 }
 
+// fold makes a name the same for every case a file system may treat as
+// equal: each rune becomes the lower case of the first in its fold orbit, so
+// the long s and the Kelvin sign match s and k, as APFS matches them.
+func fold(name string) string {
+	return strings.Map(func(r rune) rune {
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			m = min(m, f)
+		}
+		return unicode.ToLower(m)
+	}, name)
+}
+
+// LooksSecretDir reports whether a folder name is one keys commonly are in:
+// .ssh, .aws and the like, in any case.
+func LooksSecretDir(name string) bool { return slices.Contains(secretDirs, fold(name)) }
+
 // LooksSecret reports whether a base name is one a secret commonly has, in
 // any case: .env, server.key, id_rsa and the like.
 func LooksSecret(name string) bool {
-	name = strings.ToLower(name)
+	name = fold(name)
 	for _, pat := range secretNames {
 		if ok, _ := filepath.Match(pat, name); ok {
 			return true

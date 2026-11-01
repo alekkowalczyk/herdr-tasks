@@ -699,6 +699,10 @@ func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "That file is gone.")
 		return
 	}
+	if why := refused(filepath.Base(resolved), fi.Size()); why != "" {
+		writeError(w, http.StatusBadRequest, why)
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"href": s.pages.href(resolved)})
 }
 

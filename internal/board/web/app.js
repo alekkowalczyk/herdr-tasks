@@ -561,13 +561,17 @@
   // blockers allow it, and goes to the page's address once the board gives it.
   function openFile(c, url) {
     const w = window.open('', '_blank');
-    if (w) w.opener = null;
+    if (!w) {
+      toast('Your browser blocked the page’s window. Allow pop-ups for the board.');
+      return;
+    }
+    w.opener = null;
     post({session: c.session, tab: c.tab, url}, '/api/open').then(
       reply => {
-        if (w) w.location = reply.href;
+        w.location = reply.href;
       },
       err => {
-        if (w) w.close();
+        w.close();
         toast(err.message);
       },
     );

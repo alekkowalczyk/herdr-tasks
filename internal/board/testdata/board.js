@@ -381,6 +381,7 @@ function page(stored, path, hash, search) {
       addEventListener: (type, fn) => (windowListeners[type] = windowListeners[type] || []).push(fn),
       getSelection: () => '',
       open: (url, target) => {
+        if (pg.blocked) return null;
         const w = {url, target, opener: 'the board', closed: false, close: () => (w.closed = true)};
         pg.windows.push(w);
         return w;
@@ -1096,6 +1097,20 @@ const tests = {
     assert.equal(pg.windows[1].closed, true, 'the window stayed after a failure');
     assert.equal(pg.windows[1].location, undefined);
     assert.deepEqual(pg.toasts(), ['That file is gone.']);
+  },
+
+  // A blocked window says so, and nothing is asked.
+  async 'a blocked page window says so'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card({links: [{url: 'file:///home/dana/acme/report/report.html', kind: 'file', label: 'report.html', path: '/home/dana/acme/report/report.html'}]})));
+    await settle();
+    pg.blocked = true;
+    pg.$('board').querySelector('[data-act="openfile"]').click();
+    await settle();
+    assert.equal(pg.posts.length, 0, 'asked the board anyway');
+    assert.equal(pg.toasts().length, 1);
+    assert.match(pg.toasts()[0], /blocked/);
   },
 };
 

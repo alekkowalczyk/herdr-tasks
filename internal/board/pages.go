@@ -3,6 +3,7 @@ package board
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 )
@@ -49,12 +51,13 @@ type pageDir struct {
 }
 
 // href gives the address of a page, as a path, whose symlinks are resolved.
-// Pages of one folder share an id.
+// Pages of one folder share an id, except where the folder holds more than
+// the page's own files: see lone.
 func (p *pages) href(page string) string {
 	dir := filepath.Dir(page)
 	d := pageDir{dir: dir}
 	key := dir
-	if home, err := os.UserHomeDir(); dir == string(filepath.Separator) || (err == nil && sameFile(dir, home)) {
+	if lone(dir) {
 		d.only, key = page, page
 	}
 	p.mu.Lock()
@@ -74,13 +77,31 @@ func (p *pages) href(page string) string {
 	return "/-/page/" + id + "/" + url.PathEscape(filepath.Base(page))
 }
 
-// sameFile reports whether two paths are the same folder, with symlinks
-// followed.
-func sameFile(a, b string) bool {
-	a, errA := filepath.EvalSymlinks(a)
-	b, errB := filepath.EvalSymlinks(b)
-	return errA == nil && errB == nil && a == b
+// lone reports whether a page in dir, with symlinks resolved, gets only
+// itself served: dir is / or the home folder, holds the home folder, or is or
+// is in a folder of keys under home, as these hold far more than the page.
+func lone(dir string) bool {
+	home, err := os.UserHomeDir()
+	if err == nil {
+		home, err = filepath.EvalSymlinks(home)
+	}
+	if err != nil {
+		return true
+	}
+	if dir == home || strings.HasPrefix(home, strings.TrimSuffix(dir, sep)+sep) {
+		return true
+	}
+	if rel, err := filepath.Rel(home, dir); err == nil && !strings.HasPrefix(rel, "..") {
+		for _, part := range strings.Split(rel, sep) {
+			if slack.LooksSecretDir(part) {
+				return true
+			}
+		}
+	}
+	return false
 }
+
+const sep = string(filepath.Separator)
 
 // serve answers GET /-/page/{id}/{path...} with a file of the page's folder.
 // Every refusal is the same 404, so it doesn't say what is there.
@@ -117,7 +138,7 @@ func (p *pages) serve(w http.ResponseWriter, r *http.Request) {
 	case ".woff", ".woff2", ".ttf", ".otf":
 		h.Set("Access-Control-Allow-Origin", "*")
 	}
-	http.ServeContent(w, r, name, fi.ModTime(), f)
+	http.ServeContent(w, r, name, fi.ModTime(), io.NewSectionReader(f, 0, fi.Size()))
 }
 
 // open opens the file at rel in the page's folder, or gives nil when it
@@ -128,7 +149,7 @@ func (d pageDir) open(rel string) (*os.File, string) {
 		return nil, ""
 	}
 	dir, err := filepath.EvalSymlinks(d.dir)
-	if err != nil {
+	if err != nil || dir != d.dir {
 		return nil, ""
 	}
 	real, err := filepath.EvalSymlinks(filepath.Join(dir, filepath.FromSlash(rel)))
@@ -142,11 +163,27 @@ func (d pageDir) open(rel string) (*os.File, string) {
 	if d.only != "" && real != d.only {
 		return nil, ""
 	}
-	f, err := os.Open(real)
+	// A folder in the chain swapped for a link between the EvalSymlinks above
+	// and this open gets past the checks; that takes write access to the
+	// folder. O_NONBLOCK keeps a FIFO from holding the request: the caller
+	// checks that the file is a regular one.
+	f, err := os.OpenFile(real, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, ""
 	}
 	return f, filepath.Base(real)
+}
+
+// refused says why the page route won't serve a page of this name and size,
+// or "" when it will.
+func refused(name string, size int64) string {
+	switch {
+	case !servable(name):
+		return "The board doesn't serve a page named like that."
+	case size > maxPage:
+		return "That page is over 64 MiB, too big for the board to serve."
+	}
+	return ""
 }
 
 // servable reports whether a path inside a page's folder, with / between
