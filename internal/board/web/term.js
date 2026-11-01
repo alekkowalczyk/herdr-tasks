@@ -10,7 +10,8 @@
 (() => {
   'use strict';
 
-  const MONO = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+  // Ghostty's font first, when it's installed.
+  const MONO = '"JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
   // The font size is shared by every pane, and chosen to fit the tab in.
   const MIN_FONT = 6;
   const MAX_FONT = 15;
@@ -22,29 +23,31 @@
   // A screen is written as one frame: reset, home, clear, the screen, reset.
   const BEGIN = '\x1b[?2026h\x1b[0m\x1b[H\x1b[2J';
   const END = '\x1b[0m\x1b[?2026l';
-  // The terminals are dark whatever the page is, as the panes' own colours
-  // were picked for the terminal herdr runs in.
+  // The terminals look like Ghostty's defaults whatever the page is: its
+  // colours and palette, and a selection that swaps them. There's no
+  // cursor, as herdr doesn't say where it is.
   const THEME = {
-    background: '#0f1216',
-    foreground: '#d6dbe1',
-    cursor: '#0f1216',
-    selectionBackground: 'rgba(127, 176, 255, 0.35)',
-    black: '#1c2229',
-    red: '#ff5f6d',
-    green: '#7fd38f',
-    yellow: '#e7b75a',
-    blue: '#6fa6ff',
-    magenta: '#c49cff',
-    cyan: '#5ec9e8',
-    white: '#c9cfd6',
-    brightBlack: '#6f7884',
-    brightRed: '#ff8a94',
-    brightGreen: '#a6e6b2',
-    brightYellow: '#f2d08f',
-    brightBlue: '#9cc4ff',
-    brightMagenta: '#dcc6ff',
-    brightCyan: '#93ddf1',
-    brightWhite: '#f4f6f8',
+    background: '#282c34',
+    foreground: '#ffffff',
+    cursor: '#282c34',
+    selectionBackground: '#ffffff',
+    selectionForeground: '#282c34',
+    black: '#1d1f21',
+    red: '#cc6666',
+    green: '#b5bd68',
+    yellow: '#f0c674',
+    blue: '#81a2be',
+    magenta: '#b294bb',
+    cyan: '#8abeb7',
+    white: '#c5c8c6',
+    brightBlack: '#666666',
+    brightRed: '#d54e53',
+    brightGreen: '#b9ca4a',
+    brightYellow: '#e7c547',
+    brightBlue: '#7aa6da',
+    brightMagenta: '#c397d8',
+    brightCyan: '#70c0b1',
+    brightWhite: '#eaeaea',
   };
 
   // Copy and paste are Cmd shortcuts on macOS, and ctrl+shift ones elsewhere.
@@ -286,6 +289,8 @@
         fontFamily: MONO,
         fontSize: font || 12,
         theme: THEME,
+        // Bold keeps its colour, as in Ghostty.
+        drawBoldTextInBrightColors: false,
         // The mouse isn't sent. xterm would type arrow keys for an alt+click,
         // and a right click on macOS would select a word, which holds the
         // pane still.
