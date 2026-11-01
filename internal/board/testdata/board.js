@@ -286,6 +286,7 @@ function page(stored, path, hash, search) {
 
   const storage = new Map([[KEY, stored]]);
   const windowListeners = {};
+  pg.windows = [];
 
   // openStream is a board stream the test sends boards on.
   function openStream(s) {
@@ -379,6 +380,11 @@ function page(stored, path, hash, search) {
     window: {
       addEventListener: (type, fn) => (windowListeners[type] = windowListeners[type] || []).push(fn),
       getSelection: () => '',
+      open: (url, target) => {
+        const w = {url, target, opener: 'the board', closed: false, close: () => (w.closed = true)};
+        pg.windows.push(w);
+        return w;
+      },
     },
     document,
     Element,
@@ -1062,6 +1068,34 @@ const tests = {
     assert.equal(pg.priority(), 'true', 'a board from before the change undid it');
     pg.runTimers(6000);
     assert.equal(pg.priority(), 'false', 'a change the board never had stayed');
+  },
+
+  // A local page opens in a window made at the click, which goes to the
+  // address the board gives, and closes if it can't.
+  async 'a page opens in a window opened first'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card({links: [{url: 'file:///home/dana/acme/report/report.html', kind: 'file', label: 'report.html', path: '/home/dana/acme/report/report.html'}]})));
+    await settle();
+    const chip = () => pg.$('board').querySelector('[data-act="openfile"]');
+    chip().click();
+    assert.equal(pg.windows.length, 1, 'no window opened at the click');
+    assert.deepEqual([pg.windows[0].url, pg.windows[0].target], ['', '_blank']);
+    assert.equal(pg.windows[0].opener, null, 'the window can reach the board');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/open', {session: 'work', tab: 'w1:t1', url: 'file:///home/dana/acme/report/report.html'}]]);
+    assert.equal(pg.windows[0].location, undefined, 'it went somewhere before the board answered');
+    pg.posts[0].answer(200, {href: '/-/page/0123456789abcdef0123456789abcdef/report.html'});
+    await settle();
+    assert.equal(pg.windows[0].location, '/-/page/0123456789abcdef0123456789abcdef/report.html');
+    assert.equal(pg.windows[0].closed, false);
+
+    chip().click();
+    await settle();
+    pg.posts[1].answer(404, {error: 'That file is gone.'});
+    await settle();
+    assert.equal(pg.windows[1].closed, true, 'the window stayed after a failure');
+    assert.equal(pg.windows[1].location, undefined);
+    assert.deepEqual(pg.toasts(), ['That file is gone.']);
   },
 };
 

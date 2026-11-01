@@ -628,3 +628,14 @@ func TestGuardSettingsFailClosed(t *testing.T) {
 		t.Errorf("command = %q, want it to end || exit 2", h["command"])
 	}
 }
+
+func TestLooksSecret(t *testing.T) {
+	for name, want := range map[string]bool{
+		".env": true, ".env.local": true, "server.key": true, "id_rsa": true, ".secrets.json": true, "SERVER.KEY": true,
+		"report.html": false, "chart.png": false,
+	} {
+		if got := LooksSecret(name); got != want {
+			t.Errorf("LooksSecret(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

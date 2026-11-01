@@ -556,10 +556,21 @@
     post({session: c.session, tab: c.tab, action: 'focus'}).catch(err => toast(err.message));
   }
 
-  // openFile has the board server open a task's local page, as browsers
-  // won't open file links from a web page.
+  // openFile opens a task's local page from the board, as browsers won't
+  // open file links from a web page. The window opens at the click, so popup
+  // blockers allow it, and goes to the page's address once the board gives it.
   function openFile(c, url) {
-    post({session: c.session, tab: c.tab, url}, '/api/open').catch(err => toast(err.message));
+    const w = window.open('', '_blank');
+    if (w) w.opener = null;
+    post({session: c.session, tab: c.tab, url}, '/api/open').then(
+      reply => {
+        if (w) w.location = reply.href;
+      },
+      err => {
+        if (w) w.close();
+        toast(err.message);
+      },
+    );
   }
 
   function copyPath(c, url) {
@@ -1058,8 +1069,8 @@
     return li;
   }
 
-  // linkChip is a link as a card shows it. A file is a button that has the
-  // board server open it. Other http and https links open in a new tab.
+  // linkChip is a link as a card shows it. A file is a button that opens it
+  // through the board. Other http and https links open in a new tab.
   function linkChip(l) {
     let chip;
     if (l.kind === 'file') chip = button('chip', '', 'openfile', {'data-url': l.url});

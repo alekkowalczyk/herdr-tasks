@@ -13,7 +13,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -1059,27 +1058,6 @@ func (ts *testServer) openLink(t *testing.T, tab, url string) (int, string) {
 	return ts.postTo(t, "/api/open", string(b))
 }
 
-// recordOpens has openPath record the paths it's asked to open, rather than
-// open them, until the test ends. Call it before the server starts.
-func recordOpens(t *testing.T) (opened func() []string) {
-	t.Helper()
-	var mu sync.Mutex
-	var paths []string
-	old := openPath
-	openPath = func(path string) error {
-		mu.Lock()
-		defer mu.Unlock()
-		paths = append(paths, path)
-		return nil
-	}
-	t.Cleanup(func() { openPath = old })
-	return func() []string {
-		mu.Lock()
-		defer mu.Unlock()
-		return slices.Clone(paths)
-	}
-}
-
 // writeFiles writes each file, by name, into a new temp dir, and returns
 // their paths.
 func writeFiles(t *testing.T, files map[string]string) map[string]string {
@@ -1122,7 +1100,6 @@ func TestOpenOnlyOpensThisTasksPages(t *testing.T) {
 	if err := os.Remove(f["gone.html"]); err != nil {
 		t.Fatal(err)
 	}
-	opened := recordOpens(t)
 	ts := startServer(t, Config{Sessions: running(work)}, nil)
 	ts.shows(t, "work", "w1:t1")
 
@@ -1155,60 +1132,15 @@ func TestOpenOnlyOpensThisTasksPages(t *testing.T) {
 			t.Errorf("%s: %d %q, want %d with an error", c.body, code, msg, c.want)
 		}
 	}
-	if got := opened(); len(got) != 0 {
-		t.Fatalf("opened %v", got)
-	}
 
-	if code, msg := ts.openLink(t, "w1:t1", file(f["plan.html"])); code != http.StatusNoContent {
+	if code, msg := ts.openLink(t, "w1:t1", file(f["plan.html"])); code != http.StatusOK {
 		t.Fatalf("the task's page: %d %s", code, msg)
-	}
-	resolved, err := filepath.EvalSymlinks(f["plan.html"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := opened(); !reflect.DeepEqual(got, []string{resolved}) {
-		t.Fatalf("opened %v, want %s", got, resolved)
 	}
 
 	// It goes by the task as saved now, not as the board last read it.
 	work.save(t, "w1:t1", func(tk *task.Task) { tk.Links = tk.Links[1:] })
 	if code, _ := ts.openLink(t, "w1:t1", file(f["plan.html"])); code != http.StatusNotFound {
 		t.Errorf("a page removed since the board read the task: %d, want 404", code)
-	}
-	if got := opened(); len(got) != 1 {
-		t.Errorf("opened %v", got)
-	}
-}
-
-func TestOpenReportsAFailedOpener(t *testing.T) {
-	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
-	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
-		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
-	var mu sync.Mutex
-	run := []string{"sh", "-c", "printf 'nope\\nmore\\n' >&2; exit 3"}
-	old := opener
-	opener = func(string) *exec.Cmd {
-		mu.Lock()
-		defer mu.Unlock()
-		return exec.Command(run[0], run[1:]...)
-	}
-	t.Cleanup(func() { opener = old })
-	ts := startServer(t, Config{Sessions: running(work)}, nil)
-	ts.shows(t, "work", "w1:t1")
-
-	// It says what the opener said went wrong: the first line of it.
-	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusInternalServerError || msg != "Couldn't open it: nope" {
-		t.Errorf("an opener that fails: %d %q, want 500 with its message", code, msg)
-	}
-
-	// An opener still running after 3 s is taken to have worked.
-	mu.Lock()
-	run = []string{"sleep", "5"}
-	mu.Unlock()
-	start := time.Now()
-	code, msg := ts.openLink(t, "w1:t1", task.FileURL(page))
-	if d := time.Since(start); code != http.StatusNoContent || d > 4*time.Second {
-		t.Errorf("an opener that keeps running: %d %q after %v, want 204 within about 3s", code, msg, d)
 	}
 }
 
@@ -1219,7 +1151,6 @@ func TestOpenGivesUpOnALockedSession(t *testing.T) {
 	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
 		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
-	opened := recordOpens(t)
 	ts := startServer(t, Config{Sessions: running(work)}, func(s *Server) { s.timeout = 200 * time.Millisecond })
 	ts.shows(t, "work", "w1:t1")
 
@@ -1247,8 +1178,8 @@ func TestOpenGivesUpOnALockedSession(t *testing.T) {
 	if err := syscall.Flock(int(held.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
 	}
-	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusNoContent || len(opened()) != 1 {
-		t.Errorf("open with the lock free: %d %q, opened %v", code, msg, opened())
+	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusOK || msg != "" {
+		t.Errorf("open with the lock free: %d %q", code, msg)
 	}
 }
 
@@ -1277,7 +1208,6 @@ func TestOpenNeedsTheKey(t *testing.T) {
 	page := writeFiles(t, map[string]string{"plan.html": "<!doctype html><title>Plan</title>"})["plan.html"]
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}),
 		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, Links: []task.Link{{URL: task.FileURL(page), Added: now}}})
-	opened := recordOpens(t)
 	ts := startServer(t, Config{Sessions: running(work)}, nil)
 	ts.shows(t, "work", "w1:t1")
 	body, err := json.Marshal(map[string]string{"session": "work", "tab": "w1:t1", "url": task.FileURL(page)})
@@ -1310,11 +1240,8 @@ func TestOpenNeedsTheKey(t *testing.T) {
 			t.Errorf("%s: %d, want %d", c.what, resp.StatusCode, c.want)
 		}
 	}
-	if got := opened(); len(got) != 0 {
-		t.Fatalf("opened %v", got)
-	}
-	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusNoContent || len(opened()) != 1 {
-		t.Fatalf("with the key: %d %s, opened %v", code, msg, opened())
+	if code, msg := ts.openLink(t, "w1:t1", task.FileURL(page)); code != http.StatusOK {
+		t.Fatalf("with the key: %d %s", code, msg)
 	}
 }
 

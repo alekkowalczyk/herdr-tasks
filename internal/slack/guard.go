@@ -283,10 +283,20 @@ func secretParts(parts []string) bool {
 		if slices.Contains(secretDirs, p) || (p == "gcloud" && i > 0 && strings.EqualFold(parts[i-1], ".config")) {
 			return true
 		}
-		for _, name := range secretNames {
-			if ok, _ := filepath.Match(name, p); ok {
-				return true
-			}
+		if LooksSecret(p) {
+			return true
+		}
+	}
+	return false
+}
+
+// LooksSecret reports whether a base name is one a secret commonly has, in
+// any case: .env, server.key, id_rsa and the like.
+func LooksSecret(name string) bool {
+	name = strings.ToLower(name)
+	for _, pat := range secretNames {
+		if ok, _ := filepath.Match(pat, name); ok {
+			return true
 		}
 	}
 	return false

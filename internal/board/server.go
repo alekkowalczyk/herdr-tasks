@@ -12,7 +12,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"runtime"
@@ -98,6 +97,7 @@ type Server struct {
 	hub      *hub
 	terms    terminals
 	fetching atomic.Bool // a fetch from the board runs
+	pages    pages
 
 	// How often things happen and how long they may take. Tests shorten them.
 	tick        time.Duration // look for sessions and read the settings
@@ -158,6 +158,7 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 		}
 		http.Redirect(w, r, to, http.StatusPermanentRedirect)
 	})
+	mux.HandleFunc("GET /-/page/{id}/{path...}", s.pages.serve)
 	mux.Handle("GET /-/static/", http.StripPrefix("/-/static", files(page)))
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("POST /api/login-code", s.loginCode)
@@ -654,10 +655,11 @@ type openRequest struct {
 	URL     string `json:"url"`
 }
 
-// openLink opens a task's local page in this machine's browser, as browsers
-// won't open file:// links from a web page. It opens only a link the task
-// has as saved now, that is a file on this machine, and that is still a
-// regular .html or .htm file once symlinks are followed.
+// openLink gives the address the board serves a task's local page at, as
+// browsers won't open file:// links from a web page, and a board seen from
+// another machine has no use for opening it here. It does so only for a link
+// the task has as saved now, that is a file on this machine, and that is
+// still a regular .html or .htm file once symlinks are followed.
 func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 	var req openRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
@@ -697,72 +699,11 @@ func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "That file is gone.")
 		return
 	}
-	if err := openPath(resolved); err != nil {
-		writeError(w, http.StatusInternalServerError, "Couldn't open it: "+err.Error())
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
+	writeJSON(w, http.StatusOK, map[string]string{"href": s.pages.href(resolved)})
 }
 
 // isPage reports whether a path names an .html or .htm file.
 func isPage(p string) bool {
 	ext := strings.ToLower(filepath.Ext(p))
 	return ext == ".html" || ext == ".htm"
-}
-
-// opener is the command that opens a local page in the default browser:
-// open on macOS, xdg-open elsewhere. Tests swap it.
-var opener = func(path string) *exec.Cmd {
-	if runtime.GOOS == "darwin" {
-		return exec.Command("/usr/bin/open", path)
-	}
-	return exec.Command("xdg-open", path)
-}
-
-// openWait is how long openPath waits for the opener to finish.
-const openWait = 3 * time.Second
-
-// openPath opens a local page with opener, and waits up to openWait for it
-// to finish. An opener that fails gives the first line of its stderr as the
-// reason. One still running by then is taken to have worked, as xdg-open
-// can run as long as the browser it starts, and it's reaped when it ends.
-// Tests swap it.
-var openPath = func(path string) error {
-	cmd := opener(path)
-	stderr := &capped{max: 4 << 10}
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = nil, nil, stderr
-	// A browser it starts may keep its stderr open. Wait doesn't wait for
-	// that once the opener has exited.
-	cmd.WaitDelay = 500 * time.Millisecond
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err == nil || errors.Is(err, exec.ErrWaitDelay) {
-			return nil
-		}
-		line, _, _ := strings.Cut(strings.TrimSpace(stderr.buf.String()), "\n")
-		if line = strings.TrimSpace(line); line != "" {
-			return errors.New(line)
-		}
-		return err
-	case <-time.After(openWait):
-		return nil
-	}
-}
-
-// capped keeps the first max bytes written to it, and drops the rest.
-type capped struct {
-	max int
-	buf bytes.Buffer
-}
-
-func (c *capped) Write(p []byte) (int, error) {
-	if room := c.max - c.buf.Len(); room > 0 {
-		c.buf.Write(p[:min(len(p), room)])
-	}
-	return len(p), nil
 }
