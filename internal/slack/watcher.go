@@ -235,9 +235,13 @@ func due(st State, set Settings, now time.Time) bool {
 	return (st.NextTry == nil || !now.Before(*st.NextTry)) && now.Sub(st.LastTry) >= set.Every
 }
 
-// WaitingFor is the problem while the session asks go to isn't running.
+// OtherSession says how to have asks go to another session.
+const OtherSession = "Set slack_session in config.toml to use another"
+
+// WaitingFor is the problem while the session asks go to isn't running, and
+// says how to pick another.
 func WaitingFor(session string) string {
-	return "waiting for herdr session " + session
+	return "waiting for herdr session " + session + ". " + OtherSession
 }
 
 // sessionFor is the running session called name, or why there's none.

@@ -539,11 +539,11 @@ func TestTickNeedsASession(t *testing.T) {
 	r.opts.SlackSession = "work"
 	r.running = []Session{home}
 	r.tick()
-	want := Status{On: true, Problem: true, Fetch: true, Text: "Slack: waiting for herdr session work"}
+	want := Status{On: true, Problem: true, Fetch: true, Text: "Slack: waiting for herdr session work. Set slack_session in config.toml to use another"}
 	if got := r.Status(); got != want {
 		t.Errorf("status = %+v, want %+v", got, want)
 	}
-	if st := r.state(t); st.Problem != "waiting for herdr session work" || st.NextTry != nil || st.Failures != 0 {
+	if st := r.state(t); st.Problem != "waiting for herdr session work. Set slack_session in config.toml to use another" || st.NextTry != nil || st.Failures != 0 {
 		t.Errorf("state = %+v", st)
 	}
 
@@ -551,7 +551,7 @@ func TestTickNeedsASession(t *testing.T) {
 	r.running = []Session{work, home}
 	r.clock.add(30 * time.Second) // no backoff: the next tick looks again
 	r.tick()
-	want.Text = "Slack: waiting for herdr session default"
+	want.Text = "Slack: waiting for herdr session default. Set slack_session in config.toml to use another"
 	if got := r.Status(); got != want {
 		t.Errorf("status = %+v, want %+v", got, want)
 	}
@@ -1399,13 +1399,14 @@ func TestSessionForWaitsForTheNamedSession(t *testing.T) {
 	if got.Name != "default" || why != "" {
 		t.Errorf("got %q, %q", got.Name, why)
 	}
-	if _, why := sessionFor([]Session{work, side}, "default"); why != "waiting for herdr session default" {
+	if _, why := sessionFor([]Session{work, side}, "default"); why != "waiting for herdr session default. Set slack_session in config.toml to use another" {
 		t.Errorf("why = %q", why)
 	}
-	if _, why := sessionFor(nil, "work"); why != "waiting for herdr session work" {
+	if _, why := sessionFor(nil, "work"); why != "waiting for herdr session work. Set slack_session in config.toml to use another" {
 		t.Errorf("why = %q", why)
 	}
-	if WaitingFor("work") != "waiting for herdr session work" {
+	// It says how to pick another session.
+	if WaitingFor("work") != "waiting for herdr session work. Set slack_session in config.toml to use another" {
 		t.Errorf("WaitingFor = %q", WaitingFor("work"))
 	}
 }

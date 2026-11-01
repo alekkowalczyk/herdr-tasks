@@ -11,6 +11,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
@@ -61,7 +62,7 @@ func (b Board) For(session string) (Board, bool) {
 		one.Slack = nil
 	}
 	if b.Slack != nil && !slices.ContainsFunc(b.Sessions, func(s Session) bool { return s.Name == b.SlackSession }) {
-		one.SlackWaiting = "Slack asks go to herdr session " + b.SlackSession + ", which isn't running."
+		one.SlackWaiting = "Slack asks go to herdr session " + b.SlackSession + ", which isn't running. " + slack.OtherSession + "."
 	}
 	return one, true
 }
@@ -70,7 +71,7 @@ func (b Board) For(session string) (Board, bool) {
 // the running sessions, for the page that lists them.
 type SessionList struct {
 	Version  string         `json:"version"`
-	Slack    string         `json:"slack"` // the session Slack asks go to
+	Slack    string         `json:"slack,omitempty"` // the session Slack asks go to, while the Slack line shows
 	Sessions []SessionEntry `json:"sessions"`
 	Tailnet  *TailnetLine   `json:"tailnet,omitempty"`
 }
@@ -82,9 +83,13 @@ type SessionEntry struct {
 	Stale bool   `json:"stale"`
 }
 
-// List is the running sessions, by name.
+// List is the running sessions, by name, and while the Slack line shows,
+// the one Slack asks go to.
 func (b Board) List() SessionList {
-	l := SessionList{Version: b.Version, Slack: b.SlackSession, Sessions: []SessionEntry{}, Tailnet: b.Tailnet}
+	l := SessionList{Version: b.Version, Sessions: []SessionEntry{}, Tailnet: b.Tailnet}
+	if b.Slack != nil {
+		l.Slack = b.SlackSession
+	}
 	for _, s := range b.Sessions {
 		l.Sessions = append(l.Sessions, SessionEntry{Name: s.Name, Cards: len(s.Cards), Stale: s.Stale})
 	}

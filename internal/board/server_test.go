@@ -2032,7 +2032,7 @@ func TestServeBoardBySession(t *testing.T) {
 		t.Errorf("?session=gone: %d %s, want 404 %s", st, raw, want)
 	}
 	st, raw = ts.get(t, "/api/board")
-	want := `{"version":"` + testVersion + `","slack":"default","sessions":[{"name":"side","cards":1,"stale":false},{"name":"work","cards":1,"stale":false}]}`
+	want := `{"version":"` + testVersion + `","sessions":[{"name":"side","cards":1,"stale":false},{"name":"work","cards":1,"stale":false}]}`
 	if st != 200 || string(raw) != want {
 		t.Errorf("without a session: %d %s, want %s", st, raw, want)
 	}
@@ -2190,7 +2190,8 @@ func TestSlackSessionFromSettings(t *testing.T) {
 
 func TestSlackSessionFallsBackToDefault(t *testing.T) {
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
-	ts := startServer(t, Config{Sessions: running(work)}, func(s *Server) {
+	line := func() slack.Status { return slack.Status{On: true, Text: "Slack: last check 14:32"} }
+	ts := startServer(t, Config{Sessions: running(work), Slack: line}, func(s *Server) {
 		var calls atomic.Int32
 		s.cfg.Options = func() (reconcile.Options, error) {
 			// The first read is the server's own check, which must work. The

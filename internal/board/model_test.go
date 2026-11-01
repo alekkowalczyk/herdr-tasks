@@ -598,7 +598,7 @@ func TestBoardForSaysSlackSessionIsntRunning(t *testing.T) {
 	b := twoSessions()
 	b.SlackSession, b.Slack = "default", &SlackLine{Text: "Slack: off"}
 	work, _ := b.For("work")
-	if want := "Slack asks go to herdr session default, which isn't running."; work.SlackWaiting != want {
+	if want := "Slack asks go to herdr session default, which isn't running. Set slack_session in config.toml to use another."; work.SlackWaiting != want {
 		t.Errorf("SlackWaiting = %q, want %q", work.SlackWaiting, want)
 	}
 	b.Sessions = append(b.Sessions, Session{Name: "default"})
@@ -614,7 +614,7 @@ func TestBoardForSaysSlackSessionIsntRunning(t *testing.T) {
 
 func TestBoardListCountsCards(t *testing.T) {
 	b := twoSessions()
-	b.SlackSession = "work"
+	b.SlackSession, b.Slack = "work", &SlackLine{Text: "Slack: last check 14:32"}
 	got := b.List()
 	want := SessionList{Version: "0.11.0", Slack: "work", Sessions: []SessionEntry{{Name: "side", Cards: 0, Stale: true}, {Name: "work", Cards: 2}}}
 	if !reflect.DeepEqual(got, want) {
@@ -623,5 +623,12 @@ func TestBoardListCountsCards(t *testing.T) {
 	j, _ := json.Marshal(got)
 	if w := `{"version":"0.11.0","slack":"work","sessions":[{"name":"side","cards":0,"stale":true},{"name":"work","cards":2,"stale":false}]}`; string(j) != w {
 		t.Errorf("json = %s\nwant %s", j, w)
+	}
+
+	// Without the Slack line, as with Slack off, no session gets asks.
+	b.Slack = nil
+	j, _ = json.Marshal(b.List())
+	if w := `{"version":"0.11.0","sessions":[{"name":"side","cards":0,"stale":true},{"name":"work","cards":2,"stale":false}]}`; string(j) != w {
+		t.Errorf("without the Slack line, json = %s\nwant %s", j, w)
 	}
 }

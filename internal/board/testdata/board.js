@@ -740,9 +740,9 @@ const tests = {
 
     fetch.click();
     await settle();
-    pg.posts[1].answer(502, {error: 'can’t fetch: waiting for herdr session default'});
+    pg.posts[1].answer(502, {error: 'can’t fetch: waiting for herdr session default. Set slack_session in config.toml to use another'});
     await settle();
-    assert.equal(said.textContent, 'can’t fetch: waiting for herdr session default');
+    assert.equal(said.textContent, 'can’t fetch: waiting for herdr session default. Set slack_session in config.toml to use another');
     assert.ok(said.classList.contains('problem'), 'the error isn’t a problem');
     fetch.click();
     await settle();
@@ -1018,10 +1018,23 @@ const tests = {
     await settle();
     assert.deepEqual(pg.replaced, ['/side/']);
 
+    // With Slack off, no session gets asks.
+    delete list.slack;
+    list.sessions = [
+      {name: 'work', cards: 2, stale: false},
+      {name: 'side', cards: 1, stale: false},
+    ];
+    pg.send(list, 'sessions');
+    await settle();
+    assert.deepEqual(
+      pg.$('session-list').querySelectorAll('li').map(r => r.textContent),
+      ['work2 cards', 'side1 card'],
+    );
+
     // With none, it says so.
     const none = page('k1', '/');
     await settle();
-    none.send({version: '0.11.0', slack: 'default', sessions: []}, 'sessions');
+    none.send({version: '0.11.0', sessions: []}, 'sessions');
     await settle();
     assert.equal(none.$('empty-text').textContent, 'No herdr session is running.');
     assert.equal(none.$('session-list').hidden, true);
@@ -1062,7 +1075,7 @@ const tests = {
   async 'a session shows why Slack asks aren’t on it'() {
     const pg = page('k1');
     await settle();
-    const waiting = 'Slack asks go to herdr session default, which isn’t running.';
+    const waiting = 'Slack asks go to herdr session default, which isn’t running. Set slack_session in config.toml to use another.';
     pg.send(Object.assign(board(card()), {slackWaiting: waiting}));
     await settle();
     assert.equal(pg.$('slack-bar').hidden, false);
