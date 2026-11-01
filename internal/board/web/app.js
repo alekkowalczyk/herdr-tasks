@@ -18,6 +18,7 @@
   const SPACES = 'herdr-tasks-board-spaces';
   const DONE_OPEN = 'herdr-tasks-board-done-open';
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
+  const TERMS_FULL = 'herdr-tasks-board-terms-full';
 
   const COLUMNS = [
     {id: 'asking', label: 'Asking', hint: 'The agent stopped mid-work, waiting for your answer'},
@@ -1390,7 +1391,19 @@
       box.replaceChildren(el('p', 'term-status', 'The terminals didn’t load. Reload the page to try again.'));
     }
     viewing = {session, tab, terms};
+    showFull();
     $('view-back').focus();
+  }
+
+  // showFull gives the terminals the whole page below the view's bar, or
+  // puts the card's details back beside them, as the browser keeps it. The
+  // terminals fit themselves to their new size.
+  function showFull() {
+    const on = load(TERMS_FULL) === '1';
+    document.body.classList.toggle('terms-full', on);
+    const b = $('view-full');
+    b.textContent = on ? '⤡ Minimize' : '⤢ Expand';
+    b.title = on ? "Show the task's details beside the terminals" : 'Give the terminals the whole page';
   }
 
   function hideView() {
@@ -1401,7 +1414,7 @@
     detailKey = null;
     detailSig = null;
     $('view').hidden = true;
-    document.body.classList.remove('viewing');
+    document.body.classList.remove('viewing', 'terms-full');
     render();
     const card = cardEls.get(v.session + '\n' + v.tab);
     const open = card && card.querySelector('[data-act="open"]');
@@ -1992,6 +2005,10 @@
       else if (act === 'copypath') copyPath(c, btn.getAttribute('data-url'));
     });
     $('view-back').addEventListener('click', closeView);
+    $('view-full').addEventListener('click', () => {
+      save(TERMS_FULL, load(TERMS_FULL) === '1' ? '' : '1');
+      showFull();
+    });
     // Esc goes back to the board, unless it's for a terminal, the menu or a
     // dialog.
     document.addEventListener('keydown', e => {

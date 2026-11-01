@@ -732,6 +732,12 @@ body.viewing .empty { display: none; }
   grid-template-columns: minmax(0, 7fr) minmax(300px, 3fr);
   min-height: 0;
 }
+/* Expanded, the terminals take the whole page below the view's bar, without
+   the card's details. */
+.button.view-full { flex: none; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; }
+body.terms-full .view-body { display: grid; grid-template-columns: minmax(0, 1fr); }
+body.terms-full .panel { display: none; }
+body.terms-full .terms { height: auto; }
 .panel {
   min-height: 0;
   padding: 18px 22px 32px;
@@ -923,6 +929,7 @@ body.viewing .empty { display: none; }
   .view-head { padding: 10px 16px; }
   .view-body { overflow: visible; }
   .terms { padding: 8px; }
+  body.terms-full .terms { height: calc(100dvh - 52px); }
 }
 
 @media (hover: none) {

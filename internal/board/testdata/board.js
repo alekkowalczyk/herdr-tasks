@@ -455,6 +455,7 @@ function page(stored, path, hash, search, tailnet) {
   pg.toasts = () => pg.$('toasts').children.map(t => t.textContent);
   pg.query = sel => document.querySelector(sel);
   pg.storage = storage;
+  pg.body = doc.body;
   return pg;
 }
 
@@ -1411,6 +1412,39 @@ const tests = {
     await settle();
     assert.equal(pg.$('prio-only').getAttribute('aria-pressed'), 'true');
     assert.deepEqual(titles(pg), ['Urgent fix']);
+  },
+
+  // Expand gives a tab's terminals the whole page, below the view's bar,
+  // without the card's details; Minimize puts the details back. The browser
+  // keeps the choice for the next view.
+  async "a view's terminals expand to the whole page"() {
+    const FULL = 'herdr-tasks-board-terms-full';
+    let pg = page('k1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    const full = () => pg.body.classList.contains('terms-full');
+    pg.$('board').querySelector('.card').click();
+    const button = pg.$('view-full');
+    assert.equal(full(), false);
+    assert.equal(button.textContent, '⤢ Expand');
+    button.click();
+    assert.equal(full(), true);
+    assert.equal(button.textContent, '⤡ Minimize');
+    assert.equal(pg.storage.get(FULL), '1');
+    button.click();
+    assert.equal(full(), false);
+    assert.equal(button.textContent, '⤢ Expand');
+    assert.equal(pg.storage.get(FULL), '');
+
+    pg = page('k1');
+    pg.storage.set(FULL, '1');
+    await settle();
+    pg.send(board(card()));
+    await settle();
+    pg.$('board').querySelector('.card').click();
+    assert.equal(pg.body.classList.contains('terms-full'), true, "the next view isn't expanded");
+    assert.equal(pg.$('view-full').textContent, '⤡ Minimize');
   },
 };
 
