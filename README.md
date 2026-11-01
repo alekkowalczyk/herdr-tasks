@@ -23,7 +23,7 @@ You set the stage. Agents never get a status from you: for active tasks, herdr's
 - **Strip** (on by default, `ctrl+b i` hides or shows it): a short pane along the bottom of each tab with the task's stage, what the agent is doing, the note, links, and buttons. Links sit in a column that uses the space the note leaves, grouped as Linear, Slack, Pages, and Links for the rest; a section spills onto spare rows, and a "+N" says how many more there are. `+` (or a click on the "+N") shows every link, grouped and numbered; when they don't all fit, `↑`/`↓` (or `k`/`j`) scroll it, and `+` or `esc` closes it. Click a button, or click into the strip and press its key, to change the stage (`a` `v` `p` `z` `d` `o`), make it a priority or not (`f`), edit the note (`n`, the strip grows while you type; `ctrl+s` saves), add a link (`l`), remove one (`L`, the strip grows and numbers every link; type the number and press `↵`), rename the task (`r`), move it to another workspace (`w`), or, for a Slack task, continue or start its research (`c`, `s`) and mute its channel (`m`). `↵` opens the overview, `esc` goes back to your work. After a change, focus returns to the pane above.
 - **Tab bar**: a stage marker in front of each tab name, and tabs ordered active → in review → paused → parked → done → tools.
 - **Tab bar, right side**: stage counts for the current space, and the current task's pause reason or first link.
-- **Task board** (off by default, see [Settings](#settings)): every task of every running herdr session on one page in your browser, in columns by stage and by what the agent is doing. Cards show each agent's state and Claude's latest recap, and the task's links grouped by kind: Linear issues with their status, Slack messages with their date, pages marked web, file or local, and other links. A local `.html` page opens in your browser from the board. Drag a card to another column to change its stage. Open a card to see its tab's terminals, live, and type into them (see [Terminals on the board](#terminals-on-the-board)). The **Open task board** action in herdr opens it, and so does `herdr-tasks board`. The card menu and the tab's view also have **Move to workspace…** and, for [Slack asks](#slack-asks), **Start research**, **Continue with my tools** and **Mute #channel** (**Mute this channel** for a DM).
+- **Task board** (off by default, see [Settings](#settings)): every task of every running herdr session in your browser, one board per herdr session at `/<session>/`, with the list of sessions at `/`, in columns by stage and by what the agent is doing. Cards show each agent's state and Claude's latest recap, and the task's links grouped by kind: Linear issues with their status, Slack messages with their date, pages marked web, file or local, and other links. A local `.html` page opens in your browser from the board (see [Pages](#pages)). Drag a card to another column to change its stage. Open a card to see its tab's terminals, live, and type into them (see [Terminals on the board](#terminals-on-the-board)). The **Open task board** action in herdr opens this session's board, and so does `herdr-tasks board`; `herdr-tasks board --session NAME` opens another session's, and `herdr-tasks board` outside herdr opens the list. The card menu and the tab's view also have **Move to workspace…** and, for [Slack asks](#slack-asks), **Start research**, **Continue with my tools** and **Mute #channel** (**Mute this channel** for a DM).
 - **Spaces sidebar**: each space's tasks under it, most urgent first: agents asking (`?`, red), then your turn (coral), then agents working (`↻`, blue) and in review. Priority tasks come before all of them, in red with a `!` in front, even when paused or parked. Other paused, parked, done, and tool tabs stay out of the list; a line under it counts the hidden ones by stage (`2 paused 1 parked`). `ctrl+b a` switches to plain stage counts and back.
 
 The Agents list is left alone.
@@ -70,13 +70,53 @@ f=~/.config/herdr/config.toml; mkdir -p ~/.config/herdr; touch "$f"; ssh you@ser
 
 Without the keys, the strips and tab markers still work, and `↵` in a strip opens the overview.
 
+### Remote herdr
+
+The board is the way to see a remote machine's tasks and terminals without attaching. Two ways in: your tailnet, or an SSH tunnel. Both end at the same boards.
+
+**Through your tailnet.** Add `board_tailnet = true` to the [settings](#settings). The board's server then shares itself with `tailscale serve`, and the machine's owner gets in by their Tailscale login, with no code. The address is `https://<machine>.<tailnet>.ts.net:7391/<session>/`, such as `https://devbox.tail0000.ts.net:7391/work/`. `herdr-tasks board` prints it when it can't open a browser, and `herdr-tasks board --print` prints the local address and then, on a second line, the tailnet one.
+
+This needs a `tailscaled` that can reach the board's Unix socket: Linux, or the open-source `tailscaled` on macOS. The Mac App Store Tailscale app runs sandboxed and may not; use the SSH tunnel there. Tailscale also has to let your user change `serve`, once:
+
+```bash
+sudo tailscale set --operator=$USER
+```
+
+Until that's done, or when something else already uses the port (`Port 7391 is already shared with your tailnet for something else.`), the board says what's wrong on its message line, and `herdr-tasks board` prints it. herdr-tasks never uses `tailscale funnel`, and never changes a `tailscale serve` entry it didn't make.
+
+Only the machine's owner is signed in this way. Anyone else on your tailnet who opens the address gets the sign-in page, and needs a code from `herdr-tasks board --print`.
+
+**Through an SSH tunnel.** On your own machine, forward any free port to the board's port on the server, and open it:
+
+```bash
+ssh -N -L 8000:127.0.0.1:7391 you@server
+```
+
+Open `http://127.0.0.1:8000/<session>/`. To sign in, run `herdr-tasks board --print` on the server and open the address it prints with its port changed to 8000. The code works once, for a minute. Don't use local port 80: browsers leave `:80` out of the address, so the board can't tell it's the one you meant. Pick another, such as 8000.
+
+#### Pages
+
+A task's local `.html` links open from the board too, at an address under `/-/page/`, in a sandbox. The page's scripts run and it may load things from the internet. It can show the files in its folder (images, styles, other pages) but it can't read them from its scripts, and it can't reach the board. Secret-looking files (`.env`, keys, `.ssh` and the like, in any letter case) and hidden files are never served. A page in your home folder, above it, or in a folder of keys gets only itself. Files can be up to 64 MiB. The address works until the board's server restarts.
+
+#### Sharing a `localhost` port
+
+A task's link to `localhost:4100` points at the server's own port, which your laptop can't reach. On a board you opened through your tailnet, click such a link and the board asks, in the page, whether to share that port with your tailnet. Say yes and it opens at `https://devbox.tail0000.ts.net:4100/`. Each shared port shows in the board's header with a **Stop**. Shares come back after the board's server restarts. Turning `board_tailnet` off, or `herdr-tasks remove`, stops them, and takes out only the entries herdr-tasks made that still point at its own sockets.
+
+Both http and https dev servers work (https goes over TLS to the local port), and so do WebSockets, so hot reload works. The board tries `127.0.0.1` and then `[::1]`. The dev server sees an ordinary local request: `Host: localhost:4100`, and an `Origin` of `http://localhost:4100` (`https://` for an https server). Its redirects to localhost are rewritten to the tailnet address.
+
+While a port is shared, requests reach the dev server looking local. So anything it only allows from this machine, such as a debug console, is open to everyone on your tailnet. Tailscale's `Tailscale-User-Login` and `Tailscale-User-Name` headers reach it too. Share a port only when that's fine, and press **Stop** when you're done. Through an SSH tunnel, forward the dev server's port the same way instead.
+
+#### Slack on one machine
+
+Keep `slack_watch = true` on only the machine whose herdr session should get the asks. With it on in two places, each machine makes its own tasks, in its own session, for the same messages.
+
 ### Remove
 
 ```bash
 herdr-tasks remove
 ```
 
-Stops the task board, gives tabs their plain names back, clears the sidebar counts, takes the marked block out of your config and the Claude links hook out of Claude Code's settings, and uninstalls the plugin. Notes and links stay in `~/.local/state/herdr/plugins/herdr-tasks` unless you add `--purge`, which also deletes the Linear key. If the task board doesn't stop, or the Claude links hook can't be taken out (other than because Claude Code's settings don't parse), `remove` changes nothing else and says why, so you can fix that and run it again.
+Stops the task board, takes the board off your tailnet, gives tabs their plain names back, clears the sidebar counts, takes the marked block out of your config and the Claude links hook out of Claude Code's settings, and uninstalls the plugin. Notes and links stay in `~/.local/state/herdr/plugins/herdr-tasks` unless you add `--purge`, which also deletes the Linear key. If the task board doesn't stop, or the Claude links hook can't be taken out (other than because Claude Code's settings don't parse), `remove` changes nothing else and says why, so you can fix that and run it again.
 
 ### Working on the plugin
 
@@ -105,7 +145,7 @@ Space chips count agents asking (`?`) and tasks where it's your turn (`●`). If
 
 ## Terminals on the board
 
-**Open** on a card, or a click on the card, shows its tab: the tab's panes, live, laid out as in herdr, and the whole card next to them (stage, priority, note, log, links, and each agent's recap, last prompt and last reply). The task strip is left out. The address ends in `#tab=<session>/<tab>`, so a reload keeps the view. **Back**, or `esc` when no terminal has focus, goes back to the board.
+**Open** on a card, or a click on the card, shows its tab: the tab's panes, live, laid out as in herdr, and the whole card next to them (stage, priority, note, log, links, and each agent's recap, last prompt and last reply). The task strip is left out. The address is `/<session>/#tab=<tab>`, so a reload keeps the view. **Back**, or `esc` when no terminal has focus, goes back to the board.
 
 Click a pane to type into it; it gets an outline. Keys such as `enter`, `esc`, `tab`, the arrows, `F1`–`F12` and `ctrl`/`alt` combinations go to herdr by name, so herdr sends them the way the pane's program expects. Text goes as typed, and a paste goes in one piece. With a terminal focused, `esc` goes to the terminal. Cmd shortcuts stay with the browser: `cmd+c` copies selected text and `cmd+v` pastes. On Linux, `ctrl+shift+c` (or `ctrl+insert`) copies and `ctrl+shift+v` (or `shift+insert`) pastes, as in a terminal; `ctrl+c` goes to the pane. On macOS, Option types the letters it makes (`ą`, `ł`, `é`…), except in the chords terminal programs use: `option` with `b`, `d`, `f`, `p`, `t`, `y` or `.`, or with `enter`, `backspace`, `esc`, `tab` and the arrows, goes to the pane as `alt` (`option+b` is `alt+b`). If herdr turns something down, a note says so, and whatever you typed after it is dropped rather than sent late.
 
@@ -137,8 +177,9 @@ herdr-tasks link rm 1                                  # by the number show give
 herdr-tasks move Backend                               # move the tab and its task to another workspace
 herdr-tasks show
 herdr-tasks list
-herdr-tasks board                                      # open the task board in your browser
-herdr-tasks board --print                              # print its address instead (it works once, for a minute)
+herdr-tasks board                                      # open this session's board in your browser
+herdr-tasks board --session work                       # another session's board
+herdr-tasks board --print                              # print its address instead (it works once, for a minute), and the tailnet one when shared
 herdr-tasks board --new-token                          # sign every browser out of the board
 herdr-tasks linear-key                                 # save a Linear API key, for issue status on the board
 herdr-tasks slack status                               # the Slack watcher's state; starts the server if it isn't running (while slack_watch is on)
@@ -341,7 +382,7 @@ slack_cwd = "~/acme-harness"
 
 Then run `herdr-tasks slack status`. It prints the watcher's state, and starts the server if it isn't running (while `slack_watch` is on), even with `board = false`. Changes to the slack settings take effect within 30 seconds while the server runs. Asks go to herdr's default session unless `slack_session` names another. While that session isn't running, the watcher waits, and `status` and the board say so. Turning `slack_watch` on again within 72 hours of the last check or fetch, or one that was tried, goes on from there; after longer, it starts fresh, with no backlog, like the first time.
 
-Upgrading: before, with `slack_session` unset, asks went to the only herdr session that was running. Now they go to herdr's default session. If you relied on the old way, set `slack_session` to that session's name.
+Upgrading to 0.11.0: before, with `slack_session` unset, asks went to the only herdr session that was running. Now they go to herdr's default session. If you relied on the old way, set `slack_session` to that session's name. Boards are now one per herdr session, at `/<session>/`, with the list at `/`. The new `board_tailnet` setting is off, so nothing reaches your tailnet until you turn it on (see [Remote herdr](#remote-herdr)).
 
 ## Settings
 
@@ -354,6 +395,7 @@ strip = true         # a strip along the bottom of each tab
 claude_links = false # link the Linear issues, Slack links, and pages Claude works with to the task
 board = false        # serve the task board on 127.0.0.1
 board_port = 7391    # the board's port
+board_tailnet = false  # also share the boards with your tailnet (tailscale serve)
 slack_watch = false        # check Slack for asks
 slack_session = ""         # the herdr session for Slack tabs; "" is herdr's default session
 slack_workspace = "Slack inbox"  # its workspace
@@ -366,7 +408,7 @@ slack_max_new = 4          # research sessions started per hour
 slack_topic = ""           # only asks about this make tasks; "" takes every ask
 ```
 
-Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `herdr-tasks setup` after changing `claude_links`. The board's server reads `board` and `board_port` every 10 seconds, and stops when the board and `slack_watch` are both off, or the port moves. To start it after turning the board on or changing its port, run `herdr-tasks board`, or restart herdr.
+Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `herdr-tasks setup` after changing `claude_links`. The board's server reads `board`, `board_port` and `board_tailnet` every 10 seconds, and stops when the board and `slack_watch` are both off, or the port moves. To start it after turning the board on or changing its port, run `herdr-tasks board`, or restart herdr.
 
 ## How it works
 
@@ -376,8 +418,9 @@ Run `herdr-tasks sync` after changing `markers`, `sort_tabs`, or `strip`. Run `h
 - The sidebar list is up to 7 rows per space, sent as workspace metadata tokens (`$t1`…`$t7`, with `_ask`, `_you`, `_run`, and `_pri` variants so asking, your-turn, working, and priority tasks can each be colored). A hook on agent status changes keeps it current.
 - Renaming a tab yourself in herdr renames the task; the plugin puts the marker back.
 - A strip is an ordinary pane labeled `Task strip` running `herdr-tasks strip`. After a herdr restart it comes back as a plain shell, and the startup hook starts the strip in it again. If everything else in a tab closes, the plugin closes the tab instead of leaving the strip alone in it. Closing a strip yourself counts as hiding it.
-- The task board is one server, `herdr-tasks serve`, for every herdr session on this machine. herdr's startup hook starts it when `board = true`, and so does `herdr-tasks board`. Either one replaces a server that an older build left running. It listens on 127.0.0.1 only, stops when no herdr session has run for 3 minutes, and logs to `board/board.log` in `~/.local/state/herdr/plugins/herdr-tasks`.
-- Browsers won't open `file://` links from a web page, so a file link on the board is a button that opens the page through the board, in a sandbox: its scripts run, but it can't reach the board. The board serves the page and the files in its folder, except hidden files and folders, files named like secrets, and anything that leaves the folder through a link. A page in your home folder or `/` gets only itself. The page's address works until the board's server restarts. Next to it, the card's view has a **Copy path** button. The board does this only for a file that's one of that task's links, and still a regular `.html` or `.htm` file once symlinks are followed.
+- The task board is one server, `herdr-tasks serve`, for every herdr session on this machine. herdr's startup hook starts it when `board = true`, and so does `herdr-tasks board`. Either one replaces a server that an older build left running. It listens on 127.0.0.1 only, and on two Unix sockets in its state folder when `board_tailnet` is on (see below). It stops when no herdr session has run for 3 minutes, and logs to `board/board.log` in `~/.local/state/herdr/plugins/herdr-tasks`.
+- Browsers won't open `file://` links from a web page, so a file link on the board is a button that opens the page through the board, at an address under `/-/page/` that works until the board's server restarts. It's sandboxed: its scripts run, but it can't reach the board. See [Pages](#pages) for what is and isn't served. Next to it, the card's view has a **Copy path** button. The board does this only for a file that's one of that task's links, and still a regular `.html` or `.htm` file once symlinks are followed. The server never runs `open` or `xdg-open` for it.
+- With `board_tailnet = true`, the server also listens on `board.sock`, a Unix socket in its state folder, and `tailscale serve` points the tailnet's port at it. Each shared `localhost` port gets a socket of its own (`share-<port>.sock`). What `tailscale serve` entries herdr-tasks made is recorded in `board/tailnet.json`. That door trusts the `Tailscale-User-Login` header that `tailscale serve` adds, and only there: the loopback door ignores it. The sockets are readable only by you. `herdr-tasks remove` and turning `board_tailnet` off take out only the entries in that record that still point at these sockets.
 - Signing in to the board: `herdr-tasks board` asks the server for a code that works once, within a minute, and opens the board with it. The page swaps the code for a key and keeps it. The key works until the server stops, so after a restart, as when no herdr session has run for 3 minutes or after an update, the board asks you to sign in again. The server's own token is `board-token` in `~/.local/state/herdr/plugins/herdr-tasks`. `herdr-tasks board --new-token` replaces it, which signs every browser out.
 - With a Linear API key, the board shows the status of linked issues; a read-only key is enough. `herdr-tasks linear-key` reads it from stdin, or asks for it without showing what you type. On macOS it's kept in your login keychain; on Linux, in `linear-api-key` in the state folder, readable only by you. `herdr-tasks linear-key --delete` removes it. The board's server reads the key once and keeps it, so it doesn't ask the keychain every minute; `herdr-tasks linear-key` tells it to read the key again. While the keychain can't be read, as when it's locked, the server asks it again after 5 minutes, then less often, up to once an hour.
 - The Slack watcher runs in the board's server, which now runs when `board` or `slack_watch` is on, and stops when both are off. Its state is `slack/state.json` in `~/.local/state/herdr/plugins/herdr-tasks`: your Slack ID, the last check and its cost, any problem, the backoff, the messages it has seen (for 96 hours), the muted channels, the hourly start count, and the skipped asks. `slack/check.lock` keeps the watcher and a fetch from checking at once. The thread a task answers is kept on the task, in the session's state file. `slack.log` is in that folder itself. Both are readable only by you.

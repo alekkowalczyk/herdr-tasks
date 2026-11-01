@@ -29,7 +29,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/ui"
 )
 
-const version = "0.10.0"
+const version = "0.11.0"
 
 const usage = `herdr-tasks: task stages, notes, and links for herdr tabs
 
@@ -58,8 +58,11 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
                                     uninstall the plugin (--purge also deletes notes
                                     and the Linear key)
 
-  herdr-tasks board [--print]       open the task board in your browser (board = true);
-                                    --print prints its address instead
+  herdr-tasks board [--session NAME] [--print]
+                                    open a session's task board in your browser
+                                    (board = true; this session's, or the list outside
+                                    herdr); --print prints its address, and the
+                                    tailnet one when shared, instead
   herdr-tasks board --new-token     sign every browser out of the board
   herdr-tasks linear-key [--delete] save a Linear API key, for issue status on the
                                     board (read from stdin, or typed hidden)
