@@ -423,7 +423,7 @@ func TestBoardSessionFlag(t *testing.T) {
 		t.Errorf("calls = %q, want %q", f.calls, want)
 	}
 
-	for _, args := range [][]string{{"--bogus"}, {"--session"}} {
+	for _, args := range [][]string{{"--bogus"}, {"--session"}, {"--session", "--print"}} {
 		_, _, _, err := parseBoardArgs(args)
 		if err == nil {
 			t.Fatalf("%q: no error", args)
@@ -450,6 +450,7 @@ func TestCurrentSession(t *testing.T) {
 		"a named socket":     {map[string]string{"HERDR_SOCKET_PATH": "/tmp/h/.config/herdr/sessions/side/herdr.sock"}, "side"},
 		"the socket wins":    {map[string]string{"HERDR_SOCKET_PATH": "/tmp/h/.config/herdr/herdr.sock", "HERDR_SESSION": "work"}, "default"},
 		"outside herdr":      {nil, ""},
+		"a nested name":      {map[string]string{"HERDR_SESSION": "a/b"}, "default"}, // as herdr's own SessionKey reads that socket
 	} {
 		if got := currentSession(env(c.env)); got != c.want {
 			t.Errorf("%s: currentSession = %q, want %q", name, got, c.want)

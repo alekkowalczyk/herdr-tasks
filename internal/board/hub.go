@@ -504,13 +504,13 @@ func (s *Server) builder(ctx context.Context) {
 	}
 }
 
-// addSlack adds the Slack line and the Slack session's name to the board,
-// and marks the cards from Slack
-// whose channel you muted. Both come from the watcher's state, which is read
-// once, and only while the line shows or a card is from Slack. Reading it
-// makes no file: there's none until the watcher saves it. When it can't be
-// read, the line lists no asks and no card shows muted: the watcher reports
-// that.
+// addSlack adds the name of the session Slack asks go to (herdr's default
+// session when the settings can't be read), the Slack line, and marks the
+// cards from Slack whose channel you muted. The line's skipped asks and the
+// muted channels come from the watcher's state, which is read at most once,
+// and only while the line shows or a card is from Slack. Reading it makes no
+// file: there's none until the watcher saves it. When it can't be read, the
+// line lists no asks and no card shows muted: the watcher reports that.
 func (s *Server) addSlack(b *Board) {
 	b.SlackSession = herdr.DefaultSession
 	if s.cfg.Options != nil {

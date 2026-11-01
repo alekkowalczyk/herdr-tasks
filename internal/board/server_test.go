@@ -2068,8 +2068,8 @@ func (ts *testServer) get(t *testing.T, path string) (int, []byte) {
 	return resp.StatusCode, raw
 }
 
-// twoRunning is a server with the sessions side and work, each with a card,
-// and waits until both are on the board.
+// twoRunning is a server with the sessions called names, each with a card,
+// and waits until all are on the board.
 func twoRunning(t *testing.T, names ...string) *testServer {
 	t.Helper()
 	var conns []*fakeConn
@@ -2132,7 +2132,11 @@ func TestEventsBySession(t *testing.T) {
 func TestEventsBySessionSkipsOtherSessions(t *testing.T) {
 	ts := twoRunning(t, "work", "side")
 	boards := ts.sessionStream(t, "work")
-	<-boards
+	select {
+	case <-boards:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no board on connect")
+	}
 	ts.hub.mu.Lock()
 	side := ts.hub.workers["side"].conn.(*fakeConn)
 	ts.hub.mu.Unlock()
@@ -2171,6 +2175,12 @@ func TestSessionPagesServeIndex(t *testing.T) {
 			t.Errorf("GET %s: Location %q", path, resp.Header.Get("Location"))
 		}
 	}
+	// /api/ is the API's, which wants the key; with it, there's no page.
+	for _, path := range []string{"/api", "/api/"} {
+		if st, _ := ts.get(t, path); st != 404 {
+			t.Errorf("GET %s with the key: %d, want 404", path, st)
+		}
+	}
 	resp, err := noFollow.Get(ts.url("/my%20work?code=abc"))
 	if err != nil {
 		t.Fatal(err)
@@ -2196,4 +2206,115 @@ func TestBoardPathEscapesSessionName(t *testing.T) {
 	if len(b.Sessions) != 1 || b.Sessions[0].Name != "my work" {
 		t.Errorf("?session=my%%20work = %+v", b)
 	}
+}
+
+func TestBoardPathRoutesUnicodeSessionName(t *testing.T) {
+	ts := twoRunning(t, "zażółć")
+	resp, err := plain.Get(ts.url("/" + url.PathEscape("zażółć") + "/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("GET /zażółć/: %d", resp.StatusCode)
+	}
+	var b Board
+	ts.getJSON(t, "/api/board?session="+url.QueryEscape("zażółć"), &b)
+	if len(b.Sessions) != 1 || b.Sessions[0].Name != "zażółć" {
+		t.Errorf("?session=zażółć = %+v", b)
+	}
+}
+
+// The settings' slack_session reaches the board, the list and the Slack line.
+func TestSlackSessionFromSettings(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
+	side := newConn(t, "side", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Billing", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work, side), Slack: func() slack.Status {
+		return slack.Status{On: true, Text: "Slack: last check 14:32"}
+	}}, nil)
+	ts.setOptions(func(o *reconcile.Options) { o.SlackSession = "work" })
+	ts.Refresh()
+	ts.shows(t, "work", "w1:t1")
+	ts.shows(t, "side", "w1:t1")
+	var l SessionList
+	for deadline := time.Now().Add(3 * time.Second); l.Slack != "work" && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		ts.getJSON(t, "/api/board", &l)
+	}
+	if l.Slack != "work" {
+		t.Fatalf("the list's slack = %q, want work", l.Slack)
+	}
+	var w, s Board
+	ts.getJSON(t, "/api/board?session=work", &w)
+	ts.getJSON(t, "/api/board?session=side", &s)
+	if w.Slack == nil || s.Slack != nil || w.SlackSession != "work" || s.SlackWaiting != "" {
+		t.Errorf("work: %+v, side: %+v", w, s)
+	}
+}
+
+func TestSlackSessionFallsBackToDefault(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, func(s *Server) {
+		calls := 0
+		s.cfg.Options = func() (reconcile.Options, error) {
+			// The first read is the server's own check, which must work.
+			if calls++; calls > 1 {
+				return reconcile.Options{}, errors.New("unreadable")
+			}
+			return reconcile.Options{Board: true, BoardPort: s.cfg.Port, SlackSession: "work"}, nil
+		}
+	})
+	ts.shows(t, "work", "w1:t1")
+	var l SessionList
+	ts.getJSON(t, "/api/board", &l)
+	if l.Slack != "default" {
+		t.Errorf("with unreadable settings, slack = %q, want default", l.Slack)
+	}
+}
+
+// The list is streamed again when it changes.
+func TestSessionsEventSendsAgainWhenListChanges(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+	events, _ := ts.sse(t, "/api/events")
+	next := func(what string, ok func(SessionList) bool) {
+		t.Helper()
+		for deadline := time.After(3 * time.Second); ; {
+			select {
+			case ev := <-events:
+				var l SessionList
+				if err := json.Unmarshal([]byte(ev.data), &l); err != nil || ev.name != "sessions" {
+					t.Fatalf("event %q %s (%v)", ev.name, ev.data, err)
+				}
+				if ok(l) {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("no sessions event with %s", what)
+			}
+		}
+	}
+	next("work", func(l SessionList) bool { return len(l.Sessions) == 1 })
+	side := newConn(t, "side", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Billing", Stage: task.Active, Since: now})
+	ts.cfg.Sessions.(*fakeSessions).set(work, side)
+	next("a second session", func(l SessionList) bool { return len(l.Sessions) == 2 })
+	work.save(t, "w1:t1", func(*task.Task) {})
+	if err := work.st.Update(func(st *store.State) error {
+		st.Tasks["w1:t2"] = &task.Task{TabID: "w1:t2", Title: "More", Stage: task.Active, Since: now}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	work.mu.Lock()
+	work.live.Tabs = append(work.live.Tabs, herdr.Tab{ID: "w1:t2", WorkspaceID: "w1"})
+	work.mu.Unlock()
+	work.nudge()
+	next("two cards in work", func(l SessionList) bool {
+		for _, e := range l.Sessions {
+			if e.Name == "work" {
+				return e.Cards == 2
+			}
+		}
+		return false
+	})
 }

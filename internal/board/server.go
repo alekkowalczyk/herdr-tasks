@@ -138,16 +138,17 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 		http.ServeFileFS(w, r, page, "index.html")
 	}
 	mux.HandleFunc("GET /{$}", index)
-	// /-/ is for the board's own paths, so a session called - gets no board.
+	// /-/ is for the board's own paths, and /api/ is the API, which wants
+	// the key, so sessions called - or api get no board.
 	mux.HandleFunc("GET /{session}/{$}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("session") == "-" {
+		if reserved(r.PathValue("session")) {
 			http.NotFound(w, r)
 			return
 		}
 		index(w, r)
 	})
 	mux.HandleFunc("GET /{session}", func(w http.ResponseWriter, r *http.Request) {
-		if r.PathValue("session") == "-" {
+		if reserved(r.PathValue("session")) {
 			http.NotFound(w, r)
 			return
 		}
@@ -173,6 +174,10 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	s.handler = auth.Wrap(mux, adminOnly)
 	return s
 }
+
+// reserved reports whether name is a first path segment the board uses for
+// itself, so no session's page can be there.
+func reserved(name string) bool { return name == "-" || name == "api" }
 
 // adminOnly picks the routes only the CLI may use.
 func adminOnly(path string) bool {

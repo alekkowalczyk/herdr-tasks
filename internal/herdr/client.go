@@ -19,13 +19,16 @@ const Source = "herdr-tasks"
 
 // SocketPath resolves the herdr socket the same way the herdr CLI does:
 // HERDR_SOCKET_PATH, then HERDR_SESSION, then the default session.
-func SocketPath() string {
-	if p := os.Getenv("HERDR_SOCKET_PATH"); p != "" {
+func SocketPath() string { return SocketPathFor(os.Getenv) }
+
+// SocketPathFor is SocketPath with the variables read by getenv.
+func SocketPathFor(getenv func(string) string) string {
+	if p := getenv("HERDR_SOCKET_PATH"); p != "" {
 		return p
 	}
 	home, _ := os.UserHomeDir()
 	base := filepath.Join(home, ".config", "herdr")
-	if s := os.Getenv("HERDR_SESSION"); s != "" {
+	if s := getenv("HERDR_SESSION"); s != "" {
 		return filepath.Join(base, "sessions", s, "herdr.sock")
 	}
 	return filepath.Join(base, "herdr.sock")

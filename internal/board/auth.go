@@ -219,7 +219,7 @@ func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handl
 			writeError(w, http.StatusForbidden, "The board only answers at "+a.hosts[0]+".")
 			return
 		}
-		// Judge the path the router will use, so /static/../api/ is still the API.
+		// Judge the path the router will use, so /-/static/../../api/ is still the API.
 		p := path.Clean("/" + r.URL.Path)
 		if p != "/api" && !strings.HasPrefix(p, "/api/") {
 			h.ServeHTTP(w, r)

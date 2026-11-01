@@ -89,7 +89,7 @@ func parseBoardArgs(args []string) (print, newToken bool, session string, err er
 		case "--new-token":
 			newToken = true
 		case "--session":
-			if i+1 >= len(args) || args[i+1] == "" {
+			if i+1 >= len(args) || args[i+1] == "" || strings.HasPrefix(args[i+1], "-") {
 				return false, false, "", fmt.Errorf("--session needs a session name; %s", boardUsage)
 			}
 			i++
@@ -104,13 +104,10 @@ func parseBoardArgs(args []string) (print, newToken bool, session string, err er
 // currentSession is the herdr session this command runs in, from the
 // variables herdr sets in its panes, or "" when it runs outside herdr.
 func currentSession(getenv func(string) string) string {
-	if p := getenv("HERDR_SOCKET_PATH"); p != "" {
-		return herdr.SessionKey(p)
+	if getenv("HERDR_SOCKET_PATH") == "" && getenv("HERDR_SESSION") == "" {
+		return ""
 	}
-	if s := getenv("HERDR_SESSION"); s != "" {
-		return s
-	}
-	return ""
+	return herdr.SessionKey(herdr.SocketPathFor(getenv))
 }
 
 // run starts the board server if it isn't running, and signs the browser in
