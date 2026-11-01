@@ -206,6 +206,16 @@ func loginOf(ctx context.Context) string {
 	return login
 }
 
+// doorKey marks a request that came through the tailnet door.
+type doorKey struct{}
+
+// onTailnetDoor reports whether a request came through the tailnet door.
+// Its login can't say: a tagged machine's requests have none.
+func onTailnetDoor(ctx context.Context) bool {
+	on, _ := ctx.Value(doorKey{}).(bool)
+	return on
+}
+
 // Wrap is the loopback door. It applies the board's security rules before h:
 //   - Every response gets headers that keep other pages from framing it or
 //     loading anything into it.
@@ -233,10 +243,12 @@ func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handl
 // is refused. The paths adminOnly picks are for the CLI on this machine, so
 // they are refused here. The Tailscale-User-Login header is put in the
 // request's context, for loginOf: Tailscale sets it itself, after deleting
-// any the client sent, and a tagged machine has none.
+// any the client sent, and a tagged machine has none. So is the door, for
+// onTailnetDoor.
 func (a *Auth) WrapTailnet(h http.Handler, adminOnly func(path string) bool, origin func() string) http.Handler {
 	signed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), loginKey{}, r.Header.Get("Tailscale-User-Login"))
+		ctx = context.WithValue(ctx, doorKey{}, true)
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 	return a.guard(signed, adminOnly, nil, func(w http.ResponseWriter, r *http.Request, p string) bool {

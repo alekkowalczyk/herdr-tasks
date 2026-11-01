@@ -247,6 +247,33 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
   text-overflow: ellipsis;
 }
 .tailnet-line.problem { color: var(--ink-ask); }
+/* The localhost ports herdr-tasks shares with the tailnet, each with Stop. */
+.shares { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.share-list { display: contents; }
+.share {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 22px;
+  padding: 0 2px 0 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.share-stop {
+  height: 18px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 550;
+}
+.share-stop:hover:not(:disabled) { background: var(--surface-2); color: var(--ink-ask); }
+.share-stop:disabled { cursor: progress; opacity: 0.6; }
 .conn:not(:empty)::before {
   content: "";
   display: inline-block;
@@ -582,6 +609,7 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); -web
 .sheet-body { display: grid; gap: 10px; padding: 20px; }
 .sheet-title { margin: 0; font-size: 16px; font-weight: 650; }
 .sheet-task { margin: -6px 0 4px; overflow: hidden; color: var(--muted); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.sheet-note { margin: -4px 0 4px; color: var(--muted); font-size: 13px; }
 .field-label { color: var(--muted); font-size: 12.5px; font-weight: 550; }
 .field {
   width: 100%;

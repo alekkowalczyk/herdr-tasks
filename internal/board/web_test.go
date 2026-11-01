@@ -390,3 +390,24 @@ func TestPageShowsTailnet(t *testing.T) {
 		}
 	}
 }
+
+// On a board seen through the tailnet, a localhost link asks in the page
+// before it's shared, never with a browser dialog, and the header lists
+// the shares with Stop.
+func TestPageHasShareConfirmation(t *testing.T) {
+	src := withoutComments(pageScripts(t)["web/app.js"])
+	for _, want := range []string{
+		"'Share localhost:' + port + ' with your tailnet?'",
+		"'Anyone in your tailnet can open it while it’s shared.'",
+		"'/api/share'",
+		"'/api/unshare'",
+		"'Stop'",
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("app.js doesn't have %s", want)
+		}
+	}
+	if regexp.MustCompile(`\bconfirm\(`).MatchString(src) {
+		t.Error("app.js asks with confirm(")
+	}
+}

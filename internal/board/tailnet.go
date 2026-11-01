@@ -151,21 +151,48 @@ func Unshare(stateDir string, ts Tailscale) error {
 	return errors.Join(errs...)
 }
 
-// tailnetState is the board's door on the tailnet, and what the header says
-// of it.
+// tailnetState is the board's door on the tailnet, the shared ports', and
+// what the header says of them.
 type tailnetState struct {
-	// mu is held while the server syncs with Tailscale, and to open or close
-	// the door.
-	mu     sync.Mutex
-	on     bool      // the board and board_tailnet, as the last sync found them
-	next   time.Time // when to read Tailscale again, while they stay so
-	door   *tailnetDoor
-	closed bool   // the server is shutting down: the door stays closed
-	said   string // the last problem logged
+	// mu is held while the server syncs with Tailscale, to open or close a
+	// door, and to read or write the record.
+	mu        sync.Mutex
+	on        bool      // the board and board_tailnet, as the last sync found them
+	next      time.Time // when to read Tailscale again, while they stay so
+	door      *tailnetDoor
+	shares    map[int]*tailnetDoor // the shared ports' doors, by port
+	closed    bool                 // the server is shutting down: the doors stay closed
+	said      string               // the last problem logged
+	shareSaid string               // the last problem with a share logged
 
 	// view changes as a whole, so a request reads it without waiting for a
 	// sync.
 	view atomic.Pointer[tailnetView]
+}
+
+// lock takes mu, as a request does: it gives up when ctx ends first, and
+// the lock it then gets later is let go at once.
+func (t *tailnetState) lock(ctx context.Context) bool {
+	if t.mu.TryLock() {
+		return true
+	}
+	got := make(chan struct{})
+	gaveUp := make(chan struct{})
+	go func() {
+		t.mu.Lock()
+		select {
+		case got <- struct{}{}:
+		case <-gaveUp:
+			t.mu.Unlock()
+		}
+	}()
+	select {
+	case <-got:
+		return true
+	case <-ctx.Done():
+		close(gaveUp)
+		return false
+	}
 }
 
 // tailnetView is what the header shows of the tailnet, and who owns this
@@ -175,7 +202,8 @@ type tailnetView struct {
 	owner string
 }
 
-// tailnetDoor serves the tailnet door on the board's socket.
+// tailnetDoor serves a socket that tailscale serve sends requests to: the
+// board's tailnet door, or a shared port's proxy.
 type tailnetDoor struct {
 	srv    *http.Server
 	cancel context.CancelFunc // ends its requests
@@ -245,10 +273,11 @@ func (s *Server) syncTailnet(ctx context.Context, opts reconcile.Options) {
 	}
 	t.on, t.next = on, s.now().Add(tailnetEvery)
 	if !on {
-		s.unshareBoard(ctx)
+		s.unshareAll(ctx)
 		return
 	}
-	line, owner := s.shareBoard(ctx)
+	line, owner, served := s.shareBoard(ctx)
+	line.Shares = s.keepShares(served)
 	if line.Problem != "" {
 		logOnce(&t.said, "tailnet: "+line.Problem)
 	} else {
@@ -259,11 +288,11 @@ func (s *Server) syncTailnet(ctx context.Context, opts reconcile.Options) {
 
 // shareBoard listens on the board's socket, and has Tailscale serve it at
 // the board's port, unless Tailscale serves that port for something else.
-// It says where the board is on the tailnet, or why it isn't there, and who
-// owns this machine. When Tailscale can't be read while the board is
-// shared, it keeps the address and the owner it had, and says it couldn't
-// check.
-func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
+// It says where the board is on the tailnet, or why it isn't there, who
+// owns this machine, and what Tailscale serves: nil when it couldn't be
+// read. When Tailscale can't be read while the board is shared, it keeps
+// the address and the owner it had, and says it couldn't check.
+func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]string) {
 	ts, port := s.cfg.Tailscale, s.cfg.Port
 	sock := socketPath(s.cfg.StateDir, boardSocket)
 	var was tailnetView
@@ -273,33 +302,33 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
 	failed := func(err error) *TailnetLine {
 		return &TailnetLine{Problem: "Couldn't share the board with your tailnet: " + err.Error()}
 	}
+	var served map[int]string
 	if err := s.openDoor(sock); err != nil {
-		return failed(err), was.owner
+		return failed(err), was.owner, served
 	}
 	self, err := ts.Self(ctx)
-	var served map[int]string
 	if err == nil {
 		served, err = ts.Served(ctx)
 	}
 	if err != nil {
 		if was.line != nil && was.line.Address != "" {
-			return &TailnetLine{Address: was.line.Address, Problem: "Couldn't check the board's tailnet share: " + err.Error()}, was.owner
+			return &TailnetLine{Address: was.line.Address, Problem: "Couldn't check the board's tailnet share: " + err.Error()}, was.owner, served
 		}
-		return failed(err), was.owner
+		return failed(err), was.owner, served
 	}
 	if self.DNSName == "" {
-		return failed(errors.New("Tailscale gives this machine no name")), self.Owner
+		return failed(errors.New("Tailscale gives this machine no name")), self.Owner, served
 	}
 	address := tailnetAddress(self.DNSName, port)
 	rec := s.tailnetRecord()
 	if b := rec.Board; b != nil && b.Port != port {
 		// The board moved from that port.
 		if _, err := unshare(ctx, ts, served, *b); err != nil {
-			return failed(fmt.Errorf("couldn't stop sharing port %d: %w", b.Port, err)), self.Owner
+			return failed(fmt.Errorf("couldn't stop sharing port %d: %w", b.Port, err)), self.Owner, served
 		}
 		rec.Board = nil
 		if err := saveRecord(s.cfg.StateDir, rec); err != nil {
-			return failed(err), self.Owner
+			return failed(err), self.Owner, served
 		}
 		log.Printf("tailnet: the board left port %d", b.Port)
 	}
@@ -307,15 +336,15 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
 	got, listed := served[port]
 	switch {
 	case rec.Board != nil && listed && got == rec.Board.Target:
-		return &TailnetLine{Address: address}, self.Owner
+		return &TailnetLine{Address: address}, self.Owner, served
 	case listed && got == target:
 		// The board's own entry, though the record of it was lost.
 		rec.Board = &sharedEntry{Port: port, Target: got, At: s.now()}
 	case listed:
-		return &TailnetLine{Problem: fmt.Sprintf("Port %d is already shared with your tailnet for something else.", port)}, self.Owner
+		return &TailnetLine{Problem: fmt.Sprintf("Port %d is already shared with your tailnet for something else.", port)}, self.Owner, served
 	default:
 		if err := ts.Serve(ctx, port, target); err != nil {
-			return failed(err), self.Owner
+			return failed(err), self.Owner, served
 		}
 		// Recorded as Tailscale reports it, which may not be how it was
 		// given, so it's still the board's own on the next look.
@@ -325,43 +354,102 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
 		rec.Board = &sharedEntry{Port: port, Target: target, At: s.now()}
 	}
 	if err := saveRecord(s.cfg.StateDir, rec); err != nil {
-		return &TailnetLine{Address: address, Problem: "Couldn't record the board's tailscale serve entry: " + err.Error()}, self.Owner
+		return &TailnetLine{Address: address, Problem: "Couldn't record the board's tailscale serve entry: " + err.Error()}, self.Owner, served
 	}
-	return &TailnetLine{Address: address}, self.Owner
+	return &TailnetLine{Address: address}, self.Owner, served
 }
 
-// unshareBoard stops listening on the board's socket, and takes the board's
-// entry out of tailscale serve, if Tailscale still serves it as recorded.
-// An entry that isn't the board's any more is only forgotten. When that
-// fails, it's kept, to try again.
-func (s *Server) unshareBoard(ctx context.Context) {
+// keepShares listens again on the socket of each share recorded, as the
+// server does once it starts, and forgets those Tailscale no longer serves
+// as recorded; served is nil when it couldn't be read. It returns the
+// shares, for the header.
+func (s *Server) keepShares(served map[int]string) []SharedPort {
+	t := &s.tailnet
+	rec := s.tailnetRecord()
+	var kept []sharedEntry
+	listening := true
+	for _, e := range rec.Shares {
+		if served != nil && served[e.Port] != e.Target {
+			log.Printf("tailnet: Tailscale no longer serves localhost:%d for herdr-tasks; forgot it", e.Port)
+			continue
+		}
+		if err := s.listenShare(e.Port); err != nil {
+			logOnce(&t.shareSaid, fmt.Sprintf("tailnet: couldn't listen for localhost:%d: %v", e.Port, err))
+			listening = false
+		}
+		kept = append(kept, e)
+	}
+	if listening {
+		t.shareSaid = ""
+	}
+	for port := range t.shares {
+		if !slices.ContainsFunc(kept, func(e sharedEntry) bool { return e.Port == port }) {
+			t.stopShare(port)
+		}
+	}
+	if len(kept) < len(rec.Shares) {
+		rec.Shares = kept
+		if err := saveRecord(s.cfg.StateDir, rec); err != nil {
+			logOnce(&t.shareSaid, "tailnet: "+err.Error())
+		}
+	}
+	return sharedPorts(kept)
+}
+
+// unshareAll stops listening on the board's socket and the shared ports',
+// and takes their entries out of tailscale serve, each only if Tailscale
+// still serves it as recorded. An entry that isn't herdr-tasks' any more is
+// only forgotten. One that couldn't be taken out stays recorded, to try
+// again.
+func (s *Server) unshareAll(ctx context.Context) {
 	t := &s.tailnet
 	t.closeDoor()
+	t.stopShares()
 	s.showTailnet(nil, "")
 	rec := s.tailnetRecord()
-	b := rec.Board
-	if b == nil {
+	if rec.Board == nil && len(rec.Shares) == 0 {
 		return
 	}
-	served, err := s.cfg.Tailscale.Served(ctx)
-	off := false
-	if err == nil {
-		off, err = unshare(ctx, s.cfg.Tailscale, served, *b)
-	}
-	if err == nil {
-		rec.Board = nil
-		err = saveRecord(s.cfg.StateDir, rec)
-	}
-	if err != nil {
+	failed := func(err error) {
 		logOnce(&t.said, "tailnet: couldn't take the board off the tailnet: "+err.Error())
+	}
+	served, err := s.cfg.Tailscale.Served(ctx)
+	if err != nil {
+		failed(err)
+		return
+	}
+	var kept tailnetRecord
+	var errs []error
+	// take takes e out, and says what it was: the board, or a shared port.
+	take := func(e sharedEntry, what string) bool {
+		off, err := unshare(ctx, s.cfg.Tailscale, served, e)
+		switch {
+		case err != nil:
+			errs = append(errs, err)
+			return false
+		case off:
+			log.Printf("tailnet: stopped sharing %s", what)
+		default:
+			log.Printf("tailnet: port %d serves something else now; left it alone", e.Port)
+		}
+		return true
+	}
+	if b := rec.Board; b != nil && !take(*b, fmt.Sprintf("the board at port %d", b.Port)) {
+		kept.Board = b
+	}
+	for _, e := range rec.Shares {
+		if !take(e, fmt.Sprintf("localhost:%d", e.Port)) {
+			kept.Shares = append(kept.Shares, e)
+		}
+	}
+	if err := saveRecord(s.cfg.StateDir, kept); err != nil {
+		errs = append(errs, err)
+	}
+	if err := errors.Join(errs...); err != nil {
+		failed(err)
 		return
 	}
 	t.said = ""
-	if off {
-		log.Printf("tailnet: stopped sharing the board at port %d", b.Port)
-	} else {
-		log.Printf("tailnet: port %d serves something else now; left it alone", b.Port)
-	}
 }
 
 // tailnetRecord is the record, or an empty one when there's none or it
@@ -387,20 +475,31 @@ func (s *Server) openDoor(sock string) error {
 			return nil
 		}
 	}
-	if t.closed || s.ctx.Err() != nil {
-		return errors.New("the board is shutting down")
+	d, err := s.serveSocket(sock, s.TailnetHandler(s.tailnetOrigin))
+	if err != nil {
+		return err
+	}
+	t.door = d
+	return nil
+}
+
+// serveSocket listens on the socket at sock and serves h there, until the
+// door it returns closes or the server shuts down.
+func (s *Server) serveSocket(sock string, h http.Handler) (*tailnetDoor, error) {
+	if s.tailnet.closed || s.ctx.Err() != nil {
+		return nil, errors.New("the board is shutting down")
 	}
 	ln, err := listenSocket(sock)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	ctx, cancel := context.WithCancel(s.ctx)
 	d := &tailnetDoor{
 		srv: &http.Server{
-			Handler:           s.TailnetHandler(s.tailnetOrigin),
+			Handler:           h,
 			ReadHeaderTimeout: 10 * time.Second,
-			// No WriteTimeout: streams stay open, until the door closes or
-			// the server shuts down.
+			// No WriteTimeout: streams, and a share's WebSockets, stay open
+			// until the door closes or the server shuts down.
 			BaseContext: func(net.Listener) context.Context { return ctx },
 		},
 		cancel: cancel,
@@ -412,18 +511,12 @@ func (s *Server) openDoor(sock string) error {
 			log.Printf("tailnet: %v", err)
 		}
 	}()
-	t.door = d
-	return nil
+	return d, nil
 }
 
-// closeDoor stops listening on the socket, which goes with it. Its streams
-// end at once, and other requests get 2 s to finish.
-func (t *tailnetState) closeDoor() {
-	d := t.door
-	if d == nil {
-		return
-	}
-	t.door = nil
+// close stops listening on the door's socket, which goes with it. Its
+// streams end at once, and other requests get 2 s to finish.
+func (d *tailnetDoor) close() {
 	d.cancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -433,15 +526,24 @@ func (t *tailnetState) closeDoor() {
 	<-d.done
 }
 
-// closeTailnet closes the tailnet door for good, as the server shuts down.
-// Tailscale keeps serving the board's entry, so the next server is on the
-// tailnet again at once.
+// closeDoor closes the board's tailnet door.
+func (t *tailnetState) closeDoor() {
+	if d := t.door; d != nil {
+		t.door = nil
+		d.close()
+	}
+}
+
+// closeTailnet closes the doors on the tailnet for good, as the server
+// shuts down. Tailscale keeps serving their entries, so the next server is
+// on the tailnet again at once, with the same shares.
 func (s *Server) closeTailnet() {
 	t := &s.tailnet
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.closed = true
 	t.closeDoor()
+	t.stopShares()
 }
 
 // listenSocket listens on the Unix socket at path, which only you can

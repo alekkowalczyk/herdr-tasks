@@ -19,8 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/tailnet"
+	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
 // tailnetTime is when the tailnet tests start, by the server's clock.
@@ -110,6 +112,14 @@ func (f *fakeTS) Off(_ context.Context, port int) error {
 	return nil
 }
 
+// setServed has Tailscale serve target at port, as when someone else
+// changes its entries.
+func (f *fakeTS) setServed(port int, target string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.served[port] = target
+}
+
 // calls is every call so far.
 func (f *fakeTS) calls() []string {
 	f.mu.Lock()
@@ -164,15 +174,20 @@ type tailnetServer struct {
 	opts reconcile.Options
 }
 
-// startTailnet runs a server in dir with ts and opts, on opts' port.
-func startTailnet(t *testing.T, dir string, ts *fakeTS, opts reconcile.Options) *tailnetServer {
+// startTailnet runs a server in dir with ts and opts, on opts' port. Session
+// work has a tab for each task.
+func startTailnet(t *testing.T, dir string, ts *fakeTS, opts reconcile.Options, tasks ...*task.Task) *tailnetServer {
 	t.Helper()
 	f := &tailnetServer{ts: ts, dir: dir, sock: boardSock(dir), now: tailnetTime, opts: opts}
+	var tabs []herdr.Tab
+	for _, tk := range tasks {
+		tabs = append(tabs, herdr.Tab{ID: tk.TabID})
+	}
 	f.testServer = startServer(t, Config{
 		StateDir:  dir,
 		Port:      opts.Port(),
 		Tailscale: ts,
-		Sessions:  &countedSessions{Sessions: running(newConn(t, "work", oneSpace())), n: &f.checks},
+		Sessions:  &countedSessions{Sessions: running(newConn(t, "work", oneSpace(tabs...), tasks...)), n: &f.checks},
 		Options: func() (reconcile.Options, error) {
 			f.mu.Lock()
 			defer f.mu.Unlock()

@@ -181,6 +181,8 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("GET /api/events", s.events)
 	mux.HandleFunc("POST /api/task", s.changeTask)
 	mux.HandleFunc("POST /api/open", s.openLink)
+	mux.HandleFunc("POST /api/share", s.shareLink)
+	mux.HandleFunc("POST /api/unshare", s.stopSharing)
 	mux.HandleFunc("POST /api/slack/fetch", s.slackFetch)
 	mux.HandleFunc("POST /api/slack/take", s.slackTake)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
@@ -691,7 +693,8 @@ func (s *Server) slackTake(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// openRequest is what POST /api/open takes.
+// openRequest is what POST /api/open and POST /api/share take: a link on a
+// task.
 type openRequest struct {
 	Session string `json:"session"`
 	Tab     string `json:"tab"`
@@ -713,19 +716,8 @@ func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "An open request needs a session and a tab.")
 		return
 	}
-	conn, ok := s.hub.conn(req.Session)
-	if !ok {
-		writeError(w, http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session))
-		return
-	}
-	tasks, err := s.loadTasks(r.Context(), conn)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	t := tasks[req.Tab]
-	if t == nil || !slices.ContainsFunc(t.Links, func(l task.Link) bool { return l.URL == req.URL }) {
-		writeError(w, http.StatusNotFound, "That link isn't on the task.")
+	if e := s.linkOnTask(r.Context(), req.Session, req.Tab, req.URL); e != nil {
+		writeError(w, e.status, e.msg)
 		return
 	}
 	p, ok := task.FilePath(req.URL)
@@ -747,6 +739,24 @@ func (s *Server) openLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"href": s.pages.href(resolved)})
+}
+
+// linkOnTask says why a link isn't on a task as saved now, or nil when it
+// is.
+func (s *Server) linkOnTask(ctx context.Context, session, tab, url string) *taskError {
+	conn, ok := s.hub.conn(session)
+	if !ok {
+		return &taskError{http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", session)}
+	}
+	tasks, err := s.loadTasks(ctx, conn)
+	if err != nil {
+		return &taskError{http.StatusInternalServerError, err.Error()}
+	}
+	t := tasks[tab]
+	if t == nil || !slices.ContainsFunc(t.Links, func(l task.Link) bool { return l.URL == url }) {
+		return &taskError{http.StatusNotFound, "That link isn't on the task."}
+	}
+	return nil
 }
 
 // isPage reports whether a path names an .html or .htm file.

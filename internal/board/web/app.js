@@ -7,7 +7,9 @@
 // Titles, notes, recaps, prompts and links come from agents and other
 // people. The page builds its DOM with createElement, textContent and
 // setAttribute only, and makes links of http and https URLs only. A local
-// file's link is a button that asks the server to open it.
+// file's link is a button that asks the server to open it. So is a
+// localhost link on a board seen through the tailnet, which asks to share
+// its port first.
 (() => {
   'use strict';
 
@@ -113,6 +115,11 @@
   const taking = new Set(); // message IDs
   let slackReply = null; // {text, problem}
   let replyTimer = 0;
+  // Sharing localhost ports: the shares in the header and the dialog that
+  // asks before a port is shared, and the link it asks about while it's
+  // open.
+  let shareEls = null; // {box, list, dialog, title}
+  let shareFor = null; // {c, url}
 
   // The page's session is the first part of its path: /work/. At / there
   // is none, and the page is the list of sessions.
@@ -189,6 +196,21 @@
       return u.protocol === 'http:' || u.protocol === 'https:';
     } catch (e) {
       return false;
+    }
+  }
+
+  // localPort is the port of a localhost or 127.0.0.1 link on a board seen
+  // through the tailnet, which is https: there localhost is the browser's
+  // own machine, so the port has to be shared. It's 0 for any other link,
+  // and on a board on 127.0.0.1, where the link opens as it is.
+  function localPort(url) {
+    if (location.protocol !== 'https:') return 0;
+    try {
+      const u = new URL(url);
+      const local = u.hostname === 'localhost' || u.hostname === '127.0.0.1';
+      return (u.protocol === 'http:' || u.protocol === 'https:') && local && u.port ? Number(u.port) : 0;
+    } catch (e) {
+      return 0;
     }
   }
 
@@ -560,16 +582,22 @@
   }
 
   // openFile opens a task's local page from the board, as browsers won't
-  // open file links from a web page. The window opens at the click, so popup
-  // blockers allow it, and goes to the page's address once the board gives it.
+  // open file links from a web page.
   function openFile(c, url) {
+    openThrough('/api/open', c, url);
+  }
+
+  // openThrough opens a task's link at the address the board gives for it
+  // at path. The window opens at the click, so popup blockers allow it, and
+  // goes to the address once the board gives it.
+  function openThrough(path, c, url) {
     const w = window.open('', '_blank');
     if (!w) {
       toast('Your browser blocked the page’s window. Allow pop-ups for the board.');
       return;
     }
     w.opener = null;
-    post({session: c.session, tab: c.tab, url}, '/api/open').then(
+    post({session: c.session, tab: c.tab, url}, path).then(
       reply => {
         w.location = reply.href;
       },
@@ -578,6 +606,39 @@
         toast(err.message);
       },
     );
+  }
+
+  // openLocal opens a task's localhost link on a board seen through the
+  // tailnet. A port herdr-tasks shares opens at this machine's address on
+  // the tailnet; any other is shared first, once you say so.
+  function openLocal(c, url) {
+    const port = localPort(url);
+    if (!port) return;
+    const shares = (board && board.tailnet && board.tailnet.shares) || [];
+    if (!shares.some(s => s.port === port)) {
+      askShare(c, url, port);
+      return;
+    }
+    const u = new URL(url);
+    const at = location.protocol + '//' + location.hostname + (port === 443 ? '' : ':' + port);
+    window.open(at + u.pathname + u.search + u.hash, '_blank', 'noopener,noreferrer');
+  }
+
+  // askShare asks, in the page, before a port is shared with the tailnet.
+  function askShare(c, url, port) {
+    shareFor = {c, url};
+    shareEls.title.textContent = 'Share localhost:' + port + ' with your tailnet?';
+    shareEls.dialog.showModal();
+  }
+
+  // stopShare stops sharing a port. The header drops it once the board
+  // has.
+  function stopShare(b) {
+    b.disabled = true;
+    post({port: Number(b.getAttribute('data-port'))}, '/api/unshare').catch(err => {
+      b.disabled = false;
+      toast(err.message);
+    });
   }
 
   function copyPath(c, url) {
@@ -752,6 +813,7 @@
     held = false;
     if (signedOut) {
       for (const id of ['spaces', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      shareEls.box.hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
         el('code', '', 'herdr-tasks board'),
@@ -810,6 +872,25 @@
     e.textContent = text;
     e.setAttribute('title', problem || (text ? 'The board on your tailnet' : ''));
     e.classList.toggle('problem', Boolean(problem));
+    renderShares((line && line.shares) || []);
+  }
+
+  // renderShares lists the localhost ports herdr-tasks shares with the
+  // tailnet, each with Stop.
+  function renderShares(shares) {
+    shareEls.box.hidden = !shares.length;
+    sync(
+      shareEls.list,
+      shares,
+      s => String(s.port),
+      s => {
+        const e = attrs(el('span', 'share'), {title: 'Shared with your tailnet since ' + new Date(s.since).toLocaleString()});
+        const stop = attrs(el('button', 'share-stop', 'Stop'), {type: 'button', 'data-port': String(s.port), 'aria-label': 'Stop sharing localhost:' + s.port});
+        e.append(el('span', 'share-port', 'localhost:' + s.port), stop);
+        return e;
+      },
+      () => {},
+    );
   }
 
   // drawFetch shows Fetch as the fetch is, and what the last fetch or take
@@ -1090,10 +1171,12 @@
   }
 
   // linkChip is a link as a card shows it. A file is a button that opens it
-  // through the board. Other http and https links open in a new tab.
+  // through the board, and so is a localhost link on a board seen through
+  // the tailnet. Other http and https links open in a new tab.
   function linkChip(l) {
     let chip;
     if (l.kind === 'file') chip = button('chip', '', 'openfile', {'data-url': l.url});
+    else if (localPort(l.url)) chip = button('chip', '', 'openlocal', {'data-url': l.url});
     else if (linkable(l.url)) chip = attrs(el('a', 'chip'), {href: l.url, target: '_blank', rel: 'noopener noreferrer'});
     else chip = el('span', 'chip');
     const is = l.linear;
@@ -1518,6 +1601,45 @@
     $('slack-bar').append(slackEls.fetch, slackEls.skipped, slackEls.said);
   }
 
+  // buildShare makes the header's list of shared ports, and the dialog that
+  // asks before a port is shared.
+  function buildShare() {
+    const box = attrs(el('span', 'shares'), {role: 'group', 'aria-labelledby': 'shares-label'});
+    const list = el('span', 'share-list');
+    box.hidden = true;
+    box.append(attrs(el('span', 'shares-label', 'Sharing'), {id: 'shares-label'}), list);
+    const tailnet = $('tailnet');
+    tailnet.parentNode.insertBefore(box, tailnet.nextElementSibling);
+    box.addEventListener('click', e => {
+      const b = e.target instanceof Element ? e.target.closest('button[data-port]') : null;
+      if (b) stopShare(b);
+    });
+
+    const dialog = attrs(el('dialog', 'sheet'), {'aria-labelledby': 'share-title', 'aria-describedby': 'share-note'});
+    const title = attrs(el('h2', 'sheet-title'), {id: 'share-title'});
+    const body = el('div', 'sheet-body');
+    const cancel = attrs(el('button', 'button', 'Cancel'), {type: 'button'});
+    const share = attrs(el('button', 'button primary', 'Share'), {type: 'button'});
+    const buttons = el('div', 'sheet-buttons');
+    buttons.append(cancel, share);
+    body.append(title, attrs(el('p', 'sheet-note', 'Anyone in your tailnet can open it while it’s shared.'), {id: 'share-note'}), buttons);
+    dialog.append(body);
+    document.body.append(dialog);
+    shareEls = {box, list, dialog, title};
+    cancel.addEventListener('click', () => dialog.close());
+    share.addEventListener('click', () => {
+      const f = shareFor;
+      dialog.close();
+      if (f) openThrough('/api/share', f.c, f.url);
+    });
+    dialog.addEventListener('close', () => {
+      shareFor = null;
+    });
+    dialog.addEventListener('click', e => {
+      if (e.target === dialog) dialog.close();
+    });
+  }
+
   function buildColumns() {
     const doneOpen = load(DONE_OPEN + ' ' + session) === '1';
     for (const col of COLUMNS) {
@@ -1568,6 +1690,7 @@
         else if (act === 'focus') showInHerdr(c);
         else if (act === 'open') openView(k);
         else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
+        else if (act === 'openlocal') openLocal(c, btn.getAttribute('data-url'));
         return;
       }
       if (e.target.closest('a, button') || String(window.getSelection())) return;
@@ -1716,6 +1839,7 @@
       else if (act === 'research' || act === 'continue' || act === 'mute') slackAction(detailKey, act);
       else if (act === 'unlink') unlink(c, btn.getAttribute('data-url'));
       else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
+      else if (act === 'openlocal') openLocal(c, btn.getAttribute('data-url'));
       else if (act === 'copypath') copyPath(c, btn.getAttribute('data-url'));
     });
     $('view-back').addEventListener('click', closeView);
@@ -1763,6 +1887,7 @@
     document.title = session + ' · Tasks';
   }
   buildSlack();
+  buildShare();
   buildColumns();
   wire();
   setInterval(tickAges, 30e3);

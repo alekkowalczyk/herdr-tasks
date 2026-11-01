@@ -253,8 +253,9 @@ const slackCard = more =>
 // page runs the script as a tab opened at path (/work/ unless given) with the
 // hash and search, signed in with stored. The server takes only the key in pg.good, and
 // answers a request for the board or the list with pg.answers[url], a
-// status, or 200 with nothing to read before the stream's own board.
-function page(stored, path, hash, search) {
+// status, or 200 with nothing to read before the stream's own board. With
+// tailnet, it's the board's tailnet address, which is https.
+function page(stored, path, hash, search, tailnet) {
   doc.body = new Element('body');
   doc.activeElement = null;
   doc.listeners = {};
@@ -364,6 +365,8 @@ function page(stored, path, hash, search) {
 
   // The address: pushState and replaceState change its hash.
   const location = {
+    protocol: tailnet ? 'https:' : 'http:',
+    hostname: tailnet ? 'devbox.tail0000.ts.net' : '127.0.0.1',
     search: search || '',
     hash: hash || '',
     pathname: path || '/work/',
@@ -380,9 +383,9 @@ function page(stored, path, hash, search) {
     window: {
       addEventListener: (type, fn) => (windowListeners[type] = windowListeners[type] || []).push(fn),
       getSelection: () => '',
-      open: (url, target) => {
+      open: (url, target, features) => {
         if (pg.blocked) return null;
-        const w = {url, target, opener: 'the board', closed: false, close: () => (w.closed = true)};
+        const w = {url, target, features, opener: 'the board', closed: false, close: () => (w.closed = true)};
         pg.windows.push(w);
         return w;
       },
@@ -450,6 +453,22 @@ function page(stored, path, hash, search) {
   pg.close = () => pg.button('move').click();
   pg.item = act => pg.$('menu').querySelector('[data-act="' + act + '"]');
   pg.toasts = () => pg.$('toasts').children.map(t => t.textContent);
+  pg.query = sel => document.querySelector(sel);
+  return pg;
+}
+
+// onTailnet is a page on the board's tailnet address, signed in as its
+// owner, with a card that links to localhost:4100, and the board shared
+// there with shares.
+async function onTailnet(shares) {
+  const pg = page('k1', '/work/', '', '', true);
+  await settle();
+  pg.posts.shift().answer(200, {key: 'k1'});
+  await settle();
+  const b = board(card({links: [{url: 'http://localhost:4100/app?x=1', kind: 'local', label: 'localhost:4100/app'}]}));
+  b.tailnet = {address: 'https://devbox.tail0000.ts.net:7391', shares};
+  pg.send(b);
+  await settle();
   return pg;
 }
 
@@ -1097,6 +1116,84 @@ const tests = {
     assert.equal(pg.windows[1].closed, true, 'the window stayed after a failure');
     assert.equal(pg.windows[1].location, undefined);
     assert.deepEqual(pg.toasts(), ['That file is gone.']);
+  },
+
+  // On the tailnet, a localhost link asks in the page before its port is
+  // shared. Share opens the window at the click, and sends it to the
+  // address the board gives once it has shared the port.
+  async 'a localhost link asks before it’s shared'() {
+    const pg = await onTailnet([]);
+    const chip = () => pg.$('board').querySelector('[data-act="openlocal"]');
+    const dialog = pg.query('dialog');
+    chip().click();
+    assert.ok(dialog.hasAttribute('open'), 'nothing asked');
+    assert.equal(dialog.querySelector('.sheet-title').textContent, 'Share localhost:4100 with your tailnet?');
+    assert.equal(dialog.querySelector('.sheet-note').textContent, 'Anyone in your tailnet can open it while it’s shared.');
+    assert.equal(pg.windows.length + pg.posts.length, 0, 'it went ahead before you said so');
+    const [cancel, share] = dialog.querySelectorAll('button');
+    cancel.click();
+    assert.ok(!dialog.hasAttribute('open'));
+    assert.equal(pg.windows.length + pg.posts.length, 0, 'Cancel shared it');
+
+    chip().click();
+    share.click();
+    assert.ok(!dialog.hasAttribute('open'));
+    assert.equal(pg.windows.length, 1, 'no window opened at the click');
+    assert.equal(pg.windows[0].opener, null, 'the window can reach the board');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/share', {session: 'work', tab: 'w1:t1', url: 'http://localhost:4100/app?x=1'}]]);
+    pg.posts[0].answer(200, {href: 'https://devbox.tail0000.ts.net:4100/app?x=1'});
+    await settle();
+    assert.equal(pg.windows[0].location, 'https://devbox.tail0000.ts.net:4100/app?x=1');
+
+    chip().click();
+    share.click();
+    pg.posts[1].answer(409, {error: 'Port 4100 is already shared with your tailnet for something else.'});
+    await settle();
+    assert.equal(pg.windows[1].closed, true, 'the window stayed after a refusal');
+    assert.deepEqual(pg.toasts(), ['Port 4100 is already shared with your tailnet for something else.']);
+  },
+
+  // A port herdr-tasks shares opens at once, at the tailnet address, and
+  // the header lists it with Stop.
+  async 'a shared port opens at once, and Stop stops it'() {
+    const pg = await onTailnet([{port: 4100, since: '2026-11-01T09:00:00Z'}]);
+    pg.$('board').querySelector('[data-act="openlocal"]').click();
+    assert.ok(!pg.query('dialog').hasAttribute('open'), 'it asked again');
+    assert.deepEqual(
+      pg.windows.map(w => [w.url, w.target, w.features]),
+      [['https://devbox.tail0000.ts.net:4100/app?x=1', '_blank', 'noopener,noreferrer']],
+    );
+    assert.equal(pg.posts.length, 0);
+
+    const shares = pg.query('.shares');
+    assert.ok(!shares.hidden, 'the header doesn’t list the share');
+    assert.equal(shares.querySelector('.share-port').textContent, 'localhost:4100');
+    const stop = shares.querySelector('.share-stop');
+    stop.click();
+    assert.ok(stop.disabled, 'Stop can be clicked again while it stops');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/unshare', {port: 4100}]]);
+    pg.posts[0].answer(404, {error: 'herdr-tasks isn’t sharing port 4100.'});
+    await settle();
+    assert.ok(!stop.disabled);
+    assert.deepEqual(pg.toasts(), ['herdr-tasks isn’t sharing port 4100.']);
+
+    const b = board(card({links: [{url: 'http://localhost:4100/app?x=1', kind: 'local', label: 'localhost:4100/app'}]}));
+    b.tailnet = {address: 'https://devbox.tail0000.ts.net:7391'};
+    pg.send(b);
+    await settle();
+    assert.ok(shares.hidden, 'the header lists a share that stopped');
+  },
+
+  // On 127.0.0.1, a localhost link is a link, as it was.
+  async 'a localhost link on 127.0.0.1 is a link'() {
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card({links: [{url: 'http://localhost:4100/app?x=1', kind: 'local', label: 'localhost:4100/app'}]})));
+    await settle();
+    const chip = pg.$('board').querySelector('.chip');
+    assert.equal(chip.tag, 'a');
+    assert.equal(chip.getAttribute('href'), 'http://localhost:4100/app?x=1');
+    assert.equal(pg.$('board').querySelector('[data-act="openlocal"]'), null);
   },
 
   // A blocked window says so, and nothing is asked.
