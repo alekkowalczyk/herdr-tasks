@@ -1197,6 +1197,52 @@ const tests = {
     assert.ok(shares.hidden, 'the header lists a share that stopped');
   },
 
+  // Through the tailnet, the owner is signed in again after the server
+  // restarts: the page asks for a key without a code, once, before it says
+  // to sign in. A refusal, or a key that doesn't work either, ends it there.
+  async 'the owner is signed in again after a restart'() {
+    const signedOut = /^Sign in again/;
+    let pg = await onTailnet([]);
+    // restart has the server start again with key good, and the stream end.
+    const restart = async good => {
+      pg.good = good;
+      pg.streams[pg.streams.length - 1].end();
+      await settle();
+      pg.runTimers(2000);
+      await settle();
+    };
+    await restart('k2');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/session', {}]]);
+    assert.doesNotMatch(pg.$('empty-text').textContent, signedOut);
+    pg.posts.shift().answer(200, {key: 'k2'});
+    await settle();
+    assert.equal(pg.streams[pg.streams.length - 1].key, 'k2');
+    pg.send(board(card()));
+    await settle();
+    assert.equal(pg.$('board').hidden, false);
+    assert.doesNotMatch(pg.$('empty-text').textContent, signedOut);
+
+    // Back on the board, the next restart asks again. Refused, it's signed out.
+    await restart('k3');
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/session', {}]]);
+    pg.posts.shift().answer(401, {error: 'Sign in again.'});
+    await settle();
+    assert.match(pg.$('empty-text').textContent, signedOut);
+    pg.runTimers(60000);
+    await settle();
+    assert.equal(pg.posts.length, 0, 'it asked again');
+
+    // A key that doesn't work either: signed out, and no more asking.
+    pg = await onTailnet([]);
+    await restart('k2');
+    pg.posts.shift().answer(200, {key: 'k9'});
+    await settle();
+    assert.match(pg.$('empty-text').textContent, signedOut);
+    pg.runTimers(60000);
+    await settle();
+    assert.equal(pg.posts.length, 0, 'it asked again');
+  },
+
   // On 127.0.0.1, a localhost link is a link, as it was.
   async 'a localhost link on 127.0.0.1 is a link'() {
     const pg = page('k1');

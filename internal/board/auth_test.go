@@ -425,6 +425,24 @@ func TestTailnetDoorChecksOrigin(t *testing.T) {
 	}
 }
 
+// herdr-tasks never turns Funnel on, but if someone turns it on for the
+// board's port, the tailnet door still answers only the tailnet: a request
+// from the internet, which Tailscale marks, is refused, pages too.
+func TestTailnetDoorRefusesFunnel(t *testing.T) {
+	h, a := onTailnet(tailnetOrigin)
+	for _, p := range []string{"/api/board", "/api/session", "/work/", "/-/page/0123456789abcdef0123456789abcdef/report.html"} {
+		hs := with(bearer(a.BrowserKey()), "Host", "localhost")
+		hs["Origin"], hs["Tailscale-Funnel-Request"] = tailnetOrigin, "?1"
+		w := send(h, "GET", p, hs, "")
+		if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "The board isn't shared with the internet.") {
+			t.Errorf("%s through Funnel: %d %q, want 403 and the message", p, w.Code, w.Body)
+		}
+		if w.Header().Get("X-Frame-Options") != "DENY" {
+			t.Errorf("%s through Funnel: no X-Frame-Options", p)
+		}
+	}
+}
+
 func TestTailnetDoorRefusesAdminPaths(t *testing.T) {
 	a := NewAuth(testToken)
 	s := NewServer(Config{StateDir: t.TempDir(), Version: "test"}, a, nil)

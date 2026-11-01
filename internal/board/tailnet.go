@@ -295,7 +295,8 @@ func (s *Server) syncTailnet(ctx context.Context, opts reconcile.Options) {
 // It says where the board is on the tailnet, or why it isn't there, who
 // owns this machine, and what Tailscale serves: nil when it couldn't be
 // read. When Tailscale can't be read while the board is shared, it keeps
-// the address and the owner it had, and says it couldn't check.
+// the address and the owner it had, and says it couldn't check. The door
+// opens once Tailscale is read, and before it's told to serve the door.
 func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]string) {
 	ts, port := s.cfg.Tailscale, s.cfg.Port
 	sock := socketPath(s.cfg.StateDir, boardSocket)
@@ -306,11 +307,8 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 	failed := func(err error) *TailnetLine {
 		return &TailnetLine{Problem: "Couldn't share the board with your tailnet: " + err.Error()}
 	}
-	var served map[int]string
-	if err := s.openDoor(sock); err != nil {
-		return failed(err), was.owner, served
-	}
 	self, err := ts.Self(ctx)
+	var served map[int]string
 	if err == nil {
 		served, err = ts.Served(ctx)
 	}
@@ -322,6 +320,9 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 	}
 	if self.DNSName == "" {
 		return failed(errors.New("Tailscale gives this machine no name")), self.Owner, served
+	}
+	if err := s.openDoor(sock); err != nil {
+		return failed(err), self.Owner, served
 	}
 	address := tailnetAddress(self.DNSName, port)
 	rec := s.tailnetRecord()
@@ -360,20 +361,29 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 
 // serveTarget has Tailscale serve port at target, and says the target as
 // Tailscale reports it, which may not be how it was given. That's how it's
-// recorded, so it's still herdr-tasks' own on the next look.
+// recorded, so it's still herdr-tasks' own on the next look. A serve that
+// Tailscale doesn't list afterwards didn't take, as when HTTPS isn't turned
+// on for the tailnet. When Tailscale can't be read then, it's the target as
+// given, which is how Tailscale keeps a unix: target.
 func serveTarget(ctx context.Context, ts Tailscale, port int, target string) (string, error) {
 	if err := ts.Serve(ctx, port, target); err != nil {
 		return "", err
 	}
-	if after, err := ts.Served(ctx); err == nil && after[port] != "" {
-		return after[port], nil
+	after, err := ts.Served(ctx)
+	if err != nil {
+		return target, nil
 	}
-	return target, nil
+	if got := after[port]; got != "" {
+		return got, nil
+	}
+	return "", fmt.Errorf("Tailscale didn't take the share of port %d. Is HTTPS turned on for your tailnet?", port)
 }
 
 // keepShares listens again on the socket of each share recorded, as the
 // server does once it starts, and forgets those Tailscale no longer serves
-// as recorded; served is nil when it couldn't be read. It returns the
+// as recorded; served is nil when it couldn't be read. A share at the
+// board's own port, which the board has moved to since, is forgotten too,
+// and its entry left alone: it may be the board's now. It returns the
 // shares, for the header.
 func (s *Server) keepShares(served map[int]string) []SharedPort {
 	t := &s.tailnet
@@ -381,6 +391,10 @@ func (s *Server) keepShares(served map[int]string) []SharedPort {
 	var kept []sharedEntry
 	listening := true
 	for _, e := range rec.Shares {
+		if e.Port == s.cfg.Port {
+			log.Printf("tailnet: localhost:%d is the board's port now; forgot its share", e.Port)
+			continue
+		}
 		if served != nil && served[e.Port] != e.Target {
 			log.Printf("tailnet: Tailscale no longer serves localhost:%d for herdr-tasks; forgot it", e.Port)
 			continue

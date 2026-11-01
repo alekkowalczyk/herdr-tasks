@@ -249,21 +249,33 @@
   async function signIn() {
     const code = new URLSearchParams(location.search).get('code');
     if (code === null && location.protocol !== 'https:') return;
+    if (code === null) ownerAsked = true;
+    try {
+      await askKey(code === null ? {} : {code});
+    } finally {
+      history.replaceState(null, '', location.pathname + location.hash);
+    }
+  }
+
+  // askKey swaps body, a code or {} for the owner, for the browser key, and
+  // keeps the key. It says whether it got one.
+  async function askKey(body) {
     try {
       const res = await fetch('/api/session', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify(code === null ? {} : {code}),
+        body: JSON.stringify(body),
       });
-      if (res.ok) {
-        const reply = await res.json();
-        if (reply && typeof reply.key === 'string' && reply.key) save(KEY, reply.key);
+      if (!res.ok) return false;
+      const reply = await res.json();
+      if (reply && typeof reply.key === 'string' && reply.key) {
+        save(KEY, reply.key);
+        return true;
       }
     } catch (e) {
       // The server didn't answer. A key from before may still work.
-    } finally {
-      history.replaceState(null, '', location.pathname + location.hash);
     }
+    return false;
   }
 
   let stream = null; // the AbortController of the open stream
@@ -271,6 +283,10 @@
   let retryIn = 0;
   let retryTimer = 0;
   let misses = 0; // times in a row the server hadn't read this session
+  // Through the tailnet: the page asked for a key without a code since the
+  // last board came, and is asking now.
+  let ownerAsked = false;
+  let asking = false;
 
   function connect() {
     clearTimeout(retryTimer);
@@ -410,6 +426,7 @@
     }
     if (!v || !Array.isArray(v.sessions)) return;
     misses = 0;
+    ownerAsked = false;
     if (session) gotBoard(v);
     else gotList(v);
   }
@@ -445,14 +462,27 @@
   // request sent with a key the page has replaced since, as when another
   // tab signed in, is about that key only: sentWith, when given, is the key
   // the request used, and the page stays signed in with the new one.
+  // Through the tailnet, where the machine's owner needs no code, it first
+  // asks for a key without one, as the page does when it loads, so the owner
+  // stays signed in when the server restarts. It asks once until a board
+  // comes again, so a key that doesn't work ends there.
   function signOut(sentWith) {
     if (sentWith !== undefined && sentWith !== key()) return false;
-    signedOut = true;
     clearTimeout(retryTimer);
     retryTimer = 0;
     if (stream) stream.abort();
     stream = null;
     $('conn').textContent = '';
+    if (location.protocol === 'https:' && !ownerAsked) {
+      ownerAsked = asking = true;
+      askKey({}).then(got => {
+        asking = false;
+        if (got) connect();
+        else signOut();
+      });
+    }
+    if (asking) return true;
+    signedOut = true;
     if (viewing) {
       history.replaceState(null, '', location.pathname + location.search);
       hideView();

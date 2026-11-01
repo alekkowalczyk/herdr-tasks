@@ -592,6 +592,66 @@ func TestTailnetOffStopsShares(t *testing.T) {
 	}
 }
 
+// A shared port answers only the tailnet: a request from the internet,
+// through Funnel, which Tailscale marks, never reaches the dev server.
+func TestShareRefusesFunnel(t *testing.T) {
+	var reached atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		io.WriteString(w, "the dev server")
+	}))
+	defer backend.Close()
+	p := portOf(backend)
+	dir := shortDir(t)
+	link := fmt.Sprintf("http://localhost:%d/", p)
+	f := startSharing(t, dir, newFakeTS(nil), link)
+	f.shareOK(t, link)
+	req, err := http.NewRequest("GET", "http://localhost/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Tailscale-Funnel-Request", "?1")
+	resp, err := shareClient(shareSock(dir, p)).Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(resp.Body)
+	if want := fmt.Sprintf("localhost:%d isn't shared with the internet.\n", p); resp.StatusCode != http.StatusForbidden || string(b) != want {
+		t.Errorf("through Funnel: %s %q, want 403 %q", resp.Status, b, want)
+	}
+	if reached.Load() > 0 {
+		t.Error("the request reached the dev server")
+	}
+}
+
+// A share recorded at the port the board has moved to is only forgotten:
+// the board's own port is never shared, and its entry in Tailscale may be
+// the board's now, so it's left alone.
+func TestShareAtTheBoardsPortForgotten(t *testing.T) {
+	dir := shortDir(t)
+	share := "unix:" + shareSock(dir, 7391)
+	if err := saveRecord(dir, tailnetRecord{Shares: []sharedEntry{{Port: 7391, Target: share, At: tailnetTime}}}); err != nil {
+		t.Fatal(err)
+	}
+	ts := newFakeTS(map[int]string{7391: share})
+	f := startTailnet(t, dir, ts, onTheTailnet)
+	f.line(t, hasProblem)
+	f.waitTicks(t, 1)
+	if _, err := os.Lstat(shareSock(dir, 7391)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("listening for a share at the board's port: %v", err)
+	}
+	if rec, err := loadRecord(dir); err == nil && len(rec.Shares) > 0 {
+		t.Errorf("recorded %+v; want the share forgotten", rec.Shares)
+	}
+	if got := ts.changes(); len(got) > 0 {
+		t.Errorf("Tailscale was asked %q, want nothing changed", got)
+	}
+	if line := f.line(t, func(*TailnetLine) bool { return true }); len(line.Shares) > 0 {
+		t.Errorf("the header lists %+v", line.Shares)
+	}
+}
+
 // A share whose serve fails isn't recorded, and its socket goes.
 func TestShareServeFails(t *testing.T) {
 	ts := newFakeTS(nil)
@@ -603,6 +663,28 @@ func TestShareServeFails(t *testing.T) {
 	st, reply := f.share(t, "http://localhost:4100/")
 	if st != http.StatusBadGateway || !strings.Contains(reply["error"], "tailscale set --operator") {
 		t.Errorf("share: %d %q, want 502 with the operator hint", st, reply)
+	}
+	if _, err := os.Lstat(shareSock(dir, 4100)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the share's socket is still there: %v", err)
+	}
+	if rec, err := loadRecord(dir); err != nil || len(rec.Shares) > 0 {
+		t.Errorf("recorded %+v, %v; want no shares", rec.Shares, err)
+	}
+}
+
+// A share Tailscale doesn't list after its serve didn't take: it's refused
+// with why, isn't recorded, and its socket goes.
+func TestShareNotTaken(t *testing.T) {
+	ts := newFakeTS(nil)
+	dir := shortDir(t)
+	f := startSharing(t, dir, ts, "http://localhost:4100/")
+	ts.mu.Lock()
+	ts.drop = true
+	ts.mu.Unlock()
+	st, reply := f.share(t, "http://localhost:4100/")
+	want := "Couldn't share port 4100 with your tailnet: Tailscale didn't take the share of port 4100. Is HTTPS turned on for your tailnet?"
+	if st != http.StatusBadGateway || reply["error"] != want {
+		t.Errorf("share: %d %q, want 502 %q", st, reply, want)
 	}
 	if _, err := os.Lstat(shareSock(dir, 4100)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("the share's socket is still there: %v", err)

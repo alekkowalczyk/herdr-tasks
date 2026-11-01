@@ -24,9 +24,10 @@ const shareWait = 30 * time.Second
 
 // shareProxy is a shared port's door: it sends what comes through
 // tailscale serve to localhost:port, as a request made on this machine,
-// over TLS when the dev server speaks it. address is the port's address on
-// the tailnet, or "" while the board has none. It returns the transport
-// too, whose connections to the dev server close when the share stops.
+// over TLS when the dev server speaks it, but nothing from the internet,
+// through Funnel. address is the port's address on the tailnet, or ""
+// while the board has none. It returns the transport too, whose
+// connections to the dev server close when the share stops.
 func shareProxy(port int, overTLS bool, address func() string) (http.Handler, *http.Transport) {
 	p := strconv.Itoa(port)
 	local := "localhost:" + p
@@ -57,7 +58,7 @@ func shareProxy(port int, overTLS bool, address func() string) (http.Handler, *h
 	}
 	var mu sync.Mutex
 	said := "" // the cause last logged, so a dev server that's down is logged once
-	return &httputil.ReverseProxy{
+	proxy := &httputil.ReverseProxy{
 		Rewrite: func(r *httputil.ProxyRequest) {
 			r.SetURL(&url.URL{Scheme: scheme, Host: "127.0.0.1:" + p})
 			// Dev servers such as Vite refuse a Host or an Origin that isn't
@@ -96,7 +97,14 @@ func shareProxy(port int, overTLS bool, address func() string) (http.Handler, *h
 			}
 			http.Error(w, "Nothing answers at "+local+".", http.StatusBadGateway)
 		},
-	}, dev
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if throughFunnel(r) {
+			http.Error(w, local+" isn't shared with the internet.", http.StatusForbidden)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}), dev
 }
 
 // shareSocket is the name of a shared port's socket.

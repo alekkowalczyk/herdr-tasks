@@ -157,7 +157,7 @@ func (c CLI) bin() (string, error) {
 }
 
 // run runs the command with the timeout and returns its standard output. A
-// failure carries the command's output.
+// failure carries the command's output, also when it timed out.
 func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 	bin, err := c.bin()
 	if err != nil {
@@ -182,6 +182,10 @@ func (c CLI) run(ctx context.Context, args ...string) ([]byte, error) {
 		switch {
 		case parent.Err() != nil:
 			return nil, fmt.Errorf("tailscale %s: %w", strings.Join(args, " "), parent.Err())
+		case errors.Is(ctx.Err(), context.DeadlineExceeded) && msg != "":
+			// What it printed says why it waited, as serve does while HTTPS
+			// isn't turned on for the tailnet.
+			msg = "timed out after " + timeout.String() + ": " + msg
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			msg = "timed out after " + timeout.String()
 		}

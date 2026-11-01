@@ -240,18 +240,24 @@ func (a *Auth) Wrap(h http.Handler, adminOnly func(path string) bool) http.Handl
 // WrapTailnet is the door for requests that come through tailscale serve.
 // Tailscale sends its own Host, so none is checked; every Origin must be
 // origin(), the board's tailnet address, and with none every /api/ request
-// is refused. The paths adminOnly picks are for the CLI on this machine, so
-// they are refused here. The Tailscale-User-Login header is put in the
-// request's context, for loginOf: Tailscale sets it itself, after deleting
-// any the client sent, and a tagged machine has none. So is the door, for
-// onTailnetDoor.
+// is refused. A request from the internet, through Funnel, is refused. The
+// paths adminOnly picks are for the CLI on this machine, so they are refused
+// here. The Tailscale-User-Login header is put in the request's context, for
+// loginOf: Tailscale sets it itself, after deleting any the client sent, and
+// a tagged machine has none. So is the door, for onTailnetDoor.
 func (a *Auth) WrapTailnet(h http.Handler, adminOnly func(path string) bool, origin func() string) http.Handler {
 	signed := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx := context.WithValue(r.Context(), loginKey{}, r.Header.Get("Tailscale-User-Login"))
 		ctx = context.WithValue(ctx, doorKey{}, true)
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
-	return a.guard(signed, adminOnly, nil, func(w http.ResponseWriter, r *http.Request, p string) bool {
+	return a.guard(signed, adminOnly, func(w http.ResponseWriter, r *http.Request) bool {
+		if throughFunnel(r) {
+			writeError(w, http.StatusForbidden, "The board isn't shared with the internet.")
+			return false
+		}
+		return true
+	}, func(w http.ResponseWriter, r *http.Request, p string) bool {
 		if adminOnly != nil && adminOnly(p) {
 			writeError(w, http.StatusForbidden, "Only herdr-tasks on this machine can do that.")
 			return false
@@ -263,6 +269,14 @@ func (a *Auth) WrapTailnet(h http.Handler, adminOnly func(path string) bool, ori
 		}
 		return sameOrigin(w, r, o)
 	})
+}
+
+// throughFunnel reports whether a request came from the internet through
+// Tailscale Funnel, which marks it so. herdr-tasks never turns Funnel on;
+// this keeps the board and the shared ports on the tailnet if someone turns
+// it on for their port later.
+func throughFunnel(r *http.Request) bool {
+	return len(r.Header.Values("Tailscale-Funnel-Request")) > 0
 }
 
 // sameOrigin refuses the request, and says so, unless every Origin it sends

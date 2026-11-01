@@ -47,6 +47,10 @@ type fakeTS struct {
 	// hold, when set, keeps Self from answering until it's closed or the
 	// call's context ends, as a tailscale that hangs.
 	hold chan struct{}
+	// onServe, when set, is called with the target of each serve.
+	onServe func(target string)
+	// drop has Serve answer without serving anything.
+	drop bool
 	log  []string
 }
 
@@ -95,8 +99,14 @@ func (f *fakeTS) Serve(_ context.Context, port int, target string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.log = append(f.log, fmt.Sprintf("serve %d %s", port, target))
+	if f.onServe != nil {
+		f.onServe(target)
+	}
 	if f.serveErr != nil {
 		return f.serveErr
+	}
+	if f.drop {
+		return nil
 	}
 	if f.spell != nil {
 		target = f.spell(target)
@@ -522,6 +532,42 @@ func TestStaleSocketReplaced(t *testing.T) {
 	}
 }
 
+// The board's door opens once Tailscale has been read, so it doesn't
+// answer before the board knows its address, which the Origin is checked
+// against, and who owns the machine. It opens before Tailscale is told to
+// serve it, so Tailscale never sends to a socket nobody listens on.
+func TestTailnetDoorOpensAfterReadingTailscale(t *testing.T) {
+	ts := newFakeTS(nil)
+	ts.hold = make(chan struct{})
+	listening := make(chan error, 1)
+	ts.onServe = func(target string) {
+		c, err := net.Dial("unix", strings.TrimPrefix(target, "unix:"))
+		if err == nil {
+			c.Close()
+		}
+		listening <- err
+	}
+	f := startTailnet(t, shortDir(t), ts, onTheTailnet)
+	for deadline := time.Now().Add(3 * time.Second); !slices.Contains(ts.calls(), "self"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the server never asked Tailscale")
+		}
+	}
+	if _, err := os.Lstat(f.sock); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("the door is open while Tailscale is read: %v", err)
+	}
+	close(ts.hold)
+	f.line(t, shared)
+	select {
+	case err := <-listening:
+		if err != nil {
+			t.Errorf("as Tailscale was told to serve the door, nothing listened: %v", err)
+		}
+	default:
+		t.Error("Tailscale wasn't told to serve the board")
+	}
+}
+
 // Something other than a file or a socket at the socket's path is left
 // alone, and the board says so.
 func TestTailnetLeavesALinkAtTheSocket(t *testing.T) {
@@ -547,7 +593,7 @@ func TestTailnetLeavesALinkAtTheSocket(t *testing.T) {
 	if b, err := os.ReadFile(target); err != nil || string(b) != "kept" {
 		t.Errorf("the link's target: %q, %v", b, err)
 	}
-	if got := ts.calls(); len(got) > 0 {
+	if got := ts.changes(); len(got) > 0 {
 		t.Errorf("Tailscale was asked %q", got)
 	}
 }
@@ -562,6 +608,33 @@ func TestTailnetSocketPathTooLong(t *testing.T) {
 	f := startTailnet(t, dir, newFakeTS(nil), onTheTailnet)
 	if line := f.line(t, hasProblem); !strings.Contains(line.Problem, "too long") {
 		t.Errorf("tailnet line = %+v, want the socket's path too long", line)
+	}
+}
+
+// A serve that Tailscale doesn't list afterwards didn't take, as when HTTPS
+// isn't turned on for the tailnet: the board says so, records nothing, and
+// tries again a minute later.
+func TestTailnetServeNotTaken(t *testing.T) {
+	ts := newFakeTS(nil)
+	ts.drop = true
+	f := startTailnet(t, shortDir(t), ts, onTheTailnet)
+	line := f.line(t, hasProblem)
+	want := "Couldn't share the board with your tailnet: Tailscale didn't take the share of port 7391. Is HTTPS turned on for your tailnet?"
+	if line.Problem != want || line.Address != "" {
+		t.Errorf("tailnet line = %+v, want only %q", line, want)
+	}
+	if _, err := os.Stat(serverFile(f.dir, "tailnet.json")); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("recorded what didn't take: %v", err)
+	}
+	f.advance(50 * time.Second)
+	f.waitTicks(t, 2)
+	if n := ts.serves(7391); n != 1 {
+		t.Errorf("within a minute, Tailscale was asked %q", ts.changes())
+	}
+	f.advance(10 * time.Second)
+	f.waitTicks(t, 1)
+	if n := ts.serves(7391); n != 2 {
+		t.Errorf("a minute on, Tailscale was asked %q, want a second serve", ts.changes())
 	}
 }
 
