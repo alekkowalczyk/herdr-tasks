@@ -111,7 +111,8 @@ func lone(dir string) bool {
 		if pi, err := os.Stat(p); err != nil {
 			return true
 		} else if os.SameFile(pi, hi) {
-			return slices.ContainsFunc(below, slack.LooksSecretDir)
+			slices.Reverse(below)
+			return slack.LooksSecretPath(below)
 		}
 		below = append(below, filepath.Base(p))
 		if p == filepath.Dir(p) {

@@ -309,6 +309,10 @@ func fold(name string) string {
 	}, fullFolds.Replace(name))
 }
 
+// LooksSecretPath reports whether any of a path's parts, in order, names a
+// secret or a folder of them, as the guard judges a path.
+func LooksSecretPath(parts []string) bool { return secretParts(parts) }
+
 // LooksSecretDir reports whether a folder name is one keys commonly are in:
 // .ssh, .aws and the like, in any case.
 func LooksSecretDir(name string) bool { return slices.Contains(secretDirs, fold(name)) }

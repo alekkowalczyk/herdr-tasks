@@ -46,6 +46,8 @@ func startPages(t *testing.T) *pageFixture {
 		"second.html":                  "<!doctype html><title>Second</title>",
 		".ssh/keys.html":               "<!doctype html><title>Keys</title>",
 		".ssh/config":                  "Host acme",
+		".config/gcloud/x.html":        "<!doctype html>",
+		".config/gcloud/creds.json":    "{}",
 		"acme/report/id_r\u017fa":      "not a key",
 		"acme/report/.hidden.html":     "<!doctype html>",
 		"acme/report/id_rsa.html":      "<!doctype html>",
@@ -82,6 +84,7 @@ func startPages(t *testing.T) *pageFixture {
 			{URL: task.FileURL(f.report), Added: now}, {URL: task.FileURL(f.top), Added: now},
 			{URL: task.FileURL(filepath.Join(home, "second.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(home, ".ssh", "keys.html")), Added: now},
+			{URL: task.FileURL(filepath.Join(home, ".config", "gcloud", "x.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(dir, ".hidden.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(dir, "id_rsa.html")), Added: now},
 			{URL: task.FileURL(filepath.Join(dir, "big.html")), Added: now},
@@ -271,6 +274,17 @@ func TestPageInKeyFolderServesOnlyItself(t *testing.T) {
 		t.Fatalf("keys.html: %d", resp.StatusCode)
 	}
 	if resp, _ := f.page(t, pageHref.FindString(href)+"config"); resp.StatusCode != http.StatusNotFound {
+		t.Errorf("a file beside it: %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPageInGcloudFolderServesOnlyItself(t *testing.T) {
+	f := startPages(t)
+	href := f.href(t, filepath.Join(f.home, ".config", "gcloud", "x.html"))
+	if resp, _ := f.page(t, href); resp.StatusCode != 200 {
+		t.Fatalf("x.html: %d", resp.StatusCode)
+	}
+	if resp, _ := f.page(t, pageHref.FindString(href)+"creds.json"); resp.StatusCode != http.StatusNotFound {
 		t.Errorf("a file beside it: %d, want 404", resp.StatusCode)
 	}
 }
