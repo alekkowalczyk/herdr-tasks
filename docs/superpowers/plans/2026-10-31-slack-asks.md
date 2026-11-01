@@ -1144,7 +1144,7 @@ Three places, from v1, hold names that look real. Replace them with invented one
   GOTOOLCHAIN=go1.23.4 go test -race ./...
   for os in darwin linux; do for arch in amd64 arm64; do CGO_ENABLED=0 GOOS=$os GOARCH=$arch GOTOOLCHAIN=go1.23.4 go build -o /dev/null ./cmd/herdr-tasks || exit 1; done; done
   node internal/board/web/keymap_test.mjs
-  git grep -nwiE '<the user\'s real session names, paths and issue keys>' -- .
+  git grep -nwiE "<the user's real session names, paths and issue keys>" -- .
   ```
   Expected:
   - vet and tests pass;
