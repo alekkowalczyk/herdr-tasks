@@ -231,6 +231,8 @@ func TestRemoveUnsharesOnlyOwnEntries(t *testing.T) {
 
 // When Tailscale doesn't take its entries out, remove says how to, with
 // each port. With --purge the record goes, so that's the only trace left.
+// The note is the same without --purge, which is what runs here: --purge
+// deletes the Linear key from the real keychain on macOS.
 func TestRemoveSaysHowToUnshareWhenTailscaleFails(t *testing.T) {
 	in := install(t)
 	sockets := filepath.Join(in.state, "board", "sockets")
@@ -242,7 +244,7 @@ func TestRemoveSaysHowToUnshareWhenTailscaleFails(t *testing.T) {
 	in.tailscale.offErr = errors.New("timed out after 10s")
 
 	var err error
-	out := stdout(t, func() { err = (&app{}).remove(true) })
+	out := stdout(t, func() { err = (&app{}).remove(false) })
 	if err != nil {
 		t.Fatal(err)
 	}
