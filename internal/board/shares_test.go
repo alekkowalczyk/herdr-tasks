@@ -625,10 +625,10 @@ func TestShareRefusesFunnel(t *testing.T) {
 	}
 }
 
-// A share recorded at the port the board has moved to is only forgotten:
-// the board's own port is never shared, and its entry in Tailscale may be
-// the board's now, so it's left alone.
-func TestShareAtTheBoardsPortForgotten(t *testing.T) {
+// A share recorded at the port the board has moved to is herdr-tasks' own
+// entry: it's taken out of Tailscale and forgotten, never listened on, and
+// the board is shared at that port instead.
+func TestShareAtTheBoardsPortMakesWay(t *testing.T) {
 	dir := shortDir(t)
 	share := "unix:" + shareSock(dir, 7391)
 	if err := saveRecord(dir, tailnetRecord{Shares: []sharedEntry{{Port: 7391, Target: share, At: tailnetTime}}}); err != nil {
@@ -636,19 +636,48 @@ func TestShareAtTheBoardsPortForgotten(t *testing.T) {
 	}
 	ts := newFakeTS(map[int]string{7391: share})
 	f := startTailnet(t, dir, ts, onTheTailnet)
-	f.line(t, hasProblem)
-	f.waitTicks(t, 1)
+	line := f.line(t, shared)
+	if line.Problem != "" || len(line.Shares) > 0 {
+		t.Errorf("tailnet line %+v, want the board shared and no shares", line)
+	}
+	board := "unix:" + boardSock(dir)
+	if got, want := ts.changes(), []string{"off 7391", "serve 7391 " + board}; !slices.Equal(got, want) {
+		t.Errorf("Tailscale was asked %q, want %q", got, want)
+	}
 	if _, err := os.Lstat(shareSock(dir, 7391)); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("listening for a share at the board's port: %v", err)
 	}
-	if rec, err := loadRecord(dir); err == nil && len(rec.Shares) > 0 {
-		t.Errorf("recorded %+v; want the share forgotten", rec.Shares)
+	rec, err := loadRecord(dir)
+	if err != nil || len(rec.Shares) > 0 || rec.Board == nil || rec.Board.Target != board {
+		t.Errorf("recorded %+v, %v; want the board and no shares", rec, err)
 	}
-	if got := ts.changes(); len(got) > 0 {
-		t.Errorf("Tailscale was asked %q, want nothing changed", got)
+}
+
+// A share at the board's port that Tailscale won't take out stays recorded,
+// so it's tried again and remove takes it out, but it's never listened on
+// or listed.
+func TestShareAtTheBoardsPortKeptWhenOffFails(t *testing.T) {
+	dir := shortDir(t)
+	share := "unix:" + shareSock(dir, 7391)
+	if err := saveRecord(dir, tailnetRecord{Shares: []sharedEntry{{Port: 7391, Target: share, At: tailnetTime}}}); err != nil {
+		t.Fatal(err)
 	}
-	if line := f.line(t, func(*TailnetLine) bool { return true }); len(line.Shares) > 0 {
-		t.Errorf("the header lists %+v", line.Shares)
+	ts := newFakeTS(map[int]string{7391: share})
+	ts.offErr = errors.New("tailscale serve: timed out after 10s")
+	f := startTailnet(t, dir, ts, onTheTailnet)
+	line := f.line(t, hasProblem)
+	want := "Couldn't share the board with your tailnet: couldn't stop sharing port 7391: tailscale serve: timed out after 10s"
+	if line.Problem != want || len(line.Shares) > 0 {
+		t.Errorf("tailnet line %+v, want problem %q and no shares", line, want)
+	}
+	if _, err := os.Lstat(shareSock(dir, 7391)); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("listening for a share at the board's port: %v", err)
+	}
+	if rec, err := loadRecord(dir); err != nil || len(rec.Shares) != 1 || rec.Shares[0].Target != share {
+		t.Errorf("recorded %+v, %v; want the share kept", rec, err)
+	}
+	if got := ts.entries()[7391]; got != share {
+		t.Errorf("Tailscale serves %q at 7391, want the share left", got)
 	}
 }
 

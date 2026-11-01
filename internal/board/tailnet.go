@@ -355,6 +355,21 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string, map[int]
 		}
 		log.Printf("tailnet: the board left port %d", b.Port)
 	}
+	if i := slices.IndexFunc(rec.Shares, func(e sharedEntry) bool { return e.Port == port }); i >= 0 {
+		// A share from before the board moved to its port makes way for it.
+		took, err := unshare(ctx, ts, served, rec.Shares[i])
+		if err != nil {
+			return failed(fmt.Errorf("couldn't stop sharing port %d: %w", port, err)), self.Owner, served
+		}
+		if took {
+			delete(served, port)
+		}
+		rec.Shares = slices.Delete(rec.Shares, i, i+1)
+		if err := saveRecord(s.cfg.StateDir, rec); err != nil {
+			return failed(err), self.Owner, served
+		}
+		log.Printf("tailnet: localhost:%d is the board's port now; stopped sharing it", port)
+	}
 	target := "unix:" + sock
 	got, listed := served[port]
 	switch {
@@ -400,34 +415,34 @@ func serveTarget(ctx context.Context, ts Tailscale, port int, target string) (st
 // keepShares listens again on the socket of each share recorded, as the
 // server does once it starts, and forgets those Tailscale no longer serves
 // as recorded; served is nil when it couldn't be read. A share at the
-// board's own port, which the board has moved to since, is forgotten too,
-// and its entry left alone: it may be the board's now. It returns the
-// shares, for the header.
+// board's own port, which the board has moved to since, is one shareBoard
+// couldn't take out yet: it stays recorded, so it's taken out later, but
+// isn't listened on or listed. It returns the shares, for the header.
 func (s *Server) keepShares(served map[int]string) []SharedPort {
 	t := &s.tailnet
 	rec := s.tailnetRecord()
-	var kept []sharedEntry
+	var kept, open []sharedEntry
 	listening := true
 	for _, e := range rec.Shares {
-		if e.Port == s.cfg.Port {
-			log.Printf("tailnet: localhost:%d is the board's port now; forgot its share", e.Port)
-			continue
-		}
 		if served != nil && served[e.Port] != e.Target {
 			log.Printf("tailnet: Tailscale no longer serves localhost:%d for herdr-tasks; forgot it", e.Port)
+			continue
+		}
+		kept = append(kept, e)
+		if e.Port == s.cfg.Port {
 			continue
 		}
 		if err := s.listenShare(e); err != nil {
 			logOnce(&t.shareSaid, fmt.Sprintf("tailnet: couldn't listen for localhost:%d: %v", e.Port, err))
 			listening = false
 		}
-		kept = append(kept, e)
+		open = append(open, e)
 	}
 	if listening {
 		t.shareSaid = ""
 	}
 	for port := range t.shares {
-		if !slices.ContainsFunc(kept, func(e sharedEntry) bool { return e.Port == port }) {
+		if !slices.ContainsFunc(open, func(e sharedEntry) bool { return e.Port == port }) {
 			t.stopShare(port)
 		}
 	}
@@ -437,7 +452,7 @@ func (s *Server) keepShares(served map[int]string) []SharedPort {
 			logOnce(&t.shareSaid, "tailnet: "+err.Error())
 		}
 	}
-	return sharedPorts(kept)
+	return sharedPorts(open)
 }
 
 // unshareAll stops listening on the board's socket and the shared ports',
