@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -27,10 +28,12 @@ type installed struct {
 }
 
 // fakeTailscale is the tailscale command in memory: what it serves, and the
-// calls that change that, as "serve <port> <target>" and "off <port>".
+// calls that change that, as "serve <port> <target>" and "off <port>". Off
+// fails with offErr when it's set.
 type fakeTailscale struct {
 	served map[int]string
 	calls  []string
+	offErr error
 }
 
 func (f *fakeTailscale) Self(context.Context) (tailnet.Self, error) {
@@ -49,6 +52,9 @@ func (f *fakeTailscale) Serve(_ context.Context, port int, target string) error 
 
 func (f *fakeTailscale) Off(_ context.Context, port int) error {
 	f.calls = append(f.calls, fmt.Sprintf("off %d", port))
+	if f.offErr != nil {
+		return fmt.Errorf("tailscale serve --https=%d off: %w", port, f.offErr)
+	}
 	delete(f.served, port)
 	return nil
 }
@@ -221,4 +227,54 @@ func TestRemoveUnsharesOnlyOwnEntries(t *testing.T) {
 	if _, err := os.Stat(record); !os.IsNotExist(err) {
 		t.Errorf("the record is still there: %v", err)
 	}
+}
+
+// When Tailscale doesn't take its entries out, remove says how to, with
+// each port. With --purge the record goes, so that's the only trace left.
+func TestRemoveSaysHowToUnshareWhenTailscaleFails(t *testing.T) {
+	in := install(t)
+	sockets := filepath.Join(in.state, "board", "sockets")
+	ours := "unix:" + filepath.Join(sockets, "board.sock")
+	share := "unix:" + filepath.Join(sockets, "share-4100.sock")
+	write(t, filepath.Join(in.state, "board", "tailnet.json"), fmt.Sprintf(`{"board":{"port":7391,"target":%q,"at":"2026-11-01T09:00:00Z"},`+
+		`"shares":[{"port":4100,"target":%q,"at":"2026-11-01T09:05:00Z"}]}`, ours, share), 0o600)
+	in.tailscale.served = map[int]string{7391: ours, 4100: share}
+	in.tailscale.offErr = errors.New("timed out after 10s")
+
+	var err error
+	out := stdout(t, func() { err = (&app{}).remove(true) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "herdr-tasks: note: couldn't take the board off your tailnet: " +
+		"tailscale serve --https=7391 off: timed out after 10s; tailscale serve --https=4100 off: timed out after 10s. " +
+		"Check tailscale serve status, and take out the entries herdr-tasks made with: " +
+		"tailscale serve --https=7391 off; tailscale serve --https=4100 off\n"
+	if !strings.Contains(out, want) {
+		t.Errorf("printed:\n%s\nwant a line:\n%s", out, want)
+	}
+}
+
+// stdout is what f prints on stdout.
+func stdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	was := os.Stdout
+	os.Stdout = w
+	got := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		got <- string(b)
+	}()
+	defer func() {
+		os.Stdout = was
+		w.Close()
+	}()
+	f()
+	os.Stdout = was
+	w.Close()
+	return <-got
 }

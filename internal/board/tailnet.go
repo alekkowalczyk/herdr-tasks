@@ -154,6 +154,24 @@ func Unshare(stateDir string, ts Tailscale) error {
 	return errors.Join(errs...)
 }
 
+// RecordedPorts is the ports of the tailscale serve entries herdr-tasks
+// recorded, the board's first, or none when there's no record or it can't
+// be read.
+func RecordedPorts(stateDir string) []int {
+	rec, err := loadRecord(stateDir)
+	if err != nil {
+		return nil
+	}
+	var ports []int
+	if rec.Board != nil {
+		ports = append(ports, rec.Board.Port)
+	}
+	for _, e := range rec.Shares {
+		ports = append(ports, e.Port)
+	}
+	return ports
+}
+
 // tailnetState is the board's door on the tailnet, the shared ports', and
 // what the header says of them.
 type tailnetState struct {

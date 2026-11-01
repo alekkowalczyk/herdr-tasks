@@ -820,6 +820,9 @@ func TestStopClosesIdleConnections(t *testing.T) {
 // A share Tailscale serves but that can't be recorded is taken back out,
 // and the answer says so, with why taking it out failed too.
 func TestShareUndoneWhenNotRecorded(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root writes in a read-only folder, so the record can't be made to fail")
+	}
 	ts := newFakeTS(nil)
 	dir := shortDir(t)
 	f := startSharing(t, dir, ts, "http://localhost:4100/")

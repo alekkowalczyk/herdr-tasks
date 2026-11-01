@@ -796,9 +796,18 @@ func (a *app) remove(purge bool) error {
 		fmt.Println("herdr-tasks: note: " + note)
 	}
 	// Only the tailscale serve entries the board recorded, and only those
-	// still as recorded.
+	// still as recorded. The ones left are named, as --purge deletes the
+	// record of them.
 	if err := board.Unshare(store.Dir(), tailscaleCLI); err != nil {
-		fmt.Println("herdr-tasks: note: couldn't take the board off your tailnet: " + err.Error())
+		note := "couldn't take the board off your tailnet: " + strings.ReplaceAll(err.Error(), "\n", "; ")
+		if ports := board.RecordedPorts(store.Dir()); len(ports) > 0 {
+			var offs []string
+			for _, p := range ports {
+				offs = append(offs, fmt.Sprintf("tailscale serve --https=%d off", p))
+			}
+			note += ". Check tailscale serve status, and take out the entries herdr-tasks made with: " + strings.Join(offs, "; ")
+		}
+		fmt.Println("herdr-tasks: note: " + note)
 	}
 	sessions := herdr.RunningSessions()
 	// Stop hooks first, so they don't put markers back.
