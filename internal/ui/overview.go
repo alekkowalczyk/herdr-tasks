@@ -32,6 +32,9 @@ type Env struct {
 	// Shown in the message line when the overview opens, such as why the
 	// board couldn't start.
 	Message string
+	// OpenBoard opens a tab's task on the board, in the browser, and says
+	// what you should know about it, or "" when there's nothing to say.
+	OpenBoard func(tab string) string
 }
 
 func (e Env) host() strip.Host { return strip.Host{Client: e.Client} }
@@ -155,6 +158,9 @@ func newModel(env Env) (*model, error) {
 }
 
 type refreshMsg struct{}
+
+// boardOpened says the board opened, with what OpenBoard had to say.
+type boardOpened struct{ say string }
 
 func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return refreshMsg{} })
@@ -476,6 +482,19 @@ func (m *model) jump() tea.Cmd {
 	return m.quit("enter")
 }
 
+// openBoard opens the selected task on the board, in the browser. Starting
+// the board server takes a moment, so it runs as a command. The overview
+// goes once the browser opens, unless there's something to say.
+func (m *model) openBoard() tea.Cmd {
+	r := m.selected()
+	if r == nil || m.env.OpenBoard == nil {
+		return nil
+	}
+	m.msg = "Opening the board…"
+	open, tab := m.env.OpenBoard, r.tab.ID
+	return func() tea.Msg { return boardOpened{open(tab)} }
+}
+
 // quit ends the overview, pressing k. While a move started here runs, it
 // waits for the move, which quitting would cut short; a ctrl+c once you've
 // asked to quit doesn't wait.
@@ -502,6 +521,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refresh()
 		}
 		return m, tick()
+	case boardOpened:
+		if msg.say == "" {
+			return m, m.quit("b")
+		}
+		m.msg = msg.say
+		return m, nil
 	case actionDone:
 		// Only a move ends with this. One that failed cancels a quit you
 		// asked for meanwhile, so you see why.
@@ -625,6 +650,8 @@ func (m *model) key(k string) tea.Cmd {
 		m.move(len(m.rows))
 	case "enter":
 		return m.jump()
+	case "b":
+		return m.openBoard()
 	case "a":
 		m.setStage(task.Active)
 	case "p":
@@ -1151,7 +1178,7 @@ func (m *model) footer() string {
 	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
-		keys = [][2]string{{"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
+		keys = [][2]string{{"b", "b open on the board"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
 			{"L", "L remove link"}, {"w", "w move to workspace"}, {"m", "m mute channel"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
 	}
 	var b strings.Builder

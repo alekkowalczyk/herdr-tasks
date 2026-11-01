@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -52,6 +53,8 @@ type boardCmd struct {
 	open  func(url string) error // opens url in the browser
 	sleep func(time.Duration)    // waits, while the server reads Tailscale
 	out   io.Writer              // where --print prints the URL
+
+	tab string // a task's tab to open the board at, or "" for the board
 }
 
 // openBoard runs `herdr-tasks board [--print] [--new-token] [--session NAME]`.
@@ -63,21 +66,45 @@ func (a *app) openBoard(args []string) error {
 	if session == "" {
 		session = currentSession(os.Getenv)
 	}
-	exe, err := executable()
+	b, err := a.boardCommand()
 	if err != nil {
 		return err
+	}
+	return b.run(print, newToken, session)
+}
+
+// boardAt opens this session's board at a tab's task, for the overview, and
+// says what you should know: why it didn't open, or where to open it.
+func (a *app) boardAt(tab string) string {
+	b, err := a.boardCommand()
+	if err != nil {
+		return err.Error()
+	}
+	var said []string
+	b.show = func(msg string) { said = append(said, msg) }
+	b.tab = tab
+	if err := b.run(false, false, currentSession(os.Getenv)); err != nil && !errors.Is(err, errShown) {
+		said = append(said, err.Error())
+	}
+	return strings.Join(said, " ")
+}
+
+// boardCommand is the board command, with the real server and browser.
+func (a *app) boardCommand() (boardCmd, error) {
+	exe, err := executable()
+	if err != nil {
+		return boardCmd{}, err
 	}
 	ensure := board.Ensure
 	rotate := func(dir string, port int, exe, _ string) error { return board.Rotate(dir, port, exe) }
 	if pathCopy(exe, store.Dir()) {
 		ensure, rotate = board.EnsureNotOlder, board.RotateNotOlder
 	}
-	b := boardCmd{
+	return boardCmd{
 		opts: a.opts, dir: store.Dir(), exe: exe,
 		ensure: ensure, rotate: rotate, loginURL: board.LoginURL,
 		show: a.showMessage, open: openBrowser, sleep: time.Sleep, out: os.Stdout,
-	}
-	return b.run(print, newToken, session)
+	}, nil
 }
 
 const boardUsage = "use --print, --new-token or --session NAME"
@@ -144,6 +171,14 @@ func (b boardCmd) run(print, newToken bool, session string) error {
 	}
 	if b.opts.BoardTailnet {
 		login = b.tailnetLogin(login, session)
+	}
+	if b.tab != "" {
+		// The page opens the task's view from its address.
+		hash := "#tab=" + url.QueryEscape(b.tab)
+		login.Local += hash
+		if login.Tailnet != "" {
+			login.Tailnet += hash
+		}
 	}
 	// Said once, as each message opens the overview when herdr runs this.
 	var say []string

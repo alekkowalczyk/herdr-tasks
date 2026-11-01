@@ -179,6 +179,31 @@ func TestBoardShowsTailnetWhenNoBrowser(t *testing.T) {
 	}
 }
 
+// With a tab, as from the overview, the board opens at that task's view, on
+// the tailnet too.
+func TestBoardOpensATask(t *testing.T) {
+	const tailnetURL = "https://devbox.tail0000.ts.net:7391/work/?code=0123abcd"
+	f := newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+	f.loginURL = func(string, string) (board.Login, error) {
+		return board.Login{Local: testURL, Tailnet: tailnetURL}, nil
+	}
+	var opened []string
+	f.open = func(url string) error {
+		opened = append(opened, url)
+		return errors.New("no display to open a browser on")
+	}
+	f.tab = "w1:t3"
+	if err := f.run(false, false, "work"); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{testURL + "#tab=w1%3At3"}; !slices.Equal(opened, want) {
+		t.Errorf("opened %q, want %q", opened, want)
+	}
+	if want := "Open this in your browser: " + tailnetURL + "#tab=w1%3At3 (the code works for a minute)"; !slices.Equal(f.shown, []string{want}) {
+		t.Errorf("showed %q, want %q", f.shown, want)
+	}
+}
+
 // A server that just started hasn't read Tailscale yet, so the board
 // command asks again, every half second, until it says where the board is
 // on the tailnet or why it isn't there, for up to 12 s.

@@ -237,6 +237,64 @@ func TestOverviewMoveAndMute(t *testing.T) {
 	}
 }
 
+// b opens the selected task on the board, in the browser, and the overview
+// goes. When the board has something to say, as when no browser opened, the
+// overview stays and says it.
+func TestOverviewOpensTheBoard(t *testing.T) {
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	setTask(t, st, &task.Task{Stage: task.Active})
+	var opened []string
+	say := ""
+	m, err := newModel(Env{Client: fakeHerdr(t, others...), Store: st, CurrentTab: "w1:t1", OpenBoard: func(tab string) string {
+		opened = append(opened, tab)
+		return say
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	press := func(key string) tea.Cmd {
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		return cmd
+	}
+	quits := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		_, ok := cmd().(tea.QuitMsg)
+		return ok
+	}
+
+	open := press("b")
+	if m.msg != "Opening the board…" || open == nil {
+		t.Fatalf("message = %q, want Opening the board… and a command", m.msg)
+	}
+	if len(opened) != 0 {
+		t.Errorf("the board opened before the command ran: %v", opened)
+	}
+	_, next := m.Update(open())
+	if !quits(next) {
+		t.Error("the overview stayed after the board opened")
+	}
+	if !slices.Equal(opened, []string{"w1:t1"}) {
+		t.Errorf("opened %v, want the selected task's tab", opened)
+	}
+
+	say = "Open this in your browser: http://127.0.0.1:7391/test/?code=abc#tab=w1%3At1 (the code works for a minute)"
+	open = press("b")
+	if _, next := m.Update(open()); quits(next) {
+		t.Error("the overview went with something to say")
+	}
+	if m.msg != say {
+		t.Errorf("message = %q, want %q", m.msg, say)
+	}
+
+	press("?")
+	if view := plain(m.View()); !strings.Contains(view, "b open on the board") {
+		t.Errorf("help doesn't list b:\n%s", view)
+	}
+}
+
 // Quitting while a move the overview started runs would cut the move
 // short: the overview quits once the move is done, or at a second ctrl+c.
 func TestOverviewQuitsOnceItsMoveIsDone(t *testing.T) {

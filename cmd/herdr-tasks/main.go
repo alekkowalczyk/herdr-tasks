@@ -685,7 +685,7 @@ func (a *app) overview() error {
 	if json.Unmarshal([]byte(os.Getenv("HERDR_PLUGIN_CONTEXT_JSON")), &ctx) == nil && ctx.TabID != "" {
 		current = ctx.TabID
 	}
-	return ui.Run(ui.Env{Client: a.client, Store: a.store, Opts: a.opts, CurrentTab: current, Message: os.Getenv("HERDR_TASKS_MESSAGE")})
+	return ui.Run(ui.Env{Client: a.client, Store: a.store, Opts: a.opts, CurrentTab: current, Message: os.Getenv("HERDR_TASKS_MESSAGE"), OpenBoard: a.boardAt})
 }
 
 func printJSON(v any) error {
