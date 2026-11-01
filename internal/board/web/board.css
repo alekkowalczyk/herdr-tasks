@@ -833,29 +833,37 @@ body.details-below .text.long { max-height: none; }
   color: #f0c674;
   line-height: 1.35;
 }
-.term-zoom {
+/* A pane's zoom buttons show in its corner when you point at it, and
+   while it's zoomed. */
+.term-tools {
   position: absolute;
   top: 4px;
   right: 4px;
   z-index: 1;
-  display: grid;
-  place-items: center;
-  width: 24px;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.term-pane:hover .term-tools,
+.term-pane.zoomed .term-tools,
+.term-tools:focus-within { opacity: 1; }
+.term-zoom,
+.term-herdr-zoom {
   height: 24px;
-  padding: 0;
+  padding: 0 8px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-radius: 6px;
   background: rgba(33, 37, 43, 0.92);
   color: rgba(255, 255, 255, 0.75);
-  font-size: 15px;
+  font-family: var(--sans);
+  font-size: 12px;
   line-height: 1;
-  opacity: 0;
   cursor: pointer;
-  transition: opacity 0.12s;
 }
-.term-pane:hover .term-zoom,
-.term-zoom:focus-visible { opacity: 1; }
-.term-zoom:hover { background: #3a3f4b; color: #ffffff; }
+.term-zoom { width: 24px; padding: 0; font-size: 15px; }
+.term-zoom:hover,
+.term-herdr-zoom:hover { background: #3a3f4b; color: #ffffff; }
 .term-screen { position: absolute; }
 
 .detail-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--muted); font-size: 13px; }
@@ -1017,7 +1025,7 @@ body.details-below .text.long { max-height: none; }
 
 @media (hover: none) {
   .card { cursor: default; }
-  .term-zoom { opacity: 1; }
+  .term-tools { opacity: 1; }
 }
 
 /* The list of sessions at / */

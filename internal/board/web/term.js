@@ -126,6 +126,7 @@
 
     const panes = new Map(); // pane ID → its terminal and what it waits for
     let layout = null; // the latest layout
+    let pageZoom = null; // the pane zoomed on this page, if any
     let font = 0;
     let closed = false;
     let mouseDown = false;
@@ -244,15 +245,43 @@
         p.agent.textContent = info.agent || '';
         p.agent.hidden = !info.agent;
         p.title.textContent = info.title || (info.agent || info.name ? '' : 'Shell');
-        const label = [info.name, info.agent, info.title].filter(Boolean).join(': ') || 'Terminal';
-        p.el.setAttribute('aria-label', label);
-        // A tab of one pane has nothing to zoom.
-        p.zoom.hidden = !l.zoomed && l.panes.length < 2;
-        p.zoom.textContent = l.zoomed ? '⤡' : '⤢';
-        p.zoom.setAttribute('title', l.zoomed ? "Show all the tab's panes again, in herdr too" : 'Zoom this pane to the whole tab, in herdr too');
-        p.zoom.setAttribute('aria-label', (l.zoomed ? 'Unzoom ' : 'Zoom ') + label);
+        p.label = [info.name, info.agent, info.title].filter(Boolean).join(': ') || 'Terminal';
+        p.el.setAttribute('aria-label', p.label);
       }
       setStatus(l.panes.length ? '' : 'This tab has no panes to show. It may have closed.');
+      showZoom();
+      place();
+    }
+
+    // showZoom shows the zoom each pane offers, and hides the panes a zoom on
+    // this page leaves out. A zoom in herdr ends one on this page, as does
+    // its pane going. A tab of one pane has nothing to zoom.
+    function showZoom() {
+      if (!layout) return;
+      if (layout.zoomed || !panes.has(pageZoom)) pageZoom = null;
+      for (const p of panes.values()) {
+        const here = pageZoom === p.id;
+        p.el.hidden = pageZoom !== null && !here;
+        if (here || layout.zoomed) p.el.classList.add('zoomed');
+        else p.el.classList.remove('zoomed');
+        p.zoom.hidden = layout.zoomed || layout.panes.length < 2;
+        p.zoom.textContent = here ? '⤡' : '⤢';
+        p.zoom.setAttribute('title', here ? 'Show all the panes' : 'Zoom this pane on this page');
+        p.zoom.setAttribute('aria-label', (here ? 'Show all the panes, not only ' : 'Zoom ') + p.label);
+        p.herdrZoom.hidden = !here && !layout.zoomed;
+        p.herdrZoom.textContent = layout.zoomed ? 'Unzoom in herdr' : 'Zoom in herdr';
+        p.herdrZoom.setAttribute(
+          'title',
+          layout.zoomed ? "Show all the tab's panes again, in herdr too" : 'Give this pane the whole tab in herdr too, so it has more room',
+        );
+      }
+    }
+
+    // zoomHere zooms a pane on this page, or shows all the panes again.
+    function zoomHere(p) {
+      if (!layout || layout.zoomed || layout.panes.length < 2) return;
+      pageZoom = pageZoom === p.id ? null : p.id;
+      showZoom();
       place();
     }
 
@@ -280,15 +309,22 @@
       p.title = el('span', 'term-title');
       p.badge = el('span', 'term-badge', 'scrolled back in herdr');
       p.badge.hidden = true;
+      // A pane zooms on this page, and from there in herdr too.
+      p.tools = el('div', 'term-tools');
+      p.herdrZoom = el('button', 'term-herdr-zoom');
+      p.herdrZoom.setAttribute('type', 'button');
+      p.herdrZoom.addEventListener('click', () => zoomInHerdr(p));
       p.zoom = el('button', 'term-zoom');
       p.zoom.setAttribute('type', 'button');
-      p.zoom.addEventListener('click', () => zoom(p));
-      // Two clicks on the header zoom too, as the button is small.
-      head.addEventListener('dblclick', () => zoom(p));
+      p.zoom.addEventListener('click', () => zoomHere(p));
+      // Two clicks on the header zoom too, as the button only shows when
+      // you point at the pane.
+      head.addEventListener('dblclick', () => zoomHere(p));
+      p.tools.append(p.herdrZoom, p.zoom);
       head.append(p.name, p.agent, p.title, p.badge);
       p.head = head;
       p.screen = el('div', 'term-screen');
-      p.el.append(head, p.screen, p.zoom);
+      p.el.append(head, p.screen, p.tools);
       stage.append(p.el);
 
       const term = new window.Terminal({
@@ -371,9 +407,9 @@
       return p;
     }
 
-    // zoom zooms a pane to the whole tab in herdr, or shows all the tab's
-    // panes again. The next layout shows it.
-    async function zoom(p) {
+    // zoomInHerdr zooms a pane to the whole tab in herdr, or shows all the
+    // tab's panes again there. The next layout shows it.
+    async function zoomInHerdr(p) {
       const k = opts.key();
       try {
         const res = await fetch('/api/pane/zoom', {
@@ -423,7 +459,8 @@
     // top row, and the terminal inside.
     function place() {
       if (!layout || !layout.panes.length) return;
-      const area = layout.area || {};
+      // Zoomed on this page, the pane is the area to fit.
+      const area = (pageZoom && panes.get(pageZoom).info) || layout.area || {};
       const aw = Math.max(1, area.width || 0);
       const ah = Math.max(1, area.height || 0);
       const f = fontFor(aw, ah, fit.clientWidth, fit.clientHeight);

@@ -378,6 +378,31 @@ async function opened(platform = 'MacIntel') {
   return pg;
 }
 
+// paneEls is each pane, in order.
+function paneEls(pg) {
+  const out = [];
+  const walk = e => {
+    for (const c of e.children) {
+      if (c.className === 'term-pane') out.push(c);
+      walk(c);
+    }
+  };
+  walk(pg.box);
+  return out;
+}
+
+// herdrButtons is each pane's button that zooms it in herdr, in order.
+const herdrButtons = pg => paneEls(pg).map(p => find(p, 'term-herdr-zoom'));
+
+function find(e, cls) {
+  for (const c of e.children) {
+    if (c.className === cls) return c;
+    const f = find(c, cls);
+    if (f) return f;
+  }
+  return null;
+}
+
 // zoomButtons is each pane's zoom button, in order.
 function zoomButtons(pg) {
   const out = [];
@@ -808,46 +833,84 @@ const tests = {
     assert.equal(pg.streamKeys.length, 2, 'a closed view took up a stream');
   },
 
-  // A pane's header has a button that zooms it to the whole tab, in herdr
-  // too, as do two clicks on the header; zoomed, it shows the tab's panes
+  // A pane's corner has a button that zooms it on this page only: it fills
+  // the view, as big as it fits, and the other panes hide; herdr is left
+  // alone. Two clicks on its header do the same. Zoomed, it shows the panes
   // again. A tab of one pane has nothing to zoom.
-  async 'a pane zooms in herdr from its header'() {
+  async 'a pane zooms on the page, not in herdr'() {
     const pg = await opened();
-    const zoomOf = i => zoomButtons(pg)[i];
-    const a = zoomOf(0);
+    const [a, b] = paneEls(pg);
+    const zoom = zoomButtons(pg)[1];
+    assert.equal(zoom.hidden, false);
+    assert.equal(zoom.textContent, '⤢');
+    assert.equal(zoom.attrs.title, 'Zoom this pane on this page');
+    assert.equal(zoom.attrs['aria-label'], 'Zoom Terminal');
+    assert.equal(b.style.left, '294px');
+    assert.equal(herdrButtons(pg)[1].hidden, true, 'the herdr zoom showed unzoomed');
+    zoom.fire('click', event({target: zoom}));
+    assert.equal(a.hidden, true, 'the other pane still shows');
+    assert.equal(b.hidden, false);
+    assert.equal(b.style.left, '0px', "the pane doesn't fill the view");
+    assert.equal(zoom.textContent, '⤡');
+    assert.equal(zoom.attrs.title, 'Show all the panes');
+    assert.equal(herdrButtons(pg)[1].hidden, false, 'no herdr zoom while zoomed');
+    assert.equal(herdrButtons(pg)[1].textContent, 'Zoom in herdr');
+    await settle();
+    assert.deepEqual(pg.server.zooms, [], 'herdr was asked');
+
+    // A new layout keeps it; one without the pane ends it.
+    pg.server.send('layout', {zoomed: false, area, panes: [A, B]});
+    await settle();
+    assert.equal(a.hidden, true, 'a new layout ended the zoom');
+    zoom.fire('click', event({target: zoom}));
     assert.equal(a.hidden, false);
-    assert.equal(a.textContent, '⤢');
-    assert.equal(a.attrs.title, 'Zoom this pane to the whole tab, in herdr too');
-    assert.equal(a.attrs['aria-label'], 'Zoom claude: Fixing it');
-    a.fire('click', event({target: a}));
+    assert.equal(b.style.left, '294px');
+    const head = b.children.find(h => h.className === 'term-head');
+    head.fire('dblclick', event({target: head}));
+    assert.equal(a.hidden, true, 'two clicks on the header zoomed nothing');
+    pg.server.send('layout', {zoomed: false, area, panes: [A]});
+    await settle();
+    assert.equal(a.hidden, false, 'the zoom outlived its pane');
+    assert.equal(zoomButtons(pg)[0].hidden, true, 'a lone pane offers a zoom');
+    assert.deepEqual(pg.server.zooms, []);
+  },
+
+  // Zoomed on the page, a pane can take the whole tab in herdr too. Zoomed
+  // in herdr, from here or in herdr, the tab's panes can come back there.
+  async 'a pane zooms in herdr too'() {
+    const pg = await opened();
+    zoomButtons(pg)[0].fire('click', event({}));
+    const inHerdr = herdrButtons(pg)[0];
+    inHerdr.fire('click', event({target: inHerdr}));
     await settle();
     assert.deepEqual(pg.server.zooms, [{session: 'work', pane: 'w1:p1', zoom: true, key: 'k'}]);
 
     pg.server.send('layout', {zoomed: true, area, panes: [{...A, width: 80}]});
     await settle();
     assert.equal(pg.live().length, 1);
-    assert.equal(zoomButtons(pg).length, 1);
-    assert.equal(zoomOf(0).textContent, '⤡');
-    assert.equal(zoomOf(0).attrs.title, "Show all the tab's panes again, in herdr too");
-    assert.equal(zoomOf(0).attrs['aria-label'], 'Unzoom claude: Fixing it');
-    const head = zoomOf(0).parent.children.find(h => h.className === 'term-head');
-    head.fire('dblclick', event({target: head}));
+    assert.equal(zoomButtons(pg)[0].hidden, true, 'a page zoom offered with herdr zoomed');
+    assert.equal(herdrButtons(pg)[0].hidden, false);
+    assert.equal(herdrButtons(pg)[0].textContent, 'Unzoom in herdr');
+    assert.equal(herdrButtons(pg)[0].attrs.title, "Show all the tab's panes again, in herdr too");
+    herdrButtons(pg)[0].fire('click', event({}));
     await settle();
     assert.deepEqual(pg.server.zooms[1], {session: 'work', pane: 'w1:p1', zoom: false, key: 'k'});
 
     pg.server.zoomReplies.push({status: 502, error: 'herdr: no pane w1:p1'});
-    zoomOf(0).fire('click', event({target: zoomOf(0)}));
+    herdrButtons(pg)[0].fire('click', event({}));
     await settle();
     assert.deepEqual(pg.toasts, ['herdr: no pane w1:p1']);
     pg.server.zoomReplies.push({status: 401, error: 'Sign in again.'});
-    zoomOf(0).fire('click', event({target: zoomOf(0)}));
+    herdrButtons(pg)[0].fire('click', event({}));
     await settle();
     assert.deepEqual(pg.signOuts, ['k']);
 
-    pg.server.send('layout', {zoomed: false, area, panes: [A]});
+    // Unzoomed in herdr, every pane shows again, not the one zoomed before.
+    pg.server.send('layout', {zoomed: false, area, panes: [A, B]});
     await settle();
-    assert.equal(zoomOf(0).hidden, true, 'a lone pane offers a zoom');
+    assert.deepEqual(paneEls(pg).map(e => e.hidden), [false, false]);
   },
+
 };
 
 (async () => {
