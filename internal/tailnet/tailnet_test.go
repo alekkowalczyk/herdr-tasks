@@ -180,12 +180,13 @@ func TestCallTimesOut(t *testing.T) {
 // waits: it asks for HTTPS to be turned on for the tailnet.
 func TestCallTimesOutWithOutput(t *testing.T) {
 	bin := filepath.Join(t.TempDir(), "tailscale")
-	script := "#!/bin/sh\necho 'Serve is not enabled on your tailnet.'\nsleep 5\n"
+	script := "#!/bin/sh\necho 'Serve is not enabled on your tailnet.'\nsleep 10\n"
 	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	err := CLI{Bin: bin, Timeout: 200 * time.Millisecond}.Serve(context.Background(), 7391, "unix:/s/board.sock")
-	want := "tailscale serve --bg --https=7391 unix:/s/board.sock: timed out after 200ms: Serve is not enabled on your tailnet."
+	// Long enough for the shell to start and print, on a busy machine too.
+	err := CLI{Bin: bin, Timeout: 2 * time.Second}.Serve(context.Background(), 7391, "unix:/s/board.sock")
+	want := "tailscale serve --bg --https=7391 unix:/s/board.sock: timed out after 2s: Serve is not enabled on your tailnet."
 	if err == nil || err.Error() != want {
 		t.Fatalf("err = %v, want %s", err, want)
 	}

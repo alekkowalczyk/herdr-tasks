@@ -545,7 +545,10 @@ func TestTailnetDoorOpensAfterReadingTailscale(t *testing.T) {
 		if err == nil {
 			c.Close()
 		}
-		listening <- err
+		select {
+		case listening <- err: // the first serve's
+		default:
+		}
 	}
 	f := startTailnet(t, shortDir(t), ts, onTheTailnet)
 	for deadline := time.Now().Add(3 * time.Second); !slices.Contains(ts.calls(), "self"); time.Sleep(5 * time.Millisecond) {
