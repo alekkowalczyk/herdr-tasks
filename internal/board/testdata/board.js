@@ -1433,8 +1433,8 @@ const tests = {
   },
 
   // A task in the side panel opens its view. In a view, it switches the view
-  // to that task in place: the details or the expanded terminals stay as
-  // they were, and Back still goes to the board. The open task is marked.
+  // to that task in place: the details stay where they were, on the right or
+  // below, and Back still goes to the board. The open task is marked.
   async 'a task in the side panel opens, or switches the view'() {
     const cards = [
       card({tab: 'w1:t1', title: 'Billing fix', space: 'w1', spaceLabel: 'billing'}),
@@ -1454,13 +1454,13 @@ const tests = {
     assert.equal(pg.$('detail-title').textContent, 'Billing fix');
     assert.deepEqual(current(pg), ['Billing fix']);
 
-    pg.$('view-full').click();
+    pg.$('view-layout').click();
     sideTask(pg, 'Infra work').click();
     assert.equal(pg.location.hash, '#tab=w2%3At1');
     assert.deepEqual(pg.pushed, ['#tab=w1%3At1'], 'switching added to the history');
     assert.equal(JSON.stringify(pg.history().state), '{"view":true}', 'Back stopped going to the board');
     assert.equal(pg.$('detail-title').textContent, 'Infra work');
-    assert.ok(pg.body.classList.contains('terms-full'), 'the terminals stopped being expanded');
+    assert.ok(pg.body.classList.contains('details-below'), 'the details went back to the right');
     assert.deepEqual(current(pg), ['Infra work']);
 
     sideTask(pg, 'Infra work').click();
@@ -1545,37 +1545,63 @@ const tests = {
     assert.deepEqual(titles(pg), ['Urgent fix']);
   },
 
-  // Expand gives a tab's terminals the whole page, below the view's bar,
-  // without the card's details; Minimize puts the details back. The browser
-  // keeps the choice for the next view.
-  async "a view's terminals expand to the whole page"() {
-    const FULL = 'herdr-tasks-board-terms-full';
+  // A view's details sit on the right of its terminals, or below them, side
+  // by side, from the layout button. The browser keeps the choice for the
+  // next view.
+  async "a view's details go below its terminals, and back"() {
+    const BELOW = 'herdr-tasks-board-details-below';
     let pg = page('k1');
     await settle();
     pg.send(board(card()));
     await settle();
-    const full = () => pg.body.classList.contains('terms-full');
+    const below = () => pg.body.classList.contains('details-below');
     pg.$('board').querySelector('.card').click();
-    const button = pg.$('view-full');
-    assert.equal(full(), false);
-    assert.equal(button.textContent, '⤢ Expand');
+    const button = pg.$('view-layout');
+    assert.equal(below(), false);
+    assert.equal(button.getAttribute('aria-pressed'), 'false');
+    assert.equal(button.title, "Put the task's details below the terminals");
     button.click();
-    assert.equal(full(), true);
-    assert.equal(button.textContent, '⤡ Minimize');
-    assert.equal(pg.storage.get(FULL), '1');
+    assert.equal(below(), true);
+    assert.equal(button.getAttribute('aria-pressed'), 'true');
+    assert.equal(button.title, "Put the task's details back on the right");
+    assert.equal(pg.storage.get(BELOW), '1');
     button.click();
-    assert.equal(full(), false);
-    assert.equal(button.textContent, '⤢ Expand');
-    assert.equal(pg.storage.get(FULL), '');
+    assert.equal(below(), false);
+    assert.equal(button.getAttribute('aria-pressed'), 'false');
+    assert.equal(pg.storage.get(BELOW), '');
 
+    seeded = {[BELOW]: '1'};
     pg = page('k1');
-    pg.storage.set(FULL, '1');
     await settle();
     pg.send(board(card()));
     await settle();
     pg.$('board').querySelector('.card').click();
-    assert.equal(pg.body.classList.contains('terms-full'), true, "the next view isn't expanded");
-    assert.equal(pg.$('view-full').textContent, '⤡ Minimize');
+    assert.equal(below(), true, "the next view's details aren't below");
+    assert.equal(pg.$('view-layout').getAttribute('aria-pressed'), 'true');
+    pg.$('view-back').click();
+    assert.equal(below(), true, 'leaving the view forgot the layout');
+  },
+
+  // Below the terminals, the details are four columns: the card's head, its
+  // note and log, its agents, its links. Each scrolls on its own, and keeps
+  // its place when the card changes.
+  async 'the details below keep their place through an update'() {
+    const agents = status => [{pane: 'w1:p1', agent: 'claude', status, name: 'Card audit', title: 'Audit', recap: 'The plan.'}];
+    seeded = {'herdr-tasks-board-details-below': '1'};
+    const pg = page('k1');
+    await settle();
+    pg.send(board(card({agents: agents('working'), note: 'Check the limits.'})));
+    await settle();
+    pg.$('board').querySelector('.card').click();
+    const body = pg.$('detail-body');
+    assert.deepEqual(body.children.map(e => e.className), ['detail-head', 'detail-notes', 'detail-agents', 'detail-links']);
+    body.querySelector('.detail-agents').scrollTop = 120;
+    body.querySelector('.detail-notes').scrollTop = 40;
+    pg.send(board(card({agents: agents('done'), note: 'Check the limits.'})));
+    await settle();
+    assert.equal(body.querySelector('.agent-when').textContent, 'answered', "the update didn't show");
+    assert.equal(body.querySelector('.detail-agents').scrollTop, 120, 'the agents went back to the top');
+    assert.equal(body.querySelector('.detail-notes').scrollTop, 40, 'the note went back to the top');
   },
 };
 

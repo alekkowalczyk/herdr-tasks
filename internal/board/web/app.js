@@ -18,7 +18,7 @@
   const SPACES = 'herdr-tasks-board-spaces';
   const DONE_OPEN = 'herdr-tasks-board-done-open';
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
-  const TERMS_FULL = 'herdr-tasks-board-terms-full';
+  const DETAILS_BELOW = 'herdr-tasks-board-details-below';
   const SIDE_FOLDED = 'herdr-tasks-board-side-folded';
 
   const COLUMNS = [
@@ -1399,20 +1399,19 @@
       box.replaceChildren(el('p', 'term-status', 'The terminals didn’t load. Reload the page to try again.'));
     }
     viewing = {session, tab, terms};
-    showFull();
     render();
     $('view-back').focus();
   }
 
-  // showFull gives the terminals the whole page below the view's bar, or
-  // puts the card's details back beside them, as the browser keeps it. The
+  // showLayout puts a view's details on the right of its terminals, or below
+  // them with their parts side by side, as the browser keeps it. The
   // terminals fit themselves to their new size.
-  function showFull() {
-    const on = load(TERMS_FULL) === '1';
-    document.body.classList.toggle('terms-full', on);
-    const b = $('view-full');
-    b.textContent = on ? '⤡ Minimize' : '⤢ Expand';
-    b.title = on ? "Show the task's details beside the terminals" : 'Give the terminals the whole page';
+  function showLayout() {
+    const below = load(DETAILS_BELOW) === '1';
+    document.body.classList.toggle('details-below', below);
+    const b = $('view-layout');
+    b.setAttribute('aria-pressed', String(below));
+    b.title = below ? "Put the task's details back on the right" : "Put the task's details below the terminals";
   }
 
   function hideView() {
@@ -1423,7 +1422,7 @@
     detailKey = null;
     detailSig = null;
     $('view').hidden = true;
-    document.body.classList.remove('viewing', 'terms-full');
+    document.body.classList.remove('viewing');
     render();
     const card = cardEls.get(v.session + '\n' + v.tab);
     const open = card && card.querySelector('[data-act="open"]');
@@ -1440,9 +1439,10 @@
     const body = $('detail-body');
     const active = body.contains(document.activeElement) ? document.activeElement : null;
     const was = active && {act: active.getAttribute('data-act'), url: active.getAttribute('data-url')};
-    const top = body.scrollTop;
+    // Below the terminals, each column scrolls on its own.
+    const tops = new Map([body, ...body.children].map(e => [e.className, e.scrollTop]));
     fillDetail(body, c);
-    body.scrollTop = top;
+    for (const e of [body, ...body.children]) e.scrollTop = tops.get(e.className) || 0;
     if (was) {
       const acts = [...body.querySelectorAll('[data-act]')];
       const same = acts.find(e => e.getAttribute('data-act') === was.act && e.getAttribute('data-url') === was.url);
@@ -1475,7 +1475,12 @@
       body.replaceChildren(el('p', 'empty-line', 'Its tab was closed, or its space was hidden.'));
       return;
     }
-    const parts = [];
+    // The card's head, its note and log, its agents and its links: one under
+    // the other on the right, or side by side below the terminals.
+    const head = el('div', 'detail-head');
+    const notes = el('div', 'detail-notes');
+    const agents = el('div', 'detail-agents');
+    const links = el('div', 'detail-links');
 
     const meta = el('div', 'detail-meta');
     const col = COLUMNS.find(x => x.id === c.column);
@@ -1483,9 +1488,9 @@
     if (c.priority) meta.append(el('span', 'badge prio-badge', '! Priority'));
     if (c.spaceLabel) meta.append(el('span', 'space', c.spaceLabel));
     meta.append(ageEl(c.since, 'In this stage since'));
-    parts.push(meta);
+    head.append(meta);
     const reason = reasonText(c);
-    if (reason) parts.push(attrs(el('p', 'detail-reason', reason), {'data-column': c.column}));
+    if (reason) head.append(attrs(el('p', 'detail-reason', reason), {'data-column': c.column}));
     const acts = el('div', 'detail-actions');
     acts.append(button('button', 'Move to…', 'move', {'aria-haspopup': 'menu', 'aria-expanded': 'false'}));
     if (c.column !== 'done') {
@@ -1501,9 +1506,9 @@
       const more = a.act === 'spaces' ? {'aria-haspopup': 'menu', 'aria-expanded': 'false'} : {};
       acts.append(button('button', a.label, a.act, more));
     }
-    parts.push(acts);
+    head.append(acts);
 
-    parts.push(detailSection('Note', c.note ? el('p', 'text', c.note) : el('p', 'empty-line', 'No note yet.')));
+    notes.append(detailSection('Note', c.note ? el('p', 'text', c.note) : el('p', 'empty-line', 'No note yet.')));
 
     if (c.log && c.log.length) {
       const log = el('ul', 'd-log');
@@ -1513,26 +1518,26 @@
         li.append(el('span', 'what', entry.text));
         log.append(li);
       }
-      parts.push(detailSection('Log', log));
+      notes.append(detailSection('Log', log));
     }
 
     if (c.agents.length) {
       const list = el('ul', 'd-agents');
       for (const a of c.agents) list.append(agentDetail(a));
-      parts.push(detailSection('Agents', list));
+      agents.append(detailSection('Agents', list));
     } else {
-      parts.push(detailSection('Agents', el('p', 'empty-line', 'No agent is running in this tab.')));
+      agents.append(detailSection('Agents', el('p', 'empty-line', 'No agent is running in this tab.')));
     }
 
     const groups = linkGroups(c.links);
     for (const g of groups) {
       const list = el('ul', 'd-links');
       for (const l of g.links) list.append(linkRow(l));
-      parts.push(detailSection(g.section.title, list));
+      links.append(detailSection(g.section.title, list));
     }
-    if (!groups.length) parts.push(detailSection('Links', el('p', 'empty-line', 'No links yet.')));
+    if (!groups.length) links.append(detailSection('Links', el('p', 'empty-line', 'No links yet.')));
 
-    body.replaceChildren(...parts);
+    body.replaceChildren(head, notes, agents, links);
   }
 
   function agentDetail(a) {
@@ -2016,9 +2021,9 @@
       else if (act === 'copypath') copyPath(c, btn.getAttribute('data-url'));
     });
     $('view-back').addEventListener('click', closeView);
-    $('view-full').addEventListener('click', () => {
-      save(TERMS_FULL, load(TERMS_FULL) === '1' ? '' : '1');
-      showFull();
+    $('view-layout').addEventListener('click', () => {
+      save(DETAILS_BELOW, load(DETAILS_BELOW) === '1' ? '' : '1');
+      showLayout();
     });
     // Esc goes back to the board, unless it's for a terminal, the menu or a
     // dialog.
@@ -2067,6 +2072,7 @@
   buildShare();
   buildColumns();
   showFold();
+  showLayout();
   wire();
   setInterval(tickAges, 30e3);
   signIn().then(() => {

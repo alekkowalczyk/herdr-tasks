@@ -747,12 +747,25 @@ body.viewing .empty { display: none; }
   grid-template-columns: minmax(0, 7fr) minmax(300px, 3fr);
   min-height: 0;
 }
-/* Expanded, the terminals take the whole page below the view's bar, without
-   the card's details. */
-.button.view-full { flex: none; display: inline-flex; align-items: center; height: 30px; padding: 0 12px; }
-body.terms-full .view-body { display: grid; grid-template-columns: minmax(0, 1fr); }
-body.terms-full .panel { display: none; }
-body.terms-full .terms { height: auto; }
+/* Details below: the terminals take the view's whole width, and the card's
+   details sit under them, its parts side by side, each scrolling on its
+   own. */
+.button.view-layout { flex: none; display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px; }
+.button.view-layout[aria-pressed="true"] { border-color: var(--focus); background: color-mix(in srgb, var(--focus) 14%, var(--surface)); }
+.layout-icon { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.4; }
+body.details-below .view-body { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) clamp(220px, 36%, 420px); }
+body.details-below .panel {
+  display: grid;
+  grid-template-columns: minmax(220px, 260px) minmax(200px, 1fr) minmax(300px, 2fr) minmax(200px, 1fr);
+  gap: 24px;
+  padding: 16px 22px 0;
+  overflow: auto hidden;
+  border-top: 1px solid var(--line);
+  border-left: 0;
+}
+body.details-below .panel > * { min-height: 0; padding-bottom: 18px; overflow-y: auto; }
+body.details-below .panel > * > .section:first-child { margin-top: 0; }
+body.details-below .text.long { max-height: none; }
 .panel {
   min-height: 0;
   padding: 18px 22px 32px;
@@ -931,6 +944,11 @@ body.terms-full .terms { height: auto; }
   .view-body { display: block; overflow-y: auto; }
   .terms { height: 68vh; }
   .panel { border-top: 1px solid var(--line); border-left: 0; }
+  .button.view-layout { display: none; }
+  body.details-below .panel { display: block; padding: 18px 22px 32px; overflow: visible; }
+  body.details-below .panel > * { padding-bottom: 0; overflow: visible; }
+  body.details-below .panel > * > .section:first-child { margin-top: 24px; }
+  body.details-below .text.long { max-height: 320px; }
 }
 
 /* Narrow windows: the columns stack and the page scrolls. */
@@ -971,7 +989,6 @@ body.terms-full .terms { height: auto; }
   .view-head { padding: 10px 16px; }
   .view-body { overflow: visible; }
   .terms { padding: 8px; }
-  body.terms-full .terms { height: calc(100dvh - 52px); }
 }
 
 @media (hover: none) {
