@@ -46,11 +46,55 @@ type hub struct {
 }
 
 // published is a board as /api/board and the streams send it. It doesn't
-// change once it's out.
+// change once it's out, but it makes each session's JSON, and the list's,
+// when first asked for.
 type published struct {
 	seq   uint64
 	json  []byte
 	board Board
+
+	mu       sync.Mutex
+	sessions map[string][]byte // by session name
+	list     []byte
+}
+
+// forSession is the JSON of one session's board, or false when it isn't
+// running.
+func (p *published) forSession(name string) ([]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if data, ok := p.sessions[name]; ok {
+		return data, true
+	}
+	b, ok := p.board.For(name)
+	if !ok {
+		return nil, false
+	}
+	data, err := json.Marshal(b)
+	if err != nil {
+		log.Printf("board: %v", err)
+		return nil, false
+	}
+	if p.sessions == nil {
+		p.sessions = map[string][]byte{}
+	}
+	p.sessions[name] = data
+	return data, true
+}
+
+// sessionList is the JSON of the list of running sessions.
+func (p *published) sessionList() []byte {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.list == nil {
+		data, err := json.Marshal(p.board.List())
+		if err != nil {
+			log.Printf("board: %v", err)
+			return []byte("{}")
+		}
+		p.list = data
+	}
+	return p.list
 }
 
 // worker reads one herdr session.
@@ -460,13 +504,20 @@ func (s *Server) builder(ctx context.Context) {
 	}
 }
 
-// addSlack adds the Slack line to the board, and marks the cards from Slack
+// addSlack adds the Slack line and the Slack session's name to the board,
+// and marks the cards from Slack
 // whose channel you muted. Both come from the watcher's state, which is read
 // once, and only while the line shows or a card is from Slack. Reading it
 // makes no file: there's none until the watcher saves it. When it can't be
 // read, the line lists no asks and no card shows muted: the watcher reports
 // that.
 func (s *Server) addSlack(b *Board) {
+	b.SlackSession = herdr.DefaultSession
+	if s.cfg.Options != nil {
+		if opts, err := s.cfg.Options(); err == nil {
+			b.SlackSession = opts.SlackSessionName()
+		}
+	}
 	saved := sync.OnceValue(func() slack.State { return slack.OnDisk(s.cfg.StateDir) })
 	b.Slack = s.slackLine(saved)
 	s.markMuted(b, saved)

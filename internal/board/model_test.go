@@ -274,11 +274,11 @@ func TestBuildSessionsInNameOrderEvenWhenUnread(t *testing.T) {
 	}
 	want := `{"version":"","linearKey":false,"sessions":[` +
 		`{"name":"home","spaces":[{"id":"w1","label":"acme"}],"cards":[]},` +
-		`{"name":"work","stale":true,"spaces":[],"cards":[]}]}`
+		`{"name":"work","stale":true,"spaces":[],"cards":[]}],"slackSession":""}`
 	if string(j) != want {
 		t.Fatalf("json =\n%s\nwant\n%s", j, want)
 	}
-	if j, _ := json.Marshal(Build(nil, nil, nil, false, "")); string(j) != `{"version":"","linearKey":false,"sessions":[]}` {
+	if j, _ := json.Marshal(Build(nil, nil, nil, false, "")); string(j) != `{"version":"","linearKey":false,"sessions":[],"slackSession":""}` {
 		t.Fatalf("json = %s", j)
 	}
 }
@@ -332,7 +332,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		v    any
 		want string
 	}{
-		{"board", v, "linearKey sessions version"},
+		{"board", v, "linearKey sessions slackSession version"},
 		{"session", session, "cards name spaces stale"},
 		{"space", session.(map[string]any)["spaces"].([]any)[0], "id label"},
 		{"card", card, "agentStatus agents column links log note priority reason session since space spaceLabel stage tab title"},
@@ -550,5 +550,78 @@ func TestSlackLineListsSkipped(t *testing.T) {
 	}
 	if got, want := slackLineOf(s), (&SlackLine{Text: "Slack: off", Fetch: true}); !reflect.DeepEqual(got, want) {
 		t.Errorf("with the state unreadable: %+v, want %+v", got, want)
+	}
+}
+
+// twoSessions is a board of the sessions work and side, in that name order.
+func twoSessions() Board {
+	state := &store.State{Tasks: map[string]*task.Task{
+		"w1:t1": {TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now},
+		"w1:t2": {TabID: "w1:t2", Title: "Billing", Stage: task.Paused, Since: now},
+	}}
+	live := &herdr.Live{
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "acme"}},
+		Tabs:       []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1"}, {ID: "w1:t2", WorkspaceID: "w1"}},
+	}
+	return Build([]Snapshot{
+		{Name: "work", State: state, Live: live},
+		{Name: "side", Live: live, State: &store.State{Tasks: map[string]*task.Task{}}, Stale: true},
+	}, noSummary, nil, false, "0.11.0")
+}
+
+func TestBoardForKeepsOneSession(t *testing.T) {
+	b := twoSessions()
+	one, ok := b.For("work")
+	if !ok || len(one.Sessions) != 1 || one.Sessions[0].Name != "work" || one.Version != "0.11.0" {
+		t.Fatalf("For(work) = %+v, %v", one, ok)
+	}
+	if len(b.Sessions) != 2 {
+		t.Errorf("For changed the board: %d sessions", len(b.Sessions))
+	}
+	if _, ok := b.For("gone"); ok {
+		t.Error("For(gone) is ok")
+	}
+}
+
+func TestBoardForSlackLineOnlyOnSlackSession(t *testing.T) {
+	b := twoSessions()
+	b.SlackSession, b.Slack = "work", &SlackLine{Text: "Slack: last check 14:32"}
+	if side, _ := b.For("side"); side.Slack != nil {
+		t.Errorf("side shows the Slack line: %+v", side.Slack)
+	}
+	if work, _ := b.For("work"); work.Slack == nil || work.Slack.Text != "Slack: last check 14:32" {
+		t.Errorf("work's Slack line = %+v", work.Slack)
+	}
+}
+
+func TestBoardForSaysSlackSessionIsntRunning(t *testing.T) {
+	b := twoSessions()
+	b.SlackSession, b.Slack = "default", &SlackLine{Text: "Slack: off"}
+	work, _ := b.For("work")
+	if want := "Slack asks go to herdr session default, which isn't running."; work.SlackWaiting != want {
+		t.Errorf("SlackWaiting = %q, want %q", work.SlackWaiting, want)
+	}
+	b.Sessions = append(b.Sessions, Session{Name: "default"})
+	if work, _ = b.For("work"); work.SlackWaiting != "" {
+		t.Errorf("with default running, SlackWaiting = %q", work.SlackWaiting)
+	}
+	b.Sessions = b.Sessions[:2]
+	b.Slack = nil
+	if work, _ = b.For("work"); work.SlackWaiting != "" {
+		t.Errorf("without the Slack line, SlackWaiting = %q", work.SlackWaiting)
+	}
+}
+
+func TestBoardListCountsCards(t *testing.T) {
+	b := twoSessions()
+	b.SlackSession = "work"
+	got := b.List()
+	want := SessionList{Version: "0.11.0", Slack: "work", Sessions: []SessionEntry{{Name: "side", Cards: 0, Stale: true}, {Name: "work", Cards: 2}}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("List = %+v, want %+v", got, want)
+	}
+	j, _ := json.Marshal(got)
+	if w := `{"version":"0.11.0","slack":"work","sessions":[{"name":"side","cards":0,"stale":true},{"name":"work","cards":2,"stale":false}]}`; string(j) != w {
+		t.Errorf("json = %s\nwant %s", j, w)
 	}
 }

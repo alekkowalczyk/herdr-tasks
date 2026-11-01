@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,9 +47,9 @@ func newFakeBoard(t *testing.T, opts reconcile.Options) *fakeBoard {
 			call("rotate %s %d %s %s", dir, port, exe, v)
 			return nil
 		},
-		loginURL: func(dir string) (string, error) {
-			call("login url %s", dir)
-			return testURL, nil
+		loginURL: func(dir, session string) (board.Login, error) {
+			call("login url %s %q", dir, session)
+			return board.Login{Local: testURL}, nil
 		},
 		show: func(msg string) { f.shown = append(f.shown, msg) },
 		open: func(url string) error {
@@ -63,7 +64,7 @@ func newFakeBoard(t *testing.T, opts reconcile.Options) *fakeBoard {
 func TestBoardOffShowsHowToTurnItOn(t *testing.T) {
 	for _, flags := range [][2]bool{{false, false}, {true, true}} {
 		f := newFakeBoard(t, reconcile.Options{})
-		if err := f.run(flags[0], flags[1]); err != nil {
+		if err := f.run(flags[0], flags[1], ""); err != nil {
 			t.Fatal(err)
 		}
 		want := "The task board is off. Add board = true to " + filepath.Join(testConfigDir, "config.toml") + "."
@@ -81,7 +82,7 @@ func TestBoardPortTakenMessage(t *testing.T) {
 	f.ensure = func(string, int, string, string) error {
 		return fmt.Errorf("%w: something answers at 127.0.0.1:7400", board.ErrPortTaken)
 	}
-	err := f.run(false, false)
+	err := f.run(false, false, "")
 	if !errors.Is(err, errShown) {
 		t.Errorf("run = %v, want errShown, so it exits 1", err)
 	}
@@ -97,7 +98,7 @@ func TestBoardPortTakenMessage(t *testing.T) {
 	f = newFakeBoard(t, reconcile.Options{Board: true})
 	stuck := fmt.Errorf("%w (pid 12, version 0.6.0); see /state/board/board.log", board.ErrNotStopped)
 	f.ensure = func(string, int, string, string) error { return stuck }
-	if err := f.run(false, false); !errors.Is(err, errShown) {
+	if err := f.run(false, false, ""); !errors.Is(err, errShown) {
 		t.Errorf("run = %v, want errShown", err)
 	}
 	if !slices.Equal(f.shown, []string{stuck.Error()}) {
@@ -107,10 +108,10 @@ func TestBoardPortTakenMessage(t *testing.T) {
 
 func TestBoardPrintsAURLWithACode(t *testing.T) {
 	f := newFakeBoard(t, reconcile.Options{Board: true})
-	if err := f.run(true, false); err != nil {
+	if err := f.run(true, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"ensure /state 7391 /plugin/bin/herdr-tasks " + version, "login url /state"}
+	want := []string{"ensure /state 7391 /plugin/bin/herdr-tasks " + version, `login url /state ""`}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls = %q, want %q", f.calls, want)
 	}
@@ -123,10 +124,10 @@ func TestBoardPrintsAURLWithACode(t *testing.T) {
 
 	// Without --print it opens the board...
 	f = newFakeBoard(t, reconcile.Options{Board: true, BoardPort: 7400})
-	if err := f.run(false, false); err != nil {
+	if err := f.run(false, false, ""); err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"ensure /state 7400 /plugin/bin/herdr-tasks " + version, "login url /state", "open " + testURL}
+	want = []string{"ensure /state 7400 /plugin/bin/herdr-tasks " + version, `login url /state ""`, "open " + testURL}
 	if !slices.Equal(f.calls, want) || f.out.Len() > 0 || len(f.shown) > 0 {
 		t.Errorf("calls = %q, printed %q, showed %q; want %q", f.calls, f.out.String(), f.shown, want)
 	}
@@ -134,7 +135,7 @@ func TestBoardPrintsAURLWithACode(t *testing.T) {
 	// ...and shows the URL when no browser opens.
 	f = newFakeBoard(t, reconcile.Options{Board: true})
 	f.open = func(string) error { return errors.New("no display to open a browser on") }
-	if err := f.run(false, false); err != nil {
+	if err := f.run(false, false, ""); err != nil {
 		t.Fatal(err)
 	}
 	if want := "Open this in your browser: " + testURL + " (valid for a minute)"; !slices.Equal(f.shown, []string{want}) {
@@ -146,10 +147,10 @@ func TestBoardPrintsAURLWithACode(t *testing.T) {
 // server starts with the old token in between.
 func TestBoardNewTokenRotates(t *testing.T) {
 	f := newFakeBoard(t, reconcile.Options{Board: true, BoardPort: 7400})
-	if err := f.run(false, true); err != nil {
+	if err := f.run(false, true, ""); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"rotate /state 7400 /plugin/bin/herdr-tasks " + version, "login url /state", "open " + testURL}
+	want := []string{"rotate /state 7400 /plugin/bin/herdr-tasks " + version, `login url /state ""`, "open " + testURL}
 	if !slices.Equal(f.calls, want) {
 		t.Errorf("calls = %q, want %q", f.calls, want)
 	}
@@ -158,7 +159,7 @@ func TestBoardNewTokenRotates(t *testing.T) {
 	f = newFakeBoard(t, reconcile.Options{Board: true})
 	stuck := fmt.Errorf("%w (pid 12, version 0.6.0); see /state/board/board.log", board.ErrNotStopped)
 	f.rotate = func(string, int, string, string) error { return stuck }
-	if err := f.run(false, true); !errors.Is(err, errShown) {
+	if err := f.run(false, true, ""); !errors.Is(err, errShown) {
 		t.Errorf("run = %v, want errShown", err)
 	}
 	if len(f.calls) > 0 || !slices.Equal(f.shown, []string{stuck.Error()}) {
@@ -405,5 +406,53 @@ func TestLinearClientWithNoKey(t *testing.T) {
 	}
 	if c, ok := client(); !ok || c.Key != "lin_api_abc123" {
 		t.Errorf("after linear-key: %v, %v; want the key", c, ok)
+	}
+}
+
+func TestBoardSessionFlag(t *testing.T) {
+	print, newToken, session, err := parseBoardArgs([]string{"--print", "--session", "side"})
+	if err != nil || !print || newToken || session != "side" {
+		t.Fatalf("parseBoardArgs = %v, %v, %q, %v", print, newToken, session, err)
+	}
+	f := newFakeBoard(t, reconcile.Options{Board: true})
+	if err := f.run(false, false, session); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"ensure /state 7391 /plugin/bin/herdr-tasks " + version, `login url /state "side"`, "open " + testURL}
+	if !slices.Equal(f.calls, want) {
+		t.Errorf("calls = %q, want %q", f.calls, want)
+	}
+
+	for _, args := range [][]string{{"--bogus"}, {"--session"}} {
+		_, _, _, err := parseBoardArgs(args)
+		if err == nil {
+			t.Fatalf("%q: no error", args)
+		}
+		for _, flag := range []string{"--print", "--new-token", "--session"} {
+			if !strings.Contains(err.Error(), flag) {
+				t.Errorf("%q: error %q doesn't name %s", args, err, flag)
+			}
+		}
+	}
+	if err := (&app{}).openBoard([]string{"--bogus"}); err == nil {
+		t.Error("openBoard --bogus: no error")
+	}
+}
+
+func TestCurrentSession(t *testing.T) {
+	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+	for name, c := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"a named session":    {map[string]string{"HERDR_SESSION": "work"}, "work"},
+		"the default socket": {map[string]string{"HERDR_SOCKET_PATH": "/tmp/h/.config/herdr/herdr.sock"}, "default"},
+		"a named socket":     {map[string]string{"HERDR_SOCKET_PATH": "/tmp/h/.config/herdr/sessions/side/herdr.sock"}, "side"},
+		"the socket wins":    {map[string]string{"HERDR_SOCKET_PATH": "/tmp/h/.config/herdr/herdr.sock", "HERDR_SESSION": "work"}, "default"},
+		"outside herdr":      {nil, ""},
+	} {
+		if got := currentSession(env(c.env)); got != c.want {
+			t.Errorf("%s: currentSession = %q, want %q", name, got, c.want)
+		}
 	}
 }

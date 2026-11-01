@@ -24,6 +24,7 @@ import (
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/board"
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
+	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/setup"
@@ -44,19 +45,21 @@ type boardCmd struct {
 
 	ensure   func(dir string, port int, exe, version string) error
 	rotate   func(dir string, port int, exe, version string) error
-	loginURL func(dir string) (string, error)
+	loginURL func(dir, session string) (board.Login, error)
 
 	show func(msg string)       // tells you something
 	open func(url string) error // opens url in the browser
 	out  io.Writer              // where --print prints the URL
 }
 
-// openBoard runs `herdr-tasks board [--print] [--new-token]`.
+// openBoard runs `herdr-tasks board [--print] [--new-token] [--session NAME]`.
 func (a *app) openBoard(args []string) error {
-	for _, arg := range args {
-		if arg != "--print" && arg != "--new-token" {
-			return fmt.Errorf("unknown board option %q; use --print or --new-token", arg)
-		}
+	print, newToken, session, err := parseBoardArgs(args)
+	if err != nil {
+		return err
+	}
+	if session == "" {
+		session = currentSession(os.Getenv)
 	}
 	exe, err := executable()
 	if err != nil {
@@ -72,13 +75,49 @@ func (a *app) openBoard(args []string) error {
 		ensure: ensure, rotate: rotate, loginURL: board.LoginURL,
 		show: a.showMessage, open: openBrowser, out: os.Stdout,
 	}
-	return b.run(slices.Contains(args, "--print"), slices.Contains(args, "--new-token"))
+	return b.run(print, newToken, session)
+}
+
+const boardUsage = "use --print, --new-token or --session NAME"
+
+// parseBoardArgs reads the options of `herdr-tasks board`.
+func parseBoardArgs(args []string) (print, newToken bool, session string, err error) {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--print":
+			print = true
+		case "--new-token":
+			newToken = true
+		case "--session":
+			if i+1 >= len(args) || args[i+1] == "" {
+				return false, false, "", fmt.Errorf("--session needs a session name; %s", boardUsage)
+			}
+			i++
+			session = args[i]
+		default:
+			return false, false, "", fmt.Errorf("unknown board option %q; %s", args[i], boardUsage)
+		}
+	}
+	return print, newToken, session, nil
+}
+
+// currentSession is the herdr session this command runs in, from the
+// variables herdr sets in its panes, or "" when it runs outside herdr.
+func currentSession(getenv func(string) string) string {
+	if p := getenv("HERDR_SOCKET_PATH"); p != "" {
+		return herdr.SessionKey(p)
+	}
+	if s := getenv("HERDR_SESSION"); s != "" {
+		return s
+	}
+	return ""
 }
 
 // run starts the board server if it isn't running, and signs the browser in
-// to it with a one-time code. With print it only prints the address. With
+// to it with a one-time code, at the board of session, or at the list of
+// sessions when it's "". With print it only prints the address. With
 // newToken it first replaces the token, which signs every browser out.
-func (b boardCmd) run(print, newToken bool) error {
+func (b boardCmd) run(print, newToken bool, session string) error {
 	if !b.opts.Board {
 		b.show("The task board is off. Add board = true to " + configFile() + ".")
 		return nil
@@ -95,10 +134,11 @@ func (b boardCmd) run(print, newToken bool) error {
 	if err != nil {
 		return b.fail(boardTrouble(err, port))
 	}
-	url, err := b.loginURL(b.dir)
+	login, err := b.loginURL(b.dir, session)
 	if err != nil {
 		return b.fail(err.Error())
 	}
+	url := login.Local
 	if print {
 		fmt.Fprintln(b.out, url)
 		return nil

@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -362,7 +363,31 @@ func (ts *testServer) act(t *testing.T, req map[string]any) (int, string) {
 // board gets /api/board.
 func (ts *testServer) board(t *testing.T) (Board, []byte) {
 	t.Helper()
-	req, err := http.NewRequest("GET", ts.url("/api/board"), nil)
+	var list SessionList
+	ts.getJSON(t, "/api/board", &list)
+	all := Board{Version: list.Version, Sessions: []Session{}}
+	for _, e := range list.Sessions {
+		var one Board
+		ts.getJSON(t, "/api/board?session="+url.QueryEscape(e.Name), &one)
+		all.LinearKey = one.LinearKey
+		all.SlackSession = one.SlackSession
+		all.SlackWaiting = one.SlackWaiting
+		if one.Slack != nil {
+			all.Slack = one.Slack
+		}
+		all.Sessions = append(all.Sessions, one.Sessions...)
+	}
+	raw, err := json.Marshal(all)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return all, raw
+}
+
+// getJSON reads the JSON at path into v, signed in.
+func (ts *testServer) getJSON(t *testing.T, path string, v any) {
+	t.Helper()
+	req, err := http.NewRequest("GET", ts.url(path), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,13 +402,11 @@ func (ts *testServer) board(t *testing.T) (Board, []byte) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/json" {
-		t.Fatalf("board: %s %q %s", resp.Status, resp.Header.Get("Content-Type"), raw)
+		t.Fatalf("%s: %s %q %s", path, resp.Status, resp.Header.Get("Content-Type"), raw)
 	}
-	var b Board
-	if err := json.Unmarshal(raw, &b); err != nil {
-		t.Fatalf("board %s: %v", raw, err)
+	if err := json.Unmarshal(raw, v); err != nil {
+		t.Fatalf("%s %s: %v", path, raw, err)
 	}
-	return b, raw
 }
 
 // shows waits up to 3 s for /api/board to have a session's card, as it
@@ -451,23 +474,27 @@ func (ts *testServer) sse(t *testing.T, path string) (<-chan sseEvent, func()) {
 	return events, stop
 }
 
-// stream opens /api/events and passes on each board it sends.
+// stream passes on the whole board each time it changes, every session in
+// it, as the hub has it. The page's own streams are one session's.
 func (ts *testServer) stream(t *testing.T) <-chan Board {
 	t.Helper()
-	events, _ := ts.sse(t, "/api/events")
+	wake, leave := ts.hub.join()
 	boards := make(chan Board, 100)
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done); leave() })
 	go func() {
 		defer close(boards)
-		for ev := range events {
-			if ev.name != "board" {
-				continue
+		var sent uint64
+		for {
+			if p := ts.hub.current(); p.seq != sent {
+				sent = p.seq
+				boards <- p.board
 			}
-			var b Board
-			if err := json.Unmarshal([]byte(ev.data), &b); err != nil {
-				t.Errorf("board event %q: %v", ev.data, err)
+			select {
+			case <-wake:
+			case <-done:
 				return
 			}
-			boards <- b
 		}
 	}()
 	return boards
@@ -559,10 +586,35 @@ func TestBoardEndpointReturnsThePublishedBoard(t *testing.T) {
 	}
 }
 
+// sessionStream opens the page's stream of one session's board, and passes
+// on each board it sends.
+func (ts *testServer) sessionStream(t *testing.T, session string) <-chan Board {
+	t.Helper()
+	events, _ := ts.sse(t, "/api/events?session="+url.QueryEscape(session))
+	boards := make(chan Board, 100)
+	go func() {
+		defer close(boards)
+		for ev := range events {
+			if ev.name != "board" {
+				t.Errorf("event %q on a session's stream", ev.name)
+				return
+			}
+			var b Board
+			if err := json.Unmarshal([]byte(ev.data), &b); err != nil {
+				t.Errorf("board event %q: %v", ev.data, err)
+				return
+			}
+			boards <- b
+		}
+	}()
+	return boards
+}
+
 func TestEventsSendsBoardOnConnectAndOnChange(t *testing.T) {
 	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now})
 	ts := startServer(t, Config{Sessions: running(work)}, nil)
-	boards := ts.stream(t)
+	ts.shows(t, "work", "w1:t1")
+	boards := ts.sessionStream(t, "work")
 	select {
 	case b := <-boards:
 		// The session may not have been read yet.
@@ -591,7 +643,7 @@ func TestEventsSendsBoardOnConnectAndOnChange(t *testing.T) {
 
 	// A page that connects now gets the board as it is.
 	select {
-	case b := <-ts.stream(t):
+	case b := <-ts.sessionStream(t, "work"):
 		if c, _ := findCard(b, "work", "w1:t1"); c.Note != "Ship it" {
 			t.Errorf("first board on a new stream = %+v", b)
 		}
@@ -1325,7 +1377,8 @@ func TestBoardCarriesTheSlackLine(t *testing.T) {
 		defer mu.Unlock()
 		status = s
 	}
-	ts := startServer(t, Config{Sessions: running(), Slack: func() slack.Status {
+	// The Slack line is shown on the session Slack asks go to.
+	ts := startServer(t, Config{Sessions: running(newConn(t, herdr.DefaultSession, oneSpace())), Slack: func() slack.Status {
 		mu.Lock()
 		defer mu.Unlock()
 		return status
@@ -1980,7 +2033,7 @@ func TestLinearIssueWithANewIdentifier(t *testing.T) {
 
 func TestPageNeedsNoKey(t *testing.T) {
 	ts := startServer(t, Config{Sessions: running()}, nil)
-	for path, want := range map[string]int{"/": 200, "/static/": 404, "/nope": 404} {
+	for path, want := range map[string]int{"/": 200, "/work/": 200, "/-/": 404, "/-/static/": 404, "/static/": 200, "/nope/x": 404} {
 		resp, err := plain.Get(ts.url(path))
 		if err != nil {
 			t.Fatal(err)
@@ -1992,5 +2045,155 @@ func TestPageNeedsNoKey(t *testing.T) {
 		if want == 200 && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
 			t.Errorf("GET %s: Content-Type %q", path, resp.Header.Get("Content-Type"))
 		}
+	}
+}
+
+// get reads path with the browser key, and returns the status and the body.
+func (ts *testServer) get(t *testing.T, path string) (int, []byte) {
+	t.Helper()
+	req, err := http.NewRequest("GET", ts.url(path), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.key)
+	resp, err := plain.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp.StatusCode, raw
+}
+
+// twoRunning is a server with the sessions side and work, each with a card,
+// and waits until both are on the board.
+func twoRunning(t *testing.T, names ...string) *testServer {
+	t.Helper()
+	var conns []*fakeConn
+	for _, name := range names {
+		conns = append(conns, newConn(t, name, oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Title: "Login page", Stage: task.Active, Since: now}))
+	}
+	ts := startServer(t, Config{Sessions: running(conns...)}, nil)
+	for _, name := range names {
+		ts.shows(t, name, "w1:t1")
+	}
+	return ts
+}
+
+func TestServeBoardBySession(t *testing.T) {
+	ts := twoRunning(t, "work", "side")
+	st, raw := ts.get(t, "/api/board?session=side")
+	var b Board
+	if err := json.Unmarshal(raw, &b); err != nil || st != 200 || len(b.Sessions) != 1 || b.Sessions[0].Name != "side" {
+		t.Fatalf("?session=side: %d %s (%v)", st, raw, err)
+	}
+	st, raw = ts.get(t, "/api/board?session=gone")
+	if want := `{"error":"Session gone isn't running."}`; st != 404 || strings.TrimSpace(string(raw)) != want {
+		t.Errorf("?session=gone: %d %s, want 404 %s", st, raw, want)
+	}
+	st, raw = ts.get(t, "/api/board")
+	want := `{"version":"` + testVersion + `","slack":"default","sessions":[{"name":"side","cards":1,"stale":false},{"name":"work","cards":1,"stale":false}]}`
+	if st != 200 || string(raw) != want {
+		t.Errorf("without a session: %d %s, want %s", st, raw, want)
+	}
+}
+
+func TestEventsBySession(t *testing.T) {
+	ts := twoRunning(t, "work", "side")
+	events, _ := ts.sse(t, "/api/events?session=work")
+	select {
+	case ev := <-events:
+		var b Board
+		if err := json.Unmarshal([]byte(ev.data), &b); ev.name != "board" || err != nil || len(b.Sessions) != 1 || b.Sessions[0].Name != "work" {
+			t.Errorf("first event = %q %s (%v)", ev.name, ev.data, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event")
+	}
+	events, _ = ts.sse(t, "/api/events")
+	select {
+	case ev := <-events:
+		var l SessionList
+		if err := json.Unmarshal([]byte(ev.data), &l); ev.name != "sessions" || err != nil || len(l.Sessions) != 2 {
+			t.Errorf("first event = %q %s (%v)", ev.name, ev.data, err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event")
+	}
+	if st, raw := ts.get(t, "/api/events?session=gone"); st != 404 || !strings.Contains(string(raw), "Session gone isn't running.") {
+		t.Errorf("?session=gone: %d %s", st, raw)
+	}
+}
+
+// Another session's changes don't send a session's stream anything.
+func TestEventsBySessionSkipsOtherSessions(t *testing.T) {
+	ts := twoRunning(t, "work", "side")
+	boards := ts.sessionStream(t, "work")
+	<-boards
+	ts.hub.mu.Lock()
+	side := ts.hub.workers["side"].conn.(*fakeConn)
+	ts.hub.mu.Unlock()
+	side.save(t, "w1:t1", func(tk *task.Task) { tk.Note = "Ship it" })
+	side.nudge()
+	waitFor(t, ts.stream(t), "side's note", func(b Board) bool {
+		c, _ := findCard(b, "side", "w1:t1")
+		return c.Note == "Ship it"
+	})
+	select {
+	case b := <-boards:
+		t.Errorf("work's stream got a board for side's change: %+v", b)
+	case <-time.After(300 * time.Millisecond):
+	}
+}
+
+func TestSessionPagesServeIndex(t *testing.T) {
+	ts := startServer(t, Config{Sessions: running()}, nil)
+	noFollow := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	for path, want := range map[string]int{
+		"/": 200, "/work/": 200, "/work": 308, "/-/static/app.js": 200, "/static/app.js": 404,
+		"/-": 404, "/-/": 404, "/work/x": 404,
+	} {
+		resp, err := noFollow.Get(ts.url(path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("GET %s: %d, want %d", path, resp.StatusCode, want)
+		}
+		if want == 200 && path != "/-/static/app.js" && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/html") {
+			t.Errorf("GET %s: Content-Type %q", path, resp.Header.Get("Content-Type"))
+		}
+		if want == 308 && resp.Header.Get("Location") != "/work/" {
+			t.Errorf("GET %s: Location %q", path, resp.Header.Get("Location"))
+		}
+	}
+	resp, err := noFollow.Get(ts.url("/my%20work?code=abc"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 308 || resp.Header.Get("Location") != "/my%20work/?code=abc" {
+		t.Errorf("GET /my%%20work?code=abc: %d, Location %q", resp.StatusCode, resp.Header.Get("Location"))
+	}
+}
+
+func TestBoardPathEscapesSessionName(t *testing.T) {
+	ts := twoRunning(t, "my work")
+	resp, err := plain.Get(ts.url("/my%20work/"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("GET /my%%20work/: %d", resp.StatusCode)
+	}
+	var b Board
+	ts.getJSON(t, "/api/board?session=my%20work", &b)
+	if len(b.Sessions) != 1 || b.Sessions[0].Name != "my work" {
+		t.Errorf("?session=my%%20work = %+v", b)
 	}
 }

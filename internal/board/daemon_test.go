@@ -911,16 +911,17 @@ func TestLoginURLSignsIn(t *testing.T) {
 	if _, err := EnsureToken(dir); err != nil {
 		t.Fatal(err)
 	}
-	if u, err := LoginURL(dir); err == nil {
+	if u, err := LoginURL(dir, ""); err == nil {
 		t.Errorf("LoginURL with no server running = %q", u)
 	}
 	if err := Ensure(dir, port, helperExe(t), testVersion); err != nil {
 		t.Fatal(err)
 	}
-	u, err := LoginURL(dir)
+	login, err := LoginURL(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
+	u := login.Local
 	prefix := fmt.Sprintf("http://127.0.0.1:%d/?code=", port)
 	code, ok := strings.CutPrefix(u, prefix)
 	if !ok || code == "" {
@@ -937,6 +938,29 @@ func TestLoginURLSignsIn(t *testing.T) {
 	}
 	if st, _ := redeem(t, port, code); st != http.StatusUnauthorized {
 		t.Errorf("the code worked twice: %d", st)
+	}
+}
+
+func TestLoginURLHasSession(t *testing.T) {
+	dir, port := stateDir(t), freePort(t)
+	if _, err := EnsureToken(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := Ensure(dir, port, helperExe(t), testVersion); err != nil {
+		t.Fatal(err)
+	}
+	for session, at := range map[string]string{"work": "/work/", "": "/", "my work": "/my%20work/"} {
+		login, err := LoginURL(dir, session)
+		if err != nil {
+			t.Fatal(err)
+		}
+		prefix := fmt.Sprintf("http://127.0.0.1:%d%s?code=", port, at)
+		if code, ok := strings.CutPrefix(login.Local, prefix); !ok || code == "" {
+			t.Errorf("LoginURL(%q).Local = %q, want %s<code>", session, login.Local, prefix)
+		}
+		if login.Tailnet != "" {
+			t.Errorf("LoginURL(%q).Tailnet = %q, want none", session, login.Tailnet)
+		}
 	}
 }
 
@@ -959,11 +983,11 @@ func redeem(t *testing.T, port int, code string) (int, string) {
 // board and the page do, and returns its key.
 func signIn(t *testing.T, dir string) string {
 	t.Helper()
-	u, err := LoginURL(dir)
+	login, err := LoginURL(dir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := url.Parse(u)
+	p, err := url.Parse(login.Local)
 	if err != nil {
 		t.Fatal(err)
 	}

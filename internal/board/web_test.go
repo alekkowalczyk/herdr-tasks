@@ -100,9 +100,9 @@ func TestIndexServesAssets(t *testing.T) {
 		t.Fatalf("GET /: %s %q", resp.Status, resp.Header.Get("Content-Type"))
 	}
 	for path, want := range map[string]string{
-		"/static/app.js":    "text/javascript",
-		"/static/board.css": "text/css",
-		"/static/icon.svg":  "image/svg+xml",
+		"/-/static/app.js":    "text/javascript",
+		"/-/static/board.css": "text/css",
+		"/-/static/icon.svg":  "image/svg+xml",
 	} {
 		if !strings.Contains(page, `"`+path+`"`) {
 			t.Errorf("the page doesn't load %s", path)
@@ -123,11 +123,11 @@ func TestVendorFilesAreServed(t *testing.T) {
 	ts := startServer(t, Config{Sessions: running()}, nil)
 	_, page := get(t, ts, "/")
 	for path, want := range map[string]string{
-		"/static/vendor/xterm.js":           "text/javascript",
-		"/static/vendor/addon-unicode11.js": "text/javascript",
-		"/static/vendor/xterm.css":          "text/css",
-		"/static/keymap.js":                 "text/javascript",
-		"/static/term.js":                   "text/javascript",
+		"/-/static/vendor/xterm.js":           "text/javascript",
+		"/-/static/vendor/addon-unicode11.js": "text/javascript",
+		"/-/static/vendor/xterm.css":          "text/css",
+		"/-/static/keymap.js":                 "text/javascript",
+		"/-/static/term.js":                   "text/javascript",
 	} {
 		if !strings.Contains(page, `"`+path+`"`) {
 			t.Errorf("the page doesn't load %s", path)
@@ -140,7 +140,7 @@ func TestVendorFilesAreServed(t *testing.T) {
 			t.Errorf("GET %s: Content-Type %q, want %s", path, got, want)
 		}
 	}
-	resp, body := get(t, ts, "/static/vendor/LICENSE-xterm")
+	resp, body := get(t, ts, "/-/static/vendor/LICENSE-xterm")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "Permission is hereby granted") {
 		t.Errorf("GET /static/vendor/LICENSE-xterm: %s, %d bytes", resp.Status, len(body))
 	}

@@ -4,6 +4,7 @@
 package board
 
 import (
+	"slices"
 	"sort"
 	"time"
 
@@ -22,6 +23,54 @@ type Board struct {
 	LinearKey bool       `json:"linearKey"`       // a Linear API key is set
 	Slack     *SlackLine `json:"slack,omitempty"` // the Slack watcher's status, while it's on or offers a fetch
 	Sessions  []Session  `json:"sessions"`        // by name
+	// SlackSession is the herdr session Slack asks go to.
+	SlackSession string `json:"slackSession"`
+	// SlackWaiting says why the Slack line has no session to show it on:
+	// the session Slack asks go to isn't running. It's only set by For.
+	SlackWaiting string `json:"slackWaiting,omitempty"`
+}
+
+// For is the board of one running session: only that session, and the Slack
+// line only on the session Slack asks go to. It's false when no running
+// session has that name.
+func (b Board) For(session string) (Board, bool) {
+	i := slices.IndexFunc(b.Sessions, func(s Session) bool { return s.Name == session })
+	if i < 0 {
+		return Board{}, false
+	}
+	one := b
+	one.Sessions = []Session{b.Sessions[i]}
+	if session != b.SlackSession {
+		one.Slack = nil
+	}
+	if b.Slack != nil && !slices.ContainsFunc(b.Sessions, func(s Session) bool { return s.Name == b.SlackSession }) {
+		one.SlackWaiting = "Slack asks go to herdr session " + b.SlackSession + ", which isn't running."
+	}
+	return one, true
+}
+
+// SessionList is what the board answers with when no session is asked for:
+// the running sessions, for the page that lists them.
+type SessionList struct {
+	Version  string         `json:"version"`
+	Slack    string         `json:"slack"` // the session Slack asks go to
+	Sessions []SessionEntry `json:"sessions"`
+}
+
+// SessionEntry is one running session in the list.
+type SessionEntry struct {
+	Name  string `json:"name"`
+	Cards int    `json:"cards"`
+	Stale bool   `json:"stale"`
+}
+
+// List is the running sessions, by name.
+func (b Board) List() SessionList {
+	l := SessionList{Version: b.Version, Slack: b.SlackSession, Sessions: []SessionEntry{}}
+	for _, s := range b.Sessions {
+		l.Sessions = append(l.Sessions, SessionEntry{Name: s.Name, Cards: len(s.Cards), Stale: s.Stale})
+	}
+	return l
 }
 
 // SlackLine is the Slack watcher's status, as the header shows it, with

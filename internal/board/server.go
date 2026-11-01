@@ -133,11 +133,31 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 		panic(err) // web is embedded
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+	index := func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", pageTypes[".html"])
 		http.ServeFileFS(w, r, page, "index.html")
+	}
+	mux.HandleFunc("GET /{$}", index)
+	// /-/ is for the board's own paths, so a session called - gets no board.
+	mux.HandleFunc("GET /{session}/{$}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("session") == "-" {
+			http.NotFound(w, r)
+			return
+		}
+		index(w, r)
 	})
-	mux.Handle("GET /static/", http.StripPrefix("/static", files(page)))
+	mux.HandleFunc("GET /{session}", func(w http.ResponseWriter, r *http.Request) {
+		if r.PathValue("session") == "-" {
+			http.NotFound(w, r)
+			return
+		}
+		to := r.URL.EscapedPath() + "/"
+		if r.URL.RawQuery != "" {
+			to += "?" + r.URL.RawQuery
+		}
+		http.Redirect(w, r, to, http.StatusPermanentRedirect)
+	})
+	mux.Handle("GET /-/static/", http.StripPrefix("/-/static", files(page)))
 	mux.HandleFunc("GET /api/health", s.health)
 	mux.HandleFunc("POST /api/login-code", s.loginCode)
 	mux.HandleFunc("POST /api/session", s.session)
@@ -266,35 +286,69 @@ func (s *Server) shutdown(w http.ResponseWriter, r *http.Request) {
 	go s.cancel()
 }
 
-// serveBoard answers with the board that's out. It never builds one.
+// serveBoard answers with the board that's out: the session's, or without
+// one the list of running sessions. It never builds one.
 func (s *Server) serveBoard(w http.ResponseWriter, r *http.Request) {
+	p := s.hub.current()
+	data := p.sessionList()
+	if name := r.URL.Query().Get("session"); name != "" {
+		var ok bool
+		if data, ok = p.forSession(name); !ok {
+			writeError(w, http.StatusNotFound, "Session "+name+" isn't running.")
+			return
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write(s.hub.current().json)
+	_, _ = w.Write(data)
 }
 
-// events streams the board: as it is on connect, then each time it changes.
-// It pings while nothing does, and ends when the page goes away or the
+// events streams the session's board, or without one the list of running
+// sessions: as it is on connect, then each time it changes. It pings while
+// nothing does, and ends when the page goes away, the session stops, or the
 // server shuts down.
 func (s *Server) events(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("session")
+	// what is the event's name and data, from the board that's out.
+	what := func(p *published) (string, []byte, bool) {
+		if name == "" {
+			return "sessions", p.sessionList(), true
+		}
+		data, ok := p.forSession(name)
+		return "board", data, ok
+	}
+	if _, _, ok := what(s.hub.current()); !ok {
+		writeError(w, http.StatusNotFound, "Session "+name+" isn't running.")
+		return
+	}
 	rc := http.NewResponseController(w)
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	wake, leave := s.hub.join()
 	defer leave()
 	var sent uint64
-	// send sends the board that's out, unless it was the last one sent.
-	send := func() error {
+	var last []byte
+	// send sends the board that's out, unless it was the last one sent or
+	// holds nothing new for this stream. It's false once the session is gone.
+	send := func() (bool, error) {
 		p := s.hub.current()
 		if p.seq == sent {
-			return nil
+			return true, nil
 		}
 		sent = p.seq
-		if _, err := fmt.Fprintf(w, "event: board\ndata: %s\n\n", p.json); err != nil {
-			return err
+		event, data, ok := what(p)
+		if !ok {
+			return false, nil
 		}
-		return rc.Flush()
+		if bytes.Equal(data, last) {
+			return true, nil
+		}
+		last = data
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return false, err
+		}
+		return true, rc.Flush()
 	}
-	if send() != nil {
+	if ok, err := send(); !ok || err != nil {
 		return
 	}
 	t := time.NewTicker(pingEvery)
@@ -304,7 +358,7 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		case <-r.Context().Done():
 			return
 		case <-wake:
-			if send() != nil {
+			if ok, err := send(); !ok || err != nil {
 				return
 			}
 		case <-t.C:

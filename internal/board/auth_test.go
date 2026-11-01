@@ -67,7 +67,7 @@ func TestRejectsForeignHost(t *testing.T) {
 		fmt.Sprintf("[::1]:%d", authPort),
 		"",
 	} {
-		for _, target := range []string{"/", "/static/app.js", "/api/board"} {
+		for _, target := range []string{"/", "/-/static/app.js", "/api/board"} {
 			if w := send(h, "GET", target, with(bearer(testToken), "Host", host), ""); w.Code != http.StatusForbidden {
 				t.Errorf("Host %q, %s: got %d, want 403", host, target, w.Code)
 			}
@@ -93,7 +93,7 @@ func TestAPIWithoutKeyIs401(t *testing.T) {
 		"Bearer " + NewAuth("another token", authPort).key,
 		"Bearer " + NewAuth(testToken, authPort).key, // another run's
 	} {
-		for _, target := range []string{"/api/board", "/api", "//api/board", "/static/../api/board"} {
+		for _, target := range []string{"/api/board", "/api", "//api/board", "/-/static/../../api/board"} {
 			w := send(h, "GET", target, map[string]string{"Authorization": auth}, "")
 			if w.Code != http.StatusUnauthorized {
 				t.Errorf("Authorization %q, %s: got %d, want 401", auth, target, w.Code)
@@ -122,7 +122,7 @@ func TestBrowserKeyWorksButNotForAdminRoutes(t *testing.T) {
 		{"GET", "/api/board", key, 200},
 		{"POST", "/api/task", key, 200},
 		{"POST", "/api/shutdown", key, 401},
-		{"POST", "/static/../api/shutdown", key, 401},
+		{"POST", "/-/static/../../api/shutdown", key, 401},
 		{"POST", "/api//shutdown", key, 401},
 		{"GET", "/api/board", testToken, 200},
 		{"POST", "/api/shutdown", testToken, 200},
@@ -183,7 +183,7 @@ func TestStaticNeedsNoKeyAndHasCSP(t *testing.T) {
 			}
 		}
 	}
-	for _, target := range []string{"/", "/static/app.js", "/index.html"} {
+	for _, target := range []string{"/", "/-/static/app.js", "/index.html"} {
 		w := send(h, "GET", target, nil, "")
 		if w.Code != http.StatusOK || w.Body.String() != "ok" {
 			t.Errorf("GET %s without a key: %d %q, want 200 ok", target, w.Code, w.Body)

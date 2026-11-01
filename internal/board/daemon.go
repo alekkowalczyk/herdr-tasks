@@ -506,35 +506,46 @@ func Health(stateDir string) (Meta, error) {
 	return ask(stateDir, token, time.Second)
 }
 
+// Login is the address that signs a browser in: Local on this machine.
+// Tailnet is the address on the tailnet, or "" when the board isn't there.
+type Login struct {
+	Local, Tailnet string
+}
+
 // LoginURL asks the running server for a one-time login code, and returns
-// the address that signs a browser in with it. It works once, for a minute.
-func LoginURL(stateDir string) (string, error) {
+// the addresses that sign a browser in with it, at the board of session, or
+// at the list of sessions when session is "". It works once, for a minute.
+func LoginURL(stateDir, session string) (Login, error) {
 	token, err := adminToken(stateDir)
 	if err != nil {
-		return "", err
+		return Login{}, err
 	}
 	m, err := ReadMeta(stateDir)
 	if err != nil {
-		return "", err
+		return Login{}, err
 	}
 	resp, err := call("POST", m.Port, "/api/login-code", token, patience)
 	if err != nil {
-		return "", err
+		return Login{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("port %d answered %s", m.Port, resp.Status)
+		return Login{}, fmt.Errorf("port %d answered %s", m.Port, resp.Status)
 	}
 	var r struct {
 		Code string `json:"code"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r); err != nil {
-		return "", fmt.Errorf("port %d: %w", m.Port, err)
+		return Login{}, fmt.Errorf("port %d: %w", m.Port, err)
 	}
 	if r.Code == "" {
-		return "", fmt.Errorf("port %d gave no login code", m.Port)
+		return Login{}, fmt.Errorf("port %d gave no login code", m.Port)
 	}
-	return fmt.Sprintf("http://127.0.0.1:%d/?code=%s", m.Port, url.QueryEscape(r.Code)), nil
+	at := "/"
+	if session != "" {
+		at = "/" + url.PathEscape(session) + "/"
+	}
+	return Login{Local: fmt.Sprintf("http://127.0.0.1:%d%s?code=%s", m.Port, at, url.QueryEscape(r.Code))}, nil
 }
 
 // adminToken is the token to ask the running server with, once it's sure
