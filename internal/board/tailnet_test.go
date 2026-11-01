@@ -35,12 +35,16 @@ var onTheTailnet = reconcile.Options{Board: true, BoardPort: 7391, BoardTailnet:
 type fakeTS struct {
 	mu       sync.Mutex
 	self     tailnet.Self
+	selfErr  error
 	served   map[int]string
 	serveErr error
 	// spell is how Tailscale reports a target it was given; nil reports it
 	// as given.
 	spell func(string) string
-	log   []string
+	// hold, when set, keeps Self from answering until it's closed or the
+	// call's context ends, as a tailscale that hangs.
+	hold chan struct{}
+	log  []string
 }
 
 func newFakeTS(served map[int]string) *fakeTS {
@@ -50,11 +54,31 @@ func newFakeTS(served map[int]string) *fakeTS {
 	return &fakeTS{self: tailnet.Self{DNSName: "devbox.tail0000.ts.net", Owner: "dana@acme.test"}, served: served}
 }
 
-func (f *fakeTS) Self(context.Context) (tailnet.Self, error) {
+func (f *fakeTS) Self(ctx context.Context) (tailnet.Self, error) {
+	f.mu.Lock()
+	f.log = append(f.log, "self")
+	hold := f.hold
+	f.mu.Unlock()
+	if hold != nil {
+		select {
+		case <-hold:
+		case <-ctx.Done():
+			return tailnet.Self{}, ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.log = append(f.log, "self")
+	if f.selfErr != nil {
+		return tailnet.Self{}, f.selfErr
+	}
 	return f.self, nil
+}
+
+// failSelf has Self fail with err from now on, or work again with nil.
+func (f *fakeTS) failSelf(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.selfErr = err
 }
 
 func (f *fakeTS) Served(context.Context) (map[int]string, error) {
@@ -187,10 +211,11 @@ func (f *tailnetServer) advance(d time.Duration) {
 }
 
 // waitTicks waits up to 3 s for the server to check n times from now. The
-// check under way may have started before, so it waits for one more.
+// check under way may have read the settings before, and a check syncs with
+// Tailscale after it lists the sessions, so it waits for two more lists.
 func (f *tailnetServer) waitTicks(t *testing.T, n int) {
 	t.Helper()
-	until := f.checks.Load() + int64(n) + 1
+	until := f.checks.Load() + int64(n) + 2
 	for deadline := time.Now().Add(3 * time.Second); f.checks.Load() < until; time.Sleep(5 * time.Millisecond) {
 		if time.Now().After(deadline) {
 			t.Fatalf("the server didn't check %d times", n)
@@ -339,8 +364,8 @@ func TestTailnetLeavesOthersEntries(t *testing.T) {
 	if _, err := os.Stat(serverFile(f.dir, "tailnet.json")); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("a record of someone else's entry: %v", err)
 	}
-	if reply := f.loginCode(t); reply["tailnet"] != "" {
-		t.Errorf("login-code = %q, want no tailnet address", reply)
+	if reply := f.loginCode(t); reply["tailnet"] != "" || reply["tailnetProblem"] != line.Problem {
+		t.Errorf("login-code = %q, want the problem and no tailnet address", reply)
 	}
 }
 
@@ -701,5 +726,148 @@ func TestTailnetOffEndsItsStreams(t *testing.T) {
 	}
 	if took := time.Since(off); took >= 1500*time.Millisecond {
 		t.Errorf("the stream ended %v after board_tailnet went off", took)
+	}
+}
+
+// When Tailscale can't be read while the board is shared, it stays shared:
+// the door still answers, and the header says the check failed. It's tried
+// again a minute later.
+func TestTailnetRecheckFails(t *testing.T) {
+	ts := newFakeTS(nil)
+	f := startTailnet(t, shortDir(t), ts, onTheTailnet)
+	address := f.line(t, shared).Address
+	ts.failSelf(errors.New("tailscale status --json: timed out after 10s"))
+	f.advance(time.Minute)
+	line := f.line(t, hasProblem)
+	if want := "Couldn't check the board's tailnet share: tailscale status --json: timed out after 10s"; line.Problem != want || line.Address != address {
+		t.Errorf("tailnet line = %+v, want %s and the address", line, want)
+	}
+	signIn := map[string]string{"Origin": address, "Content-Type": "application/json", "Tailscale-User-Login": "dana@acme.test"}
+	if st, body := throughTailnet(t, f.sock, "POST", "/api/session", signIn, "{}"); st != http.StatusOK {
+		t.Errorf("the owner's sign-in: %d %s, want 200", st, body)
+	}
+	if reply := f.loginCode(t); reply["tailnet"] != address || reply["tailnetProblem"] != line.Problem {
+		t.Errorf("login-code = %q, want the address and the problem", reply)
+	}
+	selfs := func() int { return len(slices.DeleteFunc(ts.calls(), func(c string) bool { return c != "self" })) }
+	before := selfs()
+	f.advance(50 * time.Second)
+	f.waitTicks(t, 2)
+	if selfs() != before {
+		t.Errorf("within a minute of the failure, Tailscale was asked %q", ts.calls())
+	}
+	ts.failSelf(nil)
+	f.advance(10 * time.Second)
+	f.line(t, func(l *TailnetLine) bool { return l.Problem == "" && l.Address == address })
+	if got := ts.changes(); len(got) != 1 {
+		t.Errorf("Tailscale was asked %q, want one serve", got)
+	}
+}
+
+// A browser leaves :443 out of the Origin, so the address does too.
+func TestTailnetAddressLeavesOut443(t *testing.T) {
+	for port, want := range map[int]string{443: "https://devbox.tail0000.ts.net", 7391: "https://devbox.tail0000.ts.net:7391"} {
+		if got := tailnetAddress("devbox.tail0000.ts.net", port); got != want {
+			t.Errorf("port %d: %q, want %q", port, got, want)
+		}
+	}
+}
+
+// The board is built again when the tailnet line changes, and not when a
+// check finds it as it was.
+func TestShowTailnetSignalsOnlyChanges(t *testing.T) {
+	s := NewServer(Config{StateDir: t.TempDir(), Version: testVersion}, NewAuth(testToken), nil)
+	built := func() bool {
+		select {
+		case <-s.hub.dirty:
+			return true
+		default:
+			return false
+		}
+	}
+	const address = "https://devbox.tail0000.ts.net:7391"
+	for i, c := range []struct {
+		line *TailnetLine
+		want bool
+	}{
+		{nil, true}, // the first
+		{nil, false},
+		{&TailnetLine{Address: address}, true},
+		{&TailnetLine{Address: address}, false},
+		{&TailnetLine{Address: address, Problem: "Couldn't check the board's tailnet share: timed out"}, true},
+		{nil, true},
+	} {
+		s.showTailnet(c.line, "dana@acme.test")
+		if got := built(); got != c.want {
+			t.Errorf("%d: %+v built the board: %v, want %v", i, c.line, got, c.want)
+		}
+	}
+}
+
+// A tailscale that's slow to answer doesn't keep the board from finding the
+// sessions.
+func TestTailnetSlowDoesntHoldUpSessions(t *testing.T) {
+	ts := newFakeTS(nil)
+	ts.hold = make(chan struct{})
+	f := startTailnet(t, shortDir(t), ts, onTheTailnet)
+	f.work(t, func(Board) bool { return true })
+	close(ts.hold)
+	f.line(t, shared)
+}
+
+// failingListener fails to accept once fail is closed.
+type failingListener struct {
+	net.Listener
+	fail chan struct{}
+}
+
+func (l *failingListener) Accept() (net.Conn, error) {
+	<-l.fail
+	return nil, errors.New("accept: the listener broke")
+}
+
+// When serving fails, the server stops at once, even while a sync waits on
+// tailscale: that call ends with the server's context.
+func TestTailnetSyncDoesntHoldUpStopping(t *testing.T) {
+	dir := shortDir(t)
+	ts := newFakeTS(nil)
+	ts.hold = make(chan struct{})
+	inner, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := &failingListener{Listener: inner, fail: make(chan struct{})}
+	s := NewServer(Config{
+		StateDir: dir, Port: 7391, Version: testVersion, Tailscale: ts,
+		Options: func() (reconcile.Options, error) { return onTheTailnet, nil },
+	}, NewAuth(testToken), nil)
+	ran := make(chan error, 1)
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ran <- s.Run(context.Background(), ln)
+	}()
+	// Before dir goes, whatever happens: Tailscale answers, and Run returns.
+	t.Cleanup(func() {
+		close(ts.hold)
+		select {
+		case <-stopped:
+		case <-time.After(5 * time.Second):
+			t.Error("the server never stopped")
+		}
+	})
+	for deadline := time.Now().Add(3 * time.Second); !slices.Contains(ts.calls(), "self"); time.Sleep(5 * time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatal("the server never asked Tailscale")
+		}
+	}
+	close(ln.fail)
+	select {
+	case err := <-ran:
+		if err == nil {
+			t.Error("Run = nil, want the listener's error")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the server didn't stop while a sync waited on tailscale")
 	}
 }

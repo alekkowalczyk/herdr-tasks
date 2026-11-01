@@ -14,6 +14,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -273,12 +274,15 @@ func (s *Server) watch(ctx context.Context) {
 	}
 }
 
-// check reads the settings, shares the board with the tailnet or takes it
-// off as they say, and looks for sessions. It says why the server should
-// shut down, if it should.
+// check reads the settings, looks for sessions, and then shares the board
+// with the tailnet or takes it off as the settings say, as Tailscale may be
+// slow to answer. It says why the server should shut down, if it should.
 func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) string {
+	var opts reconcile.Options
+	haveOpts := false
 	if s.cfg.Options != nil {
-		opts, err := s.cfg.Options()
+		var err error
+		opts, err = s.cfg.Options()
 		switch {
 		case err != nil:
 			logOnce(problem, fmt.Sprintf("reading config: %v", err))
@@ -290,7 +294,7 @@ func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) st
 			return fmt.Sprintf("the board moved to port %d", opts.Port())
 		default:
 			*problem = ""
-			s.syncTailnet(ctx, opts)
+			haveOpts = true
 		}
 	}
 	var conns []SessionConn
@@ -301,6 +305,9 @@ func (s *Server) check(ctx context.Context, seen *time.Time, problem *string) st
 		*seen = time.Now()
 	} else if time.Since(*seen) >= s.idle {
 		return fmt.Sprintf("no herdr session for %v", s.idle)
+	}
+	if haveOpts {
+		s.syncTailnet(ctx, opts)
 	}
 	return ""
 }

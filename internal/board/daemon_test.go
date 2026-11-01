@@ -965,7 +965,8 @@ func TestLoginURLHasSession(t *testing.T) {
 }
 
 // While the board is shared with the tailnet, the server says where, and
-// the login has that address too, with the same code.
+// the login has that address too, with the same code, and the problem the
+// server has with it.
 func TestLoginURLHasTailnet(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := EnsureToken(dir); err != nil {
@@ -975,7 +976,8 @@ func TestLoginURLHasTailnet(t *testing.T) {
 		if r.Method != "POST" || r.URL.Path != "/api/login-code" {
 			t.Errorf("asked %s %s", r.Method, r.URL)
 		}
-		io.WriteString(w, `{"code":"0123abcd","tailnet":"https://devbox.tail0000.ts.net:7391"}`)
+		io.WriteString(w, `{"code":"0123abcd","tailnet":"https://devbox.tail0000.ts.net:7391",`+
+			`"tailnetProblem":"Couldn't check the board's tailnet share: timed out after 10s"}`)
 	}))
 	defer srv.Close()
 	port := srv.Listener.Addr().(*net.TCPAddr).Port
@@ -995,6 +997,7 @@ func TestLoginURLHasTailnet(t *testing.T) {
 	want := Login{
 		Local:   fmt.Sprintf("http://127.0.0.1:%d/work/?code=0123abcd", port),
 		Tailnet: "https://devbox.tail0000.ts.net:7391/work/?code=0123abcd",
+		Problem: "Couldn't check the board's tailnet share: timed out after 10s",
 	}
 	if login != want {
 		t.Errorf("LoginURL = %+v, want %+v", login, want)

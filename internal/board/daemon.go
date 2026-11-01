@@ -508,8 +508,11 @@ func Health(stateDir string) (Meta, error) {
 
 // Login is the address that signs a browser in: Local on this machine.
 // Tailnet is the address on the tailnet, or "" when the board isn't there.
+// Problem says why it isn't there, or can't be checked, when that goes
+// wrong.
 type Login struct {
 	Local, Tailnet string
+	Problem        string
 }
 
 // LoginURL asks the running server for a one-time login code, and returns
@@ -537,6 +540,7 @@ func LoginURL(stateDir, session string) (Login, error) {
 	var r struct {
 		Code    string `json:"code"`
 		Tailnet string `json:"tailnet"` // the board's address on the tailnet, while it's shared
+		Problem string `json:"tailnetProblem"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&r); err != nil {
 		return Login{}, fmt.Errorf("port %d: %w", m.Port, err)
@@ -549,7 +553,7 @@ func LoginURL(stateDir, session string) (Login, error) {
 		at = "/" + url.PathEscape(session) + "/"
 	}
 	code := url.QueryEscape(r.Code)
-	login := Login{Local: fmt.Sprintf("http://127.0.0.1:%d%s?code=%s", m.Port, at, code)}
+	login := Login{Local: fmt.Sprintf("http://127.0.0.1:%d%s?code=%s", m.Port, at, code), Problem: r.Problem}
 	if r.Tailnet != "" {
 		login.Tailnet = r.Tailnet + at + "?code=" + code
 	}

@@ -116,8 +116,9 @@ func currentSession(getenv func(string) string) string {
 // sessions when it's "". With print it only prints the address, and the
 // address on the tailnet while the board is shared there. When no browser
 // opens, as on a machine without a display, it shows the address on the
-// tailnet, or else the local one. With newToken it first replaces the
-// token, which signs every browser out.
+// tailnet, or else the local one. It also shows why the board isn't on the
+// tailnet, when that goes wrong. With newToken it first replaces the token,
+// which signs every browser out.
 func (b boardCmd) run(print, newToken bool, session string) error {
 	if !b.opts.Board {
 		b.show("The task board is off. Add board = true to " + configFile() + ".")
@@ -139,19 +140,25 @@ func (b boardCmd) run(print, newToken bool, session string) error {
 	if err != nil {
 		return b.fail(err.Error())
 	}
+	// Said once, as each message opens the overview when herdr runs this.
+	var say []string
 	if print {
 		fmt.Fprintln(b.out, login.Local)
 		if login.Tailnet != "" {
 			fmt.Fprintln(b.out, login.Tailnet)
 		}
-		return nil
-	}
-	if err := b.open(login.Local); err != nil {
+	} else if err := b.open(login.Local); err != nil {
 		url := login.Local
 		if login.Tailnet != "" {
 			url = login.Tailnet
 		}
-		b.show("Open this in your browser: " + url + " (the code works for a minute)")
+		say = append(say, "Open this in your browser: "+url+" (the code works for a minute)")
+	}
+	if login.Problem != "" {
+		say = append(say, login.Problem)
+	}
+	if len(say) > 0 {
+		b.show(strings.Join(say, " "))
 	}
 	return nil
 }

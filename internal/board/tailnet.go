@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -208,10 +209,21 @@ func (s *Server) tailnetOwner() string {
 }
 
 // showTailnet puts out what the header shows of the tailnet, and has the
-// board built again with it.
+// board built again when that changed.
 func (s *Server) showTailnet(line *TailnetLine, owner string) {
-	s.tailnet.view.Store(&tailnetView{line: line, owner: owner})
-	signal(s.hub.dirty)
+	old := s.tailnet.view.Swap(&tailnetView{line: line, owner: owner})
+	if old == nil || !sameLine(old.line, line) {
+		signal(s.hub.dirty)
+	}
+}
+
+// sameLine reports whether the header shows a and b the same.
+func sameLine(a, b *TailnetLine) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Address == b.Address && a.Problem == b.Problem &&
+		slices.EqualFunc(a.Shares, b.Shares, func(x, y SharedPort) bool { return x.Port == y.Port && x.Since.Equal(y.Since) })
 }
 
 // syncTailnet shares the board with the tailnet while the board and
@@ -248,8 +260,9 @@ func (s *Server) syncTailnet(ctx context.Context, opts reconcile.Options) {
 // shareBoard listens on the board's socket, and has Tailscale serve it at
 // the board's port, unless Tailscale serves that port for something else.
 // It says where the board is on the tailnet, or why it isn't there, and who
-// owns this machine. When Tailscale can't be read, it keeps the address it
-// had, with the problem.
+// owns this machine. When Tailscale can't be read while the board is
+// shared, it keeps the address and the owner it had, and says it couldn't
+// check.
 func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
 	ts, port := s.cfg.Tailscale, s.cfg.Port
 	sock := socketPath(s.cfg.StateDir, boardSocket)
@@ -269,11 +282,10 @@ func (s *Server) shareBoard(ctx context.Context) (*TailnetLine, string) {
 		served, err = ts.Served(ctx)
 	}
 	if err != nil {
-		line := failed(err)
-		if was.line != nil {
-			line.Address = was.line.Address
+		if was.line != nil && was.line.Address != "" {
+			return &TailnetLine{Address: was.line.Address, Problem: "Couldn't check the board's tailnet share: " + err.Error()}, was.owner
 		}
-		return line, was.owner
+		return failed(err), was.owner
 	}
 	if self.DNSName == "" {
 		return failed(errors.New("Tailscale gives this machine no name")), self.Owner

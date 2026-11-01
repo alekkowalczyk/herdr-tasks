@@ -241,10 +241,12 @@ func (s *Server) now() time.Time {
 // for requests to finish, then closes what's left, the tailnet door too.
 func (s *Server) Run(ctx context.Context, ln net.Listener) error {
 	defer runtime.KeepAlive(s.lock)
+	// After cancel, which ends a tailscale call that a sync under way waits
+	// on.
+	defer s.closeTailnet()
 	stop := context.AfterFunc(ctx, s.cancel)
 	defer stop()
 	defer s.cancel()
-	defer s.closeTailnet()
 
 	// Written before serving, so whoever gets an answer finds it.
 	if err := writeMeta(s.cfg.StateDir, s.meta()); err != nil {
@@ -286,11 +288,17 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 }
 
 // loginCode makes a login code, and says where the board is on the tailnet
-// while it's shared there.
+// while it's shared there, and why it isn't there, or can't be checked,
+// when that goes wrong.
 func (s *Server) loginCode(w http.ResponseWriter, r *http.Request) {
 	reply := map[string]string{"code": s.auth.LoginCode(time.Now())}
-	if a := s.tailnetOrigin(); a != "" {
-		reply["tailnet"] = a
+	if l := s.tailnetLine(); l != nil {
+		if l.Address != "" {
+			reply["tailnet"] = l.Address
+		}
+		if l.Problem != "" {
+			reply["tailnetProblem"] = l.Problem
+		}
 	}
 	writeJSON(w, http.StatusOK, reply)
 }

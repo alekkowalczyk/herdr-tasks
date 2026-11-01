@@ -178,6 +178,37 @@ func TestBoardShowsTailnetWhenNoBrowser(t *testing.T) {
 	}
 }
 
+// When the board can't be shared with the tailnet, the board command says
+// why, on the message line, and --print still prints only addresses.
+func TestBoardShowsTailnetProblem(t *testing.T) {
+	const problem = "Port 7391 is already shared with your tailnet for something else."
+	login := func(string, string) (board.Login, error) {
+		return board.Login{Local: testURL, Problem: problem}, nil
+	}
+	for _, c := range []struct {
+		print    bool
+		openErr  error
+		out      string
+		shown    string
+		describe string
+	}{
+		{true, nil, testURL + "\n", problem, "--print"},
+		{false, nil, "", problem, "opening the board"},
+		{false, errors.New("no display to open a browser on"), "",
+			"Open this in your browser: " + testURL + " (the code works for a minute) " + problem, "no browser"},
+	} {
+		f := newFakeBoard(t, reconcile.Options{Board: true, BoardTailnet: true})
+		f.loginURL = login
+		f.open = func(string) error { return c.openErr }
+		if err := f.run(c.print, false, "work"); err != nil {
+			t.Fatal(err)
+		}
+		if f.out.String() != c.out || !slices.Equal(f.shown, []string{c.shown}) {
+			t.Errorf("%s: printed %q, showed %q; want %q and %q", c.describe, f.out.String(), f.shown, c.out, c.shown)
+		}
+	}
+}
+
 // --new-token replaces the token and restarts the server in one step, so no
 // server starts with the old token in between.
 func TestBoardNewTokenRotates(t *testing.T) {
