@@ -1,7 +1,7 @@
 // Runs the board page's script in a stand-in browser, with a stand-in DOM
 // and board server, to check what a card shows while its changes are on
 // their way, and which 401s sign the page out. Usage: node board.js
-// path/to/app.js
+// path/to/app.js [scripts it uses, such as path/to/search.js]
 'use strict';
 
 const assert = require('assert/strict');
@@ -10,6 +10,8 @@ const vm = require('vm');
 
 const KEY = 'herdr-tasks-board-key';
 const src = fs.readFileSync(process.argv[2], 'utf8');
+// The page loads these before app.js.
+const before = process.argv.slice(3).map(f => fs.readFileSync(f, 'utf8'));
 
 // ---- A stand-in DOM, with what app.js uses
 
@@ -190,6 +192,9 @@ class Element extends Node {
   }
   focus() {
     doc.activeElement = this;
+  }
+  blur() {
+    if (doc.activeElement === this) doc.activeElement = null;
   }
   select() {}
   showModal() {
@@ -437,8 +442,15 @@ function page(stored, path, hash, search, tailnet) {
     console,
   };
   vm.createContext(ctx);
+  for (const b of before) vm.runInContext(b, ctx);
   vm.runInContext(src, ctx);
 
+  // back goes back to the board, as the browser's Back does from a view.
+  pg.back = () => {
+    ctx.history.state = null;
+    location.hash = '';
+    for (const fn of windowListeners.popstate || []) fn({});
+  };
   // hide hides the page, or shows it again, as a tab put behind another does.
   pg.hide = on => {
     pg.hidden = on;
@@ -504,6 +516,28 @@ const sideRows = pg =>
       const more = g.querySelector('.side-more');
       return [head, ...tasks, ...(more && !more.hidden ? [more.textContent] : [])];
     });
+
+// marked is el's text, with what it marks in [ ].
+const marked = el => el.text + el.childNodes.map(n => (n.tag === 'mark' ? '[' + n.textContent + ']' : n.textContent)).join('');
+
+// found is what the search shows, a line each: a place's name, and each
+// task found there as its title and, but for the name, where it was found.
+const found = pg =>
+  pg.$('results-groups').children.flatMap(g => [
+    g.querySelector('.result-label').textContent,
+    ...g.querySelectorAll('.result').map(r =>
+      [r.querySelector('.result-title'), r.querySelector('.result-where')]
+        .filter(e => e && !e.hidden)
+        .map(marked)
+        .join(' · '),
+    ),
+  ]);
+
+// type types text in the search box, as it is after typing.
+const type = (pg, text) => {
+  pg.$('search').value = text;
+  pg.$('search').dispatch('input');
+};
 
 // agentLines is each agent's heading on el, and the line under it, if any.
 const agentLines = (el, sel) =>
@@ -1639,6 +1673,119 @@ const tests = {
     pg.hide(false);
     await settle();
     assert.equal(pg.streams.length, 2, 'shown twice, it took up two streams');
+  },
+
+  // The search finds tasks: first those with the words in their name, then
+  // in a pane's name, then in a recap, then anywhere else, each with where
+  // it was found. It looks through every task, whatever the side panel and
+  // Priority only show, and keeps up with the board.
+  async 'the search finds tasks, by name first'() {
+    const cards = [
+      card({tab: 'w1:t1', title: 'Invoice export', space: 'w1', spaceLabel: 'billing', note: 'Blocked on the\nlogin provider'}),
+      card({tab: 'w1:t2', title: 'Login loop', space: 'w1', spaceLabel: 'billing', column: 'paused', stage: 'paused'}),
+      card({tab: 'w1:t3', title: 'Billing', space: 'w1', spaceLabel: 'billing'}),
+      card({tab: 'w2:t1', title: 'Deploy', space: 'w2', spaceLabel: 'infra', panes: ['login server']}),
+      card({tab: 'w2:t2', title: 'Docs', space: 'w2', spaceLabel: 'infra', agents: [{pane: 'w2:p2', agent: 'claude', status: 'idle', recap: 'You’re documenting the login flow.'}]}),
+    ];
+    const titles = pg => pg.$('board').querySelectorAll('.card').map(c => c.querySelector('.card-title').textContent).sort();
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    const box = pg.$('search');
+    assert.equal(box.hidden, false, 'no search box');
+    assert.equal(pg.$('results').hidden, true);
+    sideSpace(pg, 'infra').click();
+    pg.$('prio-only').click();
+
+    type(pg, 'login');
+    assert.equal(pg.$('board').hidden, true, 'the columns stayed');
+    assert.equal(pg.$('results').hidden, false, 'no results');
+    assert.equal(pg.$('results-count').textContent, '4 of 5 tasks match');
+    assert.deepEqual(found(pg), [
+      'Name',
+      '[Login] loop',
+      'Pane',
+      'Deploy · [login] server',
+      'Recap',
+      'Docs · You’re documenting the [login] flow.',
+      'Content',
+      'Invoice export · Blocked on the [login] provider',
+    ]);
+    const result = title => pg.$('results-groups').querySelectorAll('.result').find(r => r.querySelector('.result-title').textContent === title);
+    assert.equal(result('Login loop').getAttribute('data-column'), 'paused');
+
+    cards[2] = card({tab: 'w1:t3', title: 'Billing', space: 'w1', spaceLabel: 'billing', log: [{who: 'claude', at: '2026-10-31T09:00:00Z', text: 'Moved the login check.'}]});
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    assert.deepEqual(found(pg).slice(-2), ['Invoice export · Blocked on the [login] provider', 'Billing · Moved the [login] check.']);
+
+    type(pg, 'zzz');
+    assert.equal(pg.$('results-count').textContent, 'No task matches “zzz”.');
+    assert.deepEqual(found(pg), []);
+
+    type(pg, '');
+    assert.equal(pg.$('results').hidden, true);
+    assert.equal(pg.$('board').hidden, false);
+    assert.deepEqual(titles(pg), [], 'the side panel and Priority only no longer show');
+    pg.$('prio-only').click();
+    assert.deepEqual(titles(pg), ['Deploy', 'Docs']);
+  },
+
+  // / goes to the search, but in a field. Enter opens the first task found,
+  // and a click any of them; Back comes back to what was found, and the
+  // search is gone while a view is open. Esc empties the search, then
+  // leaves it.
+  async 'the search opens what it found'() {
+    const cards = [
+      card({tab: 'w1:t1', title: 'Invoice export', space: 'w1', spaceLabel: 'billing', note: 'The login provider'}),
+      card({tab: 'w1:t2', title: 'Login loop', space: 'w1', spaceLabel: 'billing'}),
+    ];
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    const box = pg.$('search');
+    const field = new Element('input');
+    pg.body.append(field);
+    field.dispatch('keydown', {key: '/'});
+    assert.notEqual(doc.activeElement, box, '/ in a field went to the search');
+    pg.body.dispatch('keydown', {key: '/', ctrlKey: true});
+    assert.notEqual(doc.activeElement, box, 'ctrl+/ went to the search');
+    let slash = null;
+    pg.body.addEventListener('keydown', e => (slash = e));
+    pg.body.dispatch('keydown', {key: '/'});
+    assert.equal(doc.activeElement, box, "/ didn't go to the search");
+    assert.ok(slash.defaultPrevented, '/ was typed too');
+
+    type(pg, 'login');
+    box.dispatch('keydown', {key: 'Enter'});
+    assert.equal(pg.location.hash, '#tab=w1%3At2', 'Enter opened something else');
+    assert.equal(box.hidden, true, 'the search shows in the view');
+    pg.back();
+    assert.equal(box.hidden, false);
+    assert.equal(pg.$('results').hidden, false, "Back didn't come back to the results");
+    assert.equal(doc.activeElement && doc.activeElement.querySelector('.result-title').textContent, 'Login loop');
+
+    pg.$('results-groups').querySelectorAll('.result')[1].click();
+    assert.equal(pg.location.hash, '#tab=w1%3At1');
+    pg.back();
+
+    box.focus();
+    box.dispatch('keydown', {key: 'ArrowDown'});
+    assert.equal(doc.activeElement.querySelector('.result-title').textContent, 'Login loop');
+    doc.activeElement.dispatch('keydown', {key: 'ArrowDown'});
+    assert.equal(doc.activeElement.querySelector('.result-title').textContent, 'Invoice export');
+    doc.activeElement.dispatch('keydown', {key: 'ArrowUp'});
+    doc.activeElement.dispatch('keydown', {key: 'ArrowUp'});
+    assert.equal(doc.activeElement, box, 'up from the first found didn’t go back to the search');
+
+    box.dispatch('keydown', {key: 'Escape'});
+    assert.equal(box.value, '');
+    assert.equal(pg.$('results').hidden, true);
+    assert.equal(doc.activeElement, box);
+    box.dispatch('keydown', {key: 'Escape'});
+    assert.notEqual(doc.activeElement, box, 'a second Esc stayed in the search');
   },
 
   // A page opened behind another waits until it shows to take up a stream.

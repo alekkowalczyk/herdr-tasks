@@ -1,0 +1,17 @@
+[
+  {"why": "a word in the name", "query": "login", "fields": {"name": "Fix the login loop"}, "match": "name", "text": "Fix the login loop", "found": "login"},
+  {"why": "case doesn't matter", "query": "LOGIN", "fields": {"name": "Fix the Login loop"}, "match": "name", "text": "Fix the Login loop", "found": "Login"},
+  {"why": "a pane's name", "query": "deploy", "fields": {"name": "Billing", "panes": ["shell", "Deploy watcher"]}, "match": "pane", "text": "Deploy watcher", "found": "Deploy"},
+  {"why": "a recap", "query": "migration", "fields": {"name": "Billing", "recaps": ["You're writing the migration for invoices."]}, "match": "recap", "text": "You're writing the migration for invoices.", "found": "migration"},
+  {"why": "the content", "query": "refund", "fields": {"name": "Billing", "content": ["", "Waiting for the refund flow review"]}, "match": "content", "text": "Waiting for the refund flow review", "found": "refund"},
+  {"why": "the name before a recap", "query": "invoice", "fields": {"name": "Invoice export", "recaps": ["The invoice export runs."]}, "match": "name", "text": "Invoice export", "found": "Invoice"},
+  {"why": "a pane before the content", "query": "server", "fields": {"name": "Board", "panes": ["Board server"], "content": ["Restart the server"]}, "match": "pane", "text": "Board server", "found": "server"},
+  {"why": "every word, and the worst place decides", "query": "login timeout", "fields": {"name": "Fix the login loop", "recaps": ["Added a timeout to the retry."]}, "match": "recap", "text": "Added a timeout to the retry.", "found": "timeout"},
+  {"why": "words in any order", "query": "loop fix", "fields": {"name": "Fix the login loop"}, "match": "name", "text": "Fix the login loop", "found": "loop"},
+  {"why": "a word found nowhere", "query": "login banana", "fields": {"name": "Fix the login loop", "content": ["apple"]}, "match": "none"},
+  {"why": "nothing to search for", "query": "   ", "fields": {"name": "Fix the login loop"}, "match": "none"},
+  {"why": "text on one line", "query": "second", "fields": {"name": "Notes", "content": ["First line\n\n  second\tline "]}, "match": "content", "text": "First line second line", "found": "second"},
+  {"why": "part of a word", "query": "auth", "fields": {"name": "OAuth callback"}, "match": "name", "text": "OAuth callback", "found": "Auth"},
+  {"why": "letters beyond ASCII", "query": "zażółć", "fields": {"name": "Zażółć gęślą jaźń"}, "match": "name", "text": "Zażółć gęślą jaźń", "found": "Zażółć"},
+  {"why": "a lower case of another length can't place the word", "query": "stanbul", "fields": {"name": "İstanbul trip"}, "match": "name", "text": "İstanbul trip", "found": ""}
+]

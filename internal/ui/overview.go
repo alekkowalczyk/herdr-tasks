@@ -56,7 +56,8 @@ const (
 	modeInput
 	modeUnlink
 	modeMove
-	modeLinks // the strip's list of every link
+	modeLinks  // the strip's list of every link
+	modeSearch // typing a search, see search.go
 )
 
 type inputKind int
@@ -130,31 +131,50 @@ type model struct {
 
 	lastTarget string
 	lastAt     time.Time
+
+	// The search, while it's open: what you type, what it reads besides
+	// the state file, and what it found.
+	find    textinput.Model
+	look    func() searchData
+	data    searchData
+	looking bool
+	hits    map[string]view.Hit // by tab ID
+	found   []row               // the rows found, best first
 }
 
 func newModel(env Env) (*model, error) {
-	m := &model{env: env, act: realActions(env.Client, env.Store, env.Opts), rowAt: map[int]string{}, linkAt: map[int]task.Link{}, alertY: -1}
 	// Track any tabs created since the last sync before showing them.
 	live, err := reconcile.Run(env.host(), env.Store, env.Opts, time.Now(), nil)
 	if err != nil {
 		return nil, err
 	}
-	m.live = live
-	if m.state, err = env.Store.Load(); err != nil {
+	st, err := env.Store.Load()
+	if err != nil {
 		return nil, err
 	}
+	return modelOf(env, live, st), nil
+}
+
+// modelOf is the overview of live and st, as herdr and the state file have
+// them.
+func modelOf(env Env, live *herdr.Live, st *store.State) *model {
+	m := &model{env: env, act: realActions(env.Client, env.Store, env.Opts), live: live, state: st,
+		rowAt: map[int]string{}, linkAt: map[int]task.Link{}, alertY: -1, look: realLook(env.Client)}
 	m.sel = env.CurrentTab
 	m.msg = env.Message
 	m.rebuild()
 
 	m.input = textinput.New()
 	m.input.Prompt = ""
+	m.find = textinput.New()
+	m.find.Prompt = ""
+	m.find.Placeholder = "a task's name, a pane's name, a recap, a note…"
 	m.note = textarea.New()
 	m.note.ShowLineNumbers = false
 	m.note.Prompt = ""
 	m.note.Placeholder = "What matters about this task?"
 	m.note.CharLimit = 4000
-	return m, nil
+	return m
 }
 
 type refreshMsg struct{}
@@ -189,6 +209,7 @@ func (m *model) rebuild() {
 	if m.selected() == nil && len(m.rows) > 0 {
 		m.sel = m.rows[0].tab.ID
 	}
+	m.search()
 }
 
 func (m *model) selected() *row {
@@ -201,17 +222,26 @@ func (m *model) selected() *row {
 }
 
 func (m *model) move(delta int) {
-	if len(m.rows) == 0 {
+	rows := m.listed()
+	if len(rows) == 0 {
 		return
 	}
 	i := 0
-	for k, r := range m.rows {
+	for k, r := range rows {
 		if r.tab.ID == m.sel {
 			i = k
 		}
 	}
-	i = max(0, min(len(m.rows)-1, i+delta))
-	m.sel = m.rows[i].tab.ID
+	i = max(0, min(len(rows)-1, i+delta))
+	m.sel = rows[i].tab.ID
+}
+
+// listed is the rows the list shows, in its order.
+func (m *model) listed() []row {
+	if m.searching() {
+		return m.found
+	}
+	return m.rows
 }
 
 // change edits the selected task and syncs herdr (markers, order, sidebar).
@@ -514,13 +544,25 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.input.Width = max(10, m.width-30)
+		m.find.Width = max(10, m.width-50)
 		m.sizeNote()
 		return m, nil
 	case refreshMsg:
-		if m.mode == modeList || m.mode == modeUnlink || m.mode == modeMove {
+		switch m.mode {
+		case modeList, modeUnlink, modeMove:
 			m.refresh()
+		case modeSearch:
+			m.refresh()
+			return m, tea.Batch(tick(), m.lookAgain())
 		}
 		return m, tick()
+	case searchLooked:
+		m.looking = false
+		if m.mode == modeSearch {
+			m.data = msg.data
+			m.search()
+		}
+		return m, nil
 	case boardOpened:
 		if msg.say == "" {
 			return m, m.quit("b")
@@ -551,6 +593,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.mouse(msg)
 	case tea.KeyMsg:
 		switch m.mode {
+		case modeSearch:
+			return m, m.searchKey(msg)
 		case modeInput:
 			switch msg.String() {
 			case "enter":
@@ -650,6 +694,8 @@ func (m *model) key(k string) tea.Cmd {
 		m.move(len(m.rows))
 	case "enter":
 		return m.jump()
+	case "/":
+		return m.startSearch()
 	case "b":
 		return m.openBoard()
 	case "a":
@@ -734,7 +780,7 @@ func (m *model) isDouble(target string) bool {
 }
 
 func (m *model) mouse(msg tea.MouseMsg) tea.Cmd {
-	if m.mode != modeList {
+	if m.mode != modeList && m.mode != modeSearch {
 		return nil
 	}
 	switch msg.Button {
@@ -808,7 +854,11 @@ func (m *model) View() string {
 		count = fmt.Sprintf("%d of %d spaces", shown, len(m.live.Workspaces))
 	}
 	// herdr's popup frame already says "Tasks".
-	count = fmt.Sprintf(" %s · %d tabs", count, len(m.rows))
+	tabs := fmt.Sprintf("%d tabs", len(m.rows))
+	if m.searching() {
+		tabs = fmt.Sprintf("%d of %d tabs match", len(m.found), len(m.rows))
+	}
+	count = fmt.Sprintf(" %s · %s", count, tabs)
 	keys := "? keys · esc hide "
 	b.WriteString(sDim.Render(count) + strings.Repeat(" ", max(1, m.width-ansi.StringWidth(count)-ansi.StringWidth(keys))) + sDim.Render(keys) + "\n")
 
@@ -927,7 +977,7 @@ func (m *model) listLines(w, h int) []string {
 		}
 	}
 	alertLine := -1
-	if asking+waiting > 0 {
+	if asking+waiting > 0 && !m.searching() {
 		var ns []string
 		for n := range names {
 			ns = append(ns, n)
@@ -957,20 +1007,21 @@ func (m *model) listLines(w, h int) []string {
 	const agentW, ageW = 11, 4
 	rest := max(10, w-4-spaceW-agentW-ageW-8)
 	nameW := rest * 6 / 10
+	if m.searching() {
+		// Where a search found a task takes more room.
+		nameW = rest * 4 / 10
+	}
 	infoW := rest - nameW
 
 	selLine := 0
-	for _, g := range task.Groups {
-		var rows []row
-		for _, r := range m.rows {
-			if r.group == g {
-				rows = append(rows, r)
-			}
-		}
-		title, hint, color := groupInfo(g)
-		head := " " + lipgloss.NewStyle().Foreground(color).Bold(true).Render(title) + sDim.Render(fmt.Sprintf("  %d", len(rows)))
-		if hint != "" && len(rows) > 0 {
-			head += sDim.Render(" · " + hint)
+	if m.searching() && len(m.found) == 0 {
+		lines = append(lines, sDim.Render(" No task matches "+task.CleanLabel(m.find.Value())+"."))
+		ids = append(ids, "")
+	}
+	for _, sec := range m.sections() {
+		head := " " + lipgloss.NewStyle().Foreground(sec.color).Bold(true).Render(sec.title) + sDim.Render(fmt.Sprintf("  %d", len(sec.rows)))
+		if sec.hint != "" && len(sec.rows) > 0 {
+			head += sDim.Render(" · " + sec.hint)
 		}
 		if len(lines) > 0 && !(alertLine == 0 && len(lines) == 1) {
 			lines = append(lines, "")
@@ -978,7 +1029,7 @@ func (m *model) listLines(w, h int) []string {
 		}
 		lines = append(lines, head)
 		ids = append(ids, "")
-		for _, r := range rows {
+		for _, r := range sec.rows {
 			sel := r.tab.ID == m.sel
 			if sel {
 				selLine = len(lines)
@@ -1009,6 +1060,32 @@ func (m *model) listLines(w, h int) []string {
 	return lines[m.listScroll:end]
 }
 
+// section is a part of the list: the tasks of a group, or, while you
+// search, those found in one place.
+type section struct {
+	title, hint string
+	color       lipgloss.Color
+	rows        []row
+}
+
+func (m *model) sections() []section {
+	if m.searching() {
+		return m.foundSections()
+	}
+	var out []section
+	for _, g := range task.Groups {
+		sec := section{}
+		sec.title, sec.hint, sec.color = groupInfo(g)
+		for _, r := range m.rows {
+			if r.group == g {
+				sec.rows = append(sec.rows, r)
+			}
+		}
+		out = append(out, sec)
+	}
+	return out
+}
+
 func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW int) string {
 	bg := lipgloss.NewStyle()
 	if sel {
@@ -1037,6 +1114,11 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 			info += fmt.Sprintf(" +%d", n-1)
 		}
 	}
+	infoCell := cell(info, infoW, infoColor)
+	// What a search found outside the name shows in its place.
+	if h, ok := m.hits[r.tab.ID]; ok && m.searching() && h.Match > view.InName {
+		infoCell = foundCell(h, infoW, bg)
+	}
 	marker := " "
 	if sel {
 		marker = "▌"
@@ -1052,7 +1134,7 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 		cell(name, nameW, nameColor) + bg.Render(" ") +
 		cell(agent, agentW, agentColor) + bg.Render(" ") +
 		cell(task.Age(time.Since(r.task.Since)), ageW, cDim) + bg.Render("  ") +
-		cell(info, infoW, infoColor)
+		infoCell
 	if pad := w - ansi.StringWidth(line); pad > 0 {
 		line += bg.Render(strings.Repeat(" ", pad))
 	}
@@ -1174,8 +1256,10 @@ func (m *model) footer() string {
 		return fit(sDim.Render(" Press a link number to remove it, any other key to cancel"), m.width)
 	case modeMove:
 		return fit(sDim.Render(" Press a workspace number to move the task there, any other key to cancel"), m.width)
+	case modeSearch:
+		return fit(" "+sBold.Render("/")+" "+m.find.View()+sDim.Render("  ↑↓ choose · ↵ open · esc back to the list"), m.width)
 	}
-	keys := [][2]string{{"enter", "↵ open"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
+	keys := [][2]string{{"enter", "↵ open"}, {"/", "/ search"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"b", "b open on the board"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},

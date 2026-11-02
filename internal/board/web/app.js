@@ -842,6 +842,7 @@
 
   function showMessage(...nodes) {
     $('board').hidden = true;
+    $('results').hidden = true;
     $('session-list').hidden = true;
     $('empty').hidden = false;
     $('empty-text').replaceChildren(...nodes);
@@ -854,7 +855,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['side', 'side-open', 'prio-only', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       shareEls.box.hidden = true;
       showMessage(
         document.createTextNode('Sign in again: run '),
@@ -873,7 +874,7 @@
     const s = sessions.find(x => x.name === session);
     $('stale').hidden = !s || !s.stale;
     if (!s) {
-      for (const id of ['side', 'side-open', 'prio-only']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'search']) $(id).hidden = true;
       showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
@@ -884,8 +885,14 @@
       let space = spaceChoices()[s.name] || '';
       if (!s.spaces.some(x => x.id === space)) space = '';
       renderSide(s, shown, space);
-      renderColumns(space ? shown.filter(c => c.space === space) : shown);
-      $('board').hidden = false;
+      // A search looks through every task, and what it found takes the
+      // columns' place. A view has no search.
+      $('search').hidden = !window.herdrSearch || Boolean(viewing);
+      const words = searchWords();
+      if (words.length) renderResults(cards, words);
+      else renderColumns(space ? shown.filter(c => c.space === space) : shown);
+      $('results').hidden = !words.length;
+      $('board').hidden = words.length > 0;
       $('empty').hidden = true;
     }
     renderDetail();
@@ -1332,6 +1339,93 @@
     return chip;
   }
 
+  // ---- The search: the tasks with what you typed in them, by where it
+  // was found, as the overview's search finds them (see search.js)
+
+  // FOUND are the places a search finds a task in, best first, as
+  // search.js numbers them from 1.
+  const FOUND = [
+    {id: 'name', label: 'Name'},
+    {id: 'pane', label: 'Pane', hint: 'pane names and agent titles'},
+    {id: 'recap', label: 'Recap', hint: 'Claude’s recaps'},
+    {id: 'content', label: 'Content', hint: 'note, log, links, prompts and replies'},
+  ];
+
+  // searchWords are the words in the search box, while it shows.
+  function searchWords() {
+    const box = $('search');
+    return window.herdrSearch && !box.hidden ? window.herdrSearch.words(box.value) : [];
+  }
+
+  // renderResults shows the cards that have every one of words, by where
+  // they were found, and then in the board's order.
+  function renderResults(cards, words) {
+    const S = window.herdrSearch;
+    const hits = [];
+    for (const c of cards) {
+      const h = S.search(words, S.cardFields(c));
+      if (h.match) hits.push({c, h});
+    }
+    hits.sort((a, b) => a.h.match - b.h.match);
+    $('results-count').textContent = hits.length
+      ? hits.length + ' of ' + cards.length + ' tasks match'
+      : 'No task matches “' + $('search').value.trim() + '”.';
+    const groups = FOUND.map((f, i) => ({f, hits: hits.filter(x => x.h.match === i + 1)})).filter(g => g.hits.length);
+    sync($('results-groups'), groups, g => g.f.id, resultGroup, (g, {f, hits}) => {
+      g.querySelector('.result-label').textContent = f.label;
+      g.querySelector('.result-hint').textContent = f.hint || '';
+      sync(g.querySelector('.result-list'), hits, x => keyOf(x.c), result, fillResult);
+    });
+  }
+
+  function resultGroup() {
+    const g = el('section', 'result-group');
+    const head = el('h2', 'result-head');
+    head.append(el('span', 'result-label'), el('span', 'result-hint'));
+    g.append(head, el('div', 'result-list'));
+    return g;
+  }
+
+  function result() {
+    const r = attrs(el('button', 'result'), {type: 'button'});
+    for (const cls of ['result-prio', 'result-glyph']) r.append(attrs(el('span', cls), {'aria-hidden': 'true'}));
+    r.append(el('span', 'result-title'), el('span', 'result-space'), el('span', 'result-where'));
+    return r;
+  }
+
+  // fillResult shows card c, found as h: in its name, which marks the word
+  // that found it, or else with where it was found under it.
+  function fillResult(r, {c, h}) {
+    const inName = h.match === 1;
+    r.setAttribute('data-column', c.column);
+    r.classList.toggle('pri', Boolean(c.priority));
+    if (inName) r.removeAttribute('title');
+    else r.setAttribute('title', h.text);
+    r.querySelector('.result-prio').textContent = c.priority ? '!' : '';
+    r.querySelector('.result-glyph').textContent = SIDE_GLYPHS[c.column] || '●';
+    const title = r.querySelector('.result-title');
+    if (inName) title.replaceChildren(...markedText(h, false));
+    else title.textContent = c.title;
+    r.querySelector('.result-space').textContent = c.spaceLabel || '';
+    const where = r.querySelector('.result-where');
+    where.hidden = inName;
+    where.replaceChildren(...(inName ? [] : markedText(h, true)));
+  }
+
+  // markedText is h's text with the word that found it marked. With cut,
+  // a long text starts a little before the word, at a word, so it shows.
+  function markedText(h, cut) {
+    const {text, at, len} = h;
+    if (!len) return [text];
+    let start = 0;
+    if (cut && text.length > 90 && at > 30) {
+      start = at - 30;
+      const space = text.indexOf(' ', start);
+      if (text[start - 1] !== ' ' && space >= 0 && space < at) start = space + 1;
+    }
+    return [(start ? '…' : '') + text.slice(start, at), el('mark', '', text.slice(at, at + len)), text.slice(at + len)];
+  }
+
   // ---- A tab's view: its terminals, and the whole card next to them
 
   // The view is at #tab=<tab>, so a reload keeps it.
@@ -1431,8 +1525,11 @@
     $('view').hidden = true;
     document.body.classList.remove('viewing');
     render();
-    const card = cardEls.get(v.session + '\n' + v.tab);
-    const open = card && card.querySelector('[data-act="open"]');
+    // Focus goes back to the task on the board, or among what a search found.
+    const k = v.session + '\n' + v.tab;
+    const found = $('results').hidden ? null : [...$('results-groups').querySelectorAll('.result')].find(r => r.getAttribute('data-key') === k);
+    const card = cardEls.get(k);
+    const open = found || (card && card.querySelector('[data-act="open"]'));
     if (open) open.focus();
   }
 
@@ -1987,6 +2084,47 @@
       e.preventDefault();
       showDrawer(false);
       $('side-open').focus();
+    });
+
+    // The search: / goes to it, but in a field, a terminal, the menu or a
+    // dialog. Enter opens the first task found, ↓ and ↑ go through them,
+    // and Esc empties the search, then leaves it.
+    const box = $('search');
+    box.addEventListener('input', render);
+    box.addEventListener('keydown', e => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (!box.value) return box.blur();
+        box.value = '';
+        render();
+        return;
+      }
+      if (e.key !== 'Enter' && e.key !== 'ArrowDown') return;
+      const first = $('results').hidden ? null : $('results-groups').querySelector('.result');
+      if (!first) return;
+      e.preventDefault();
+      if (e.key === 'Enter') openView(first.getAttribute('data-key'));
+      else first.focus();
+    });
+    $('results-groups').addEventListener('click', e => {
+      const r = e.target instanceof Element ? e.target.closest('.result') : null;
+      if (r) openView(r.getAttribute('data-key'));
+    });
+    $('results-groups').addEventListener('keydown', e => {
+      if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+      const rows = [...$('results-groups').querySelectorAll('.result')];
+      const i = rows.indexOf(document.activeElement);
+      if (i < 0) return;
+      e.preventDefault();
+      (e.key === 'ArrowDown' ? rows[Math.min(i + 1, rows.length - 1)] : rows[i - 1] || box).focus();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey || e.defaultPrevented || box.hidden || menuFor) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (document.querySelector('dialog[open]') || (t && t.closest('input, textarea, select, [contenteditable], .term-pane'))) return;
+      e.preventDefault();
+      box.focus();
+      box.select();
     });
 
     $('prio-only').addEventListener('click', () => {

@@ -49,7 +49,7 @@ func pageScripts(t *testing.T) map[string]string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"web/app.js", "web/term.js", "web/keymap.js"} {
+	for _, name := range []string{"web/app.js", "web/term.js", "web/keymap.js", "web/search.js"} {
 		if _, ok := scripts[name]; !ok {
 			t.Errorf("%s isn't embedded", name)
 		}
@@ -101,6 +101,7 @@ func TestIndexServesAssets(t *testing.T) {
 	}
 	for path, want := range map[string]string{
 		"/-/static/app.js":    "text/javascript",
+		"/-/static/search.js": "text/javascript",
 		"/-/static/board.css": "text/css",
 		"/-/static/icon.svg":  "image/svg+xml",
 	} {
@@ -158,6 +159,19 @@ func TestKeymap(t *testing.T) {
 	}
 }
 
+// The board's search finds what the overview's does: search.js passes
+// internal/view's cases, when node is installed.
+func TestSearchScript(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node isn't installed")
+	}
+	out, err := exec.Command(node, filepath.Join("web", "search_test.mjs")).CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+}
+
 // The terminal view types into panes only what was typed, in order, and
 // leaves copy, paste and Cmd shortcuts to the browser. It runs the view's
 // scripts with node, against a stand-in xterm, when node is installed.
@@ -181,7 +195,7 @@ func TestBoardPage(t *testing.T) {
 	if err != nil {
 		t.Skip("node isn't installed")
 	}
-	out, err := exec.Command(node, filepath.Join("testdata", "board.js"), filepath.Join("web", "app.js")).CombinedOutput()
+	out, err := exec.Command(node, filepath.Join("testdata", "board.js"), filepath.Join("web", "app.js"), filepath.Join("web", "search.js")).CombinedOutput()
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}

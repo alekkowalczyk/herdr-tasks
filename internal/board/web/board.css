@@ -245,6 +245,20 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .slack-said.problem { color: var(--ink-ask); }
 
 .top-end { display: flex; align-items: center; gap: 12px; margin-left: auto; color: var(--faint); font-size: 12px; }
+/* The search box; / goes to it. */
+.search {
+  width: min(260px, 42vw);
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 13px;
+}
+.search::placeholder { color: var(--faint); }
+.search:hover { border-color: var(--faint); }
+.search:focus-visible { outline: 2px solid var(--focus); outline-offset: -1px; border-color: transparent; }
 /* Where the board is on the tailnet, or why it isn't there. */
 .tailnet-line {
   max-width: min(32em, 60vw);
@@ -367,6 +381,46 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
   body.side-folded .side-dot { width: 11px; height: 11px; }
   body.side-folded :is(.side-all, .side-label, .side-tasks, .side-more) { display: none; }
 }
+
+/* What a search found, in place of the columns: by where it was found,
+   each task with the text it was found in under it. */
+
+.results { flex: 1; min-height: 0; padding: 14px 24px 32px; overflow-y: auto; }
+.results-count { margin: 0; color: var(--muted); font-size: 12.5px; }
+.result-group { max-width: 880px; margin-top: 18px; }
+.result-head { display: flex; align-items: baseline; gap: 8px; margin: 0 0 8px; font: inherit; }
+.result-label { color: var(--fg); font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+.result-hint { color: var(--faint); font-size: 12px; }
+.result-list { display: flex; flex-direction: column; gap: 6px; }
+.result {
+  display: grid;
+  grid-template-columns: 8px 14px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 6px;
+  width: 100%;
+  padding: 9px 14px 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--line));
+  border-radius: 10px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font: inherit;
+  text-align: left;
+}
+.result:hover { border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); box-shadow: var(--shadow-lift); }
+.result-prio { color: var(--ink-ask); font-size: 12px; font-weight: 800; text-align: center; }
+.result-glyph { color: var(--ink); font-size: 12px; text-align: center; }
+.result-title { min-width: 0; overflow: hidden; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.result-space { color: var(--faint); font-size: 12px; white-space: nowrap; }
+.result-where {
+  grid-column: 3 / -1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result mark { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, var(--paused) 38%, transparent); color: inherit; }
 
 /* Board */
 
@@ -720,6 +774,7 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); -web
 
 body.viewing .hint,
 body.viewing .board,
+body.viewing .results,
 body.viewing .empty { display: none; }
 
 .view { display: flex; flex: 1; flex-direction: column; min-height: 0; animation: fade 0.14s ease-out; }
@@ -1016,6 +1071,9 @@ body.details-below .text.long { max-height: none; }
   body.side-open::after { content: ""; position: fixed; inset: 0; z-index: 20; background: var(--backdrop); }
   .hint { margin: 10px 16px 0; }
   .board { flex-direction: column; padding: 12px 16px 24px; overflow: visible; }
+  .results { padding: 12px 16px 24px; overflow: visible; }
+  .top-end { flex-wrap: wrap; }
+  .search { width: 100%; }
   .column { flex: none; max-width: none; }
   .col-cards { overflow: visible; }
   .view-head { padding: 10px 16px; }

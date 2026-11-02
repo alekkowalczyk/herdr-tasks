@@ -32,7 +32,19 @@ import (
 // Anything else gets an empty result.
 func fakeHerdr(t *testing.T, more ...herdr.Workspace) *herdr.Client {
 	t.Helper()
-	wss, err := json.Marshal(append([]herdr.Workspace{{ID: "w1", Label: "Acme", Number: 1}}, more...))
+	wss := append([]herdr.Workspace{{ID: "w1", Label: "Acme", Number: 1}}, more...)
+	return herdrOf(t, wss, []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1", Number: 1, Label: "Acme"}})
+}
+
+// herdrOf answers like a herdr with workspaces wss and tabs, the first of
+// which pane w1:p9 is in. Anything else gets an empty result.
+func herdrOf(t *testing.T, wss []herdr.Workspace, tabs []herdr.Tab) *herdr.Client {
+	t.Helper()
+	wsJSON, err := json.Marshal(wss)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabsJSON, err := json.Marshal(tabs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +60,6 @@ func fakeHerdr(t *testing.T, more ...herdr.Workspace) *herdr.Client {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { ln.Close() })
-	const tab = `{"tab_id":"w1:t1","workspace_id":"w1","number":1,"label":"Acme"}`
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -61,18 +72,28 @@ func fakeHerdr(t *testing.T, more ...herdr.Workspace) *herdr.Client {
 				if err != nil {
 					return
 				}
-				var req struct{ Method string }
+				var req struct {
+					Method string
+					Params struct {
+						TabID string `json:"tab_id"`
+					}
+				}
 				_ = json.Unmarshal(line, &req)
 				result := `{}`
 				switch req.Method {
 				case "pane.get":
-					result = `{"pane":{"pane_id":"w1:p9","tab_id":"w1:t1"}}`
+					result = `{"pane":{"pane_id":"w1:p9","tab_id":"` + tabs[0].ID + `"}}`
 				case "tab.get":
-					result = `{"tab":` + tab + `}`
+					tab := tabs[0]
+					if i := slices.IndexFunc(tabs, func(x herdr.Tab) bool { return x.ID == req.Params.TabID }); i >= 0 {
+						tab = tabs[i]
+					}
+					b, _ := json.Marshal(tab)
+					result = `{"tab":` + string(b) + `}`
 				case "tab.list":
-					result = `{"tabs":[` + tab + `]}`
+					result = `{"tabs":` + string(tabsJSON) + `}`
 				case "workspace.list":
-					result = `{"workspaces":` + string(wss) + `}`
+					result = `{"workspaces":` + string(wsJSON) + `}`
 				}
 				_, _ = conn.Write([]byte(`{"id":"herdr-tasks","result":` + result + "}\n"))
 			}()

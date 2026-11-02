@@ -16,6 +16,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
+	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -155,6 +156,34 @@ func TestBuildAgentsSkipStripAndStoppedAgents(t *testing.T) {
 	}
 	if got := b.Sessions[0].Cards[0].Agents; !reflect.DeepEqual(got, want) {
 		t.Fatalf("agents =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// A card has the names of its tab's panes in herdr, for the board's
+// search: every pane with one, with an agent or not, but the strip.
+func TestBuildCardsHaveTheirPanesNames(t *testing.T) {
+	live := &herdr.Live{
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "acme"}},
+		Tabs:       []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1"}, {ID: "w1:t2", WorkspaceID: "w1"}},
+	}
+	state := &store.State{Tasks: map[string]*task.Task{
+		"w1:t1": {TabID: "w1:t1", Stage: task.Active, Since: now},
+		"w1:t2": {TabID: "w1:t2", Stage: task.Active, Since: now.Add(-time.Hour)},
+	}}
+	panes := []herdr.Pane{
+		{ID: "w1:p1", TabID: "w1:t1", Label: "Board model", Agent: "claude"},
+		{ID: "w1:p2", TabID: "w1:t1", Label: strip.Label},
+		{ID: "w1:p3", TabID: "w1:t1", Label: "Dev server"},
+		{ID: "w1:p4", TabID: "w1:t1"},
+		{ID: "w1:p5", TabID: "w1:t2"},
+	}
+	b := Build([]Snapshot{{Name: "work", State: state, Live: live, Panes: panes}}, nil, nil, false, "")
+	cards := b.Sessions[0].Cards
+	if got, want := cards[0].Panes, []string{"Board model", "Dev server"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("panes = %q, want %q", got, want)
+	}
+	if got := cards[1].Panes; got != nil {
+		t.Errorf("panes of a tab whose panes have no names = %q, want none", got)
 	}
 }
 
@@ -335,7 +364,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		{"board", v, "linearKey sessions slackSession version"},
 		{"session", session, "cards name spaces stale"},
 		{"space", session.(map[string]any)["spaces"].([]any)[0], "id label"},
-		{"card", card, "agentStatus agents column links log note priority reason session since space spaceLabel stage tab title"},
+		{"card", card, "agentStatus agents column links log note panes priority reason session since space spaceLabel stage tab title"},
 		{"link", link, "by kind label linear url"},
 		{"issue", link["linear"], "assignee color id state stateType title url"},
 		{"agent", card["agents"].([]any)[0], "agent lastPrompt lastReply name pane recap recapAt recapStale status title"},

@@ -11,6 +11,7 @@
 <script src="/-/static/vendor/xterm.js" defer></script>
 <script src="/-/static/vendor/addon-unicode11.js" defer></script>
 <script src="/-/static/keymap.js" defer></script>
+<script src="/-/static/search.js" defer></script>
 <script src="/-/static/term.js" defer></script>
 <script src="/-/static/app.js" defer></script>
 </head>
@@ -24,6 +25,7 @@
     <span id="slack" class="slack-line"></span>
   </div>
   <div class="top-end">
+    <input id="search" class="search" type="search" placeholder="Search tasks" aria-label="Search tasks" aria-keyshortcuts="/" title="Search the tasks' names, panes, recaps and notes (/)" autocomplete="off" spellcheck="false" hidden>
     <button id="prio-only" class="prio-only" type="button" aria-pressed="false" title="Show only the priority tasks" hidden><span class="bang" aria-hidden="true">!</span>Priority only</button>
     <span id="tailnet" class="tailnet-line" hidden></span>
     <span id="conn" class="conn" role="status"></span>
@@ -41,6 +43,10 @@
 <div class="main">
 <p id="hint" class="hint" hidden>Add a Linear API key to see issue status: <code>herdr-tasks linear-key</code></p>
 <main id="board" class="board" hidden></main>
+<section id="results" class="results" aria-label="Search results" hidden>
+  <p id="results-count" class="results-count" role="status"></p>
+  <div id="results-groups" class="result-groups"></div>
+</section>
 <ul id="session-list" class="session-list" hidden></ul>
 <section id="empty" class="empty" aria-live="polite">
   <p id="empty-text" class="empty-text">Connecting…</p>

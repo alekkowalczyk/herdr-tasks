@@ -145,6 +145,9 @@ type Card struct {
 	Log         []task.Entry `json:"log,omitempty"`
 	Links       []LinkView   `json:"links"`
 	Agents      []Agent      `json:"agents"`
+	// The names its tab's panes have in herdr, but the strip's, for the
+	// page's search.
+	Panes []string `json:"panes,omitempty"`
 	// Tasks made from a Slack message only.
 	Slack *CardSlack `json:"slack,omitempty"`
 }
@@ -265,8 +268,14 @@ func buildCard(session string, r view.Row, panes []herdr.Pane, summary func(herd
 		c.Slack = &CardSlack{Place: task.CleanLabel(a.Place), Channel: task.CleanLabel(a.Channel), Research: string(a.Research)}
 	}
 	for _, p := range panes {
+		if p.Label == strip.Label {
+			continue
+		}
+		if p.Label != "" {
+			c.Panes = append(c.Panes, p.Label)
+		}
 		// Agent is empty once the agent exits, though herdr keeps its session.
-		if p.Agent != "" && p.Label != strip.Label {
+		if p.Agent != "" {
 			c.Agents = append(c.Agents, buildAgent(p, summary))
 		}
 	}
