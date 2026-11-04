@@ -140,6 +140,7 @@ type model struct {
 	look    func() searchData
 	data    searchData
 	looking bool
+	acts    map[string]activity // by tab ID, from the last look; nil before one
 	hits    map[string]view.Hit // by tab ID
 	found   []row               // the rows found, best first
 }
@@ -191,7 +192,12 @@ func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return refreshMsg{} })
 }
 
-func (m *model) Init() tea.Cmd { return tick() }
+func (m *model) Init() tea.Cmd {
+	if m.state.OverviewLatest {
+		return tea.Batch(tick(), m.lookAgain())
+	}
+	return tick()
+}
 
 // refresh rereads herdr and the state file, picking up agent status changes
 // and notes agents added.
@@ -245,6 +251,13 @@ func (m *model) move(delta int) {
 func (m *model) listed() []row {
 	if m.searching() {
 		return m.found
+	}
+	if m.latest() {
+		var rows []row
+		for _, sec := range m.latestSections() {
+			rows = append(rows, sec.rows...)
+		}
+		return rows
 	}
 	return m.rows
 }
@@ -569,6 +582,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case modeList, modeUnlink, modeMove:
 			m.refresh()
+			if m.state.OverviewLatest {
+				return m, tea.Batch(tick(), m.lookAgain())
+			}
 		case modeSearch:
 			m.refresh()
 			return m, tea.Batch(tick(), m.lookAgain())
@@ -576,10 +592,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tick()
 	case searchLooked:
 		m.looking = false
-		if m.mode == modeSearch {
-			m.data = msg.data
-			m.search()
-		}
+		m.data, m.acts = msg.data, activities(msg.data)
+		m.search()
 		return m, nil
 	case boardOpened:
 		if msg.say == "" {
@@ -721,6 +735,8 @@ func (m *model) key(k string) tea.Cmd {
 		return m.jump()
 	case "/":
 		return m.startSearch()
+	case "s":
+		return m.toggleLatest()
 	case "b":
 		return m.openBoard()
 	case "A":
@@ -1099,6 +1115,9 @@ func (m *model) sections() []section {
 	if m.searching() {
 		return m.foundSections()
 	}
+	if m.latest() {
+		return m.latestSections()
+	}
 	var out []section
 	for _, g := range task.Groups {
 		sec := section{}
@@ -1141,6 +1160,14 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 			info += fmt.Sprintf(" +%d", n-1)
 		}
 	}
+	age := task.Age(time.Since(r.task.Since))
+	// In the order of Claude's replies, its latest reply, and when it came.
+	if a := m.acts[r.tab.ID]; m.latest() {
+		age = ""
+		if !a.at.IsZero() {
+			age, info, infoColor = task.Age(time.Since(a.at)), strings.Join(strings.Fields(task.CleanText(a.reply)), " "), cDim
+		}
+	}
 	infoCell := cell(info, infoW, infoColor)
 	// What a search found outside the name shows in its place.
 	if h, ok := m.hits[r.tab.ID]; ok && m.searching() && h.Match > view.InName {
@@ -1160,7 +1187,7 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 		cell(r.ws.Label, spaceW, cDim) + bg.Render("  ") +
 		cell(name, nameW, nameColor) + bg.Render(" ") +
 		cell(agent, agentW, agentColor) + bg.Render(" ") +
-		cell(task.Age(time.Since(r.task.Since)), ageW, cDim) + bg.Render("  ") +
+		cell(age, ageW, cDim) + bg.Render("  ") +
 		infoCell
 	if pad := w - ansi.StringWidth(line); pad > 0 {
 		line += bg.Render(strings.Repeat(" ", pad))
@@ -1286,7 +1313,11 @@ func (m *model) footer() string {
 	case modeSearch:
 		return fit(" "+sBold.Render("/")+" "+m.find.View()+sDim.Render("  ↑↓ choose · ↵ open · esc back to the list"), m.width)
 	}
-	keys := [][2]string{{"enter", "↵ open"}, {"/", "/ search"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
+	order := "s by reply"
+	if m.state.OverviewLatest {
+		order = "s by stage"
+	}
+	keys := [][2]string{{"enter", "↵ open"}, {"/", "/ search"}, {"s", order}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
 		keys = [][2]string{{"b", "b open on the board"}, {"A", "A assistant"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},

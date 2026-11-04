@@ -213,6 +213,7 @@ type Agent struct {
 	RecapStale bool       `json:"recapStale,omitempty"` // a prompt came after the recap
 	LastPrompt string     `json:"lastPrompt,omitempty"`
 	LastReply  string     `json:"lastReply,omitempty"`
+	ReplyAt    *time.Time `json:"replyAt,omitempty"`
 }
 
 // Snapshot is the last good read of one herdr session. State and Live are
@@ -364,5 +365,9 @@ func buildAgent(p herdr.Pane, summary func(herdr.Pane) (claudelog.Summary, bool)
 		a.RecapAt = &at
 	}
 	a.LastPrompt, a.LastReply = sum.LastPrompt, sum.LastReply
+	if !sum.ReplyAt.IsZero() {
+		at := sum.ReplyAt
+		a.ReplyAt = &at
+	}
 	return a
 }

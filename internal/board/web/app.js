@@ -18,6 +18,7 @@
   const SPACES = 'herdr-tasks-board-spaces';
   const DONE_OPEN = 'herdr-tasks-board-done-open';
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
+  const LATEST = 'herdr-tasks-board-latest';
   const DETAILS_BELOW = 'herdr-tasks-board-details-below';
   const SIDE_FOLDED = 'herdr-tasks-board-side-folded';
   const ASSISTANT_OPEN = 'herdr-tasks-board-assistant-open';
@@ -95,6 +96,7 @@
   const key = () => load(KEY) || '';
   // prioOnly is whether the board shows only the priority tasks.
   const prioOnly = () => load(PRIO_ONLY) === '1';
+  const latestOn = () => load(LATEST) === '1';
 
   let board = null; // the latest board the server sent
   let list = null; // at /, the latest list of sessions
@@ -951,7 +953,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['side', 'side-open', 'prio-only', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       shareEls.box.hidden = true;
       renderAssistant();
       showMessage(
@@ -971,7 +973,7 @@
     const s = sessions.find(x => x.name === session);
     $('stale').hidden = !s || !s.stale;
     if (!s) {
-      for (const id of ['side', 'side-open', 'prio-only', 'search']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'search']) $(id).hidden = true;
       showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
@@ -979,17 +981,22 @@
       const toggle = $('prio-only');
       toggle.hidden = false;
       toggle.setAttribute('aria-pressed', String(prioOnly()));
+      $('latest').hidden = false;
+      $('latest').setAttribute('aria-pressed', String(latestOn()));
       let space = spaceChoices()[s.name] || '';
       if (!s.spaces.some(x => x.id === space)) space = '';
       renderSide(s, shown, space);
       // A search looks through every task, and what it found takes the
-      // columns' place. A view has no search.
+      // columns' place, as Latest's list does. A view has no search.
       $('search').hidden = !window.herdrSearch || Boolean(viewing);
       const words = searchWords();
+      const inSpace = space ? shown.filter(c => c.space === space) : shown;
+      const list = words.length > 0 || latestOn();
       if (words.length) renderResults(cards, words);
-      else renderColumns(space ? shown.filter(c => c.space === space) : shown);
-      $('results').hidden = !words.length;
-      $('board').hidden = words.length > 0;
+      else if (list) renderLatest(inSpace);
+      else renderColumns(inSpace);
+      $('results').hidden = !list;
+      $('board').hidden = list;
       $('empty').hidden = true;
     }
     renderDetail();
@@ -1475,6 +1482,7 @@
       if (h.match) hits.push({c, h});
     }
     hits.sort((a, b) => a.h.match - b.h.match);
+    $('results').setAttribute('aria-label', 'Search results');
     $('results-count').textContent = hits.length
       ? hits.length + ' of ' + cards.length + ' tasks match'
       : 'No task matches “' + $('search').value.trim() + '”.';
@@ -1484,6 +1492,57 @@
       g.querySelector('.result-hint').textContent = f.hint || '';
       sync(g.querySelector('.result-list'), hits, x => keyOf(x.c), result, fillResult);
     });
+  }
+
+  // LATEST_GROUPS are the parts of Latest's list, in its order.
+  const LATEST_GROUPS = [
+    {id: 'working', label: 'Working', hint: 'an agent works on them'},
+    {id: 'replied', label: 'Latest reply', hint: 'newest first'},
+    {id: 'none', label: 'No reply', hint: 'Claude hasn’t replied in them'},
+  ];
+
+  // lastReply is the newest reply of c's agents, as {at, text}, or null.
+  function lastReply(c) {
+    let out = null;
+    for (const a of c.agents) {
+      if (a.replyAt && (!out || Date.parse(a.replyAt) > Date.parse(out.at))) out = {at: a.replyAt, text: a.lastReply || ''};
+    }
+    return out;
+  }
+
+  // renderLatest lists cards by Claude's latest reply: those an agent works
+  // on, then the rest, newest reply first, then those with none.
+  function renderLatest(cards) {
+    const rows = cards.map(c => ({c, reply: lastReply(c), working: c.agents.some(a => a.status === 'working')}));
+    const at = x => (x.reply ? Date.parse(x.reply.at) : 0);
+    rows.sort((a, b) => at(b) - at(a) || newer(a.c, b.c));
+    const part = x => (x.working ? 'working' : x.reply ? 'replied' : 'none');
+    $('results').setAttribute('aria-label', 'Tasks by Claude’s latest reply');
+    $('results-count').textContent = cards.length ? '' : 'No tasks here.';
+    const groups = LATEST_GROUPS.map(f => ({f, rows: rows.filter(x => part(x) === f.id)})).filter(g => g.rows.length);
+    sync($('results-groups'), groups, g => 'latest-' + g.f.id, resultGroup, (g, {f, rows}) => {
+      g.querySelector('.result-label').textContent = f.label;
+      g.querySelector('.result-hint').textContent = f.hint;
+      sync(g.querySelector('.result-list'), rows, x => keyOf(x.c), result, fillLatest);
+    });
+  }
+
+  // fillLatest shows card c with its last reply, and how long ago it came.
+  function fillLatest(r, {c, reply}) {
+    r.setAttribute('data-column', c.column);
+    r.classList.toggle('pri', Boolean(c.priority));
+    if (reply && reply.text) r.setAttribute('title', reply.text);
+    else r.removeAttribute('title');
+    r.querySelector('.result-prio').textContent = c.priority ? '!' : '';
+    r.querySelector('.result-glyph').textContent = SIDE_GLYPHS[c.column] || '●';
+    r.querySelector('.result-title').textContent = c.title;
+    const space = r.querySelector('.result-space');
+    const label = c.spaceLabel || '';
+    if (reply) space.replaceChildren(label ? label + ' · ' : '', ageEl(reply.at, 'Claude replied'));
+    else space.textContent = label;
+    const where = r.querySelector('.result-where');
+    where.hidden = !(reply && reply.text);
+    where.textContent = reply ? reply.text : '';
   }
 
   function resultGroup() {
@@ -2241,6 +2300,10 @@
 
     $('prio-only').addEventListener('click', () => {
       save(PRIO_ONLY, prioOnly() ? '' : '1');
+      render();
+    });
+    $('latest').addEventListener('click', () => {
+      save(LATEST, latestOn() ? '' : '1');
       render();
     });
 

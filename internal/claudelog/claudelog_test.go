@@ -39,6 +39,11 @@ func assistant(sidechain bool, parts ...map[string]any) string {
 
 func answer(s string) string { return assistant(false, map[string]any{"type": "text", "text": s}) }
 
+// answerAt is a reply from the session at the time at.
+func answerAt(s, at string) string {
+	return entry(map[string]any{"type": "assistant", "timestamp": at, "message": map[string]any{"content": []map[string]any{{"type": "text", "text": s}}}})
+}
+
 func user(s string) string {
 	return entry(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": s}})
 }
@@ -138,10 +143,10 @@ func TestReadFindsLatestOfEach(t *testing.T) {
 		answer("It's a task board."),
 		aiTitle("Fix the login"),
 		lastPrompt("fix the login bug"),
-		answer("Fixed: the token was read before refresh."),
+		answerAt("Fixed: the token was read before refresh.", "2026-10-29T06:50:00.5Z"),
 		// Neither a subagent's reply nor a tool call is the session's reply.
 		assistant(true, map[string]any{"type": "text", "text": "subagent notes"}),
-		assistant(false, map[string]any{"type": "tool_use", "name": "Bash", "input": map[string]any{"command": "go test ./..."}}),
+		entry(map[string]any{"type": "assistant", "timestamp": "2026-10-29T06:55:00Z", "message": map[string]any{"content": []map[string]any{{"type": "tool_use", "name": "Bash"}}}}),
 		user("tool output"),
 		awaySummary("You're fixing the login. Next: run the tests.", "2026-10-29T06:56:07.008Z"),
 	), 32<<20)
@@ -151,11 +156,15 @@ func TestReadFindsLatestOfEach(t *testing.T) {
 		RecapAt:    time.Date(2026, 10, 29, 6, 56, 7, 8e6, time.UTC),
 		LastPrompt: "fix the login bug",
 		LastReply:  "Fixed: the token was read before refresh.",
+		ReplyAt:    time.Date(2026, 10, 29, 6, 50, 0, 5e8, time.UTC),
 	}
 	if !s.RecapAt.Equal(want.RecapAt) {
 		t.Errorf("RecapAt = %v, want %v", s.RecapAt, want.RecapAt)
 	}
-	s.RecapAt = want.RecapAt
+	if !s.ReplyAt.Equal(want.ReplyAt) {
+		t.Errorf("ReplyAt = %v, want %v", s.ReplyAt, want.ReplyAt)
+	}
+	s.RecapAt, s.ReplyAt = want.RecapAt, want.ReplyAt
 	if s != want {
 		t.Errorf("Read = %+v\nwant %+v", s, want)
 	}
@@ -324,6 +333,11 @@ func TestCacheMergesNewerEntries(t *testing.T) {
 	s, _, _ = c.Get(sid)
 	if s.RecapStale || s.Recap != "You're running the tests." || s.Title != "Run the tests" || s.LastPrompt != "now the tests" {
 		t.Errorf("after a new recap, Get = %+v", s)
+	}
+	appendTo(t, path, logText(answerAt("The tests pass.", "2026-10-29T07:12:00Z")))
+	s, _, _ = c.Get(sid)
+	if s.LastReply != "The tests pass." || !s.ReplyAt.Equal(time.Date(2026, 10, 29, 7, 12, 0, 0, time.UTC)) {
+		t.Errorf("after a reply, Get = %+v", s)
 	}
 }
 

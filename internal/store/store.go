@@ -22,6 +22,8 @@ type State struct {
 	Removed bool `json:"removed,omitempty"`
 	// Show stage counts under each space instead of its task list.
 	SidebarCounts bool `json:"sidebar_counts,omitempty"`
+	// List the overview's tasks by Claude's latest reply, not by stage.
+	OverviewLatest bool `json:"overview_latest,omitempty"`
 	// PaneAliases maps the ID a pane had before a move to its ID now, so
 	// what knows it by the old one, like the env of the process in it,
 	// still finds it.

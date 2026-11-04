@@ -28,6 +28,7 @@ type Summary struct {
 	RecapStale bool      // a "last-prompt" entry comes after the latest recap
 	LastPrompt string    // latest "last-prompt" lastPrompt, cut to 600 runes
 	LastReply  string    // latest non-sidechain assistant text, cut to 600 runes
+	ReplyAt    time.Time // its timestamp
 }
 
 const (
@@ -224,7 +225,7 @@ func (s *Summary) older(line []byte) {
 		// A prompt already seen comes later in the log.
 		s.Recap, s.RecapAt, s.RecapStale = text, at, s.LastPrompt != ""
 	case reply:
-		s.LastReply = text
+		s.LastReply, s.ReplyAt = text, at
 	}
 }
 
@@ -239,7 +240,7 @@ func (s *Summary) newer(line []byte) {
 	case recap:
 		s.Recap, s.RecapAt, s.RecapStale = text, at, false
 	case reply:
-		s.LastReply = text
+		s.LastReply, s.ReplyAt = text, at
 	}
 }
 
@@ -298,6 +299,7 @@ func parse(line []byte, want kinds) (kind, string, time.Time) {
 		at, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 	case e.Type == "assistant" && !e.IsSidechain:
 		k, text = reply, cut(replyText(e.Message.Content))
+		at, _ = time.Parse(time.RFC3339Nano, e.Timestamp)
 	}
 	text = strings.TrimSpace(text)
 	if !want[k] || text == "" {

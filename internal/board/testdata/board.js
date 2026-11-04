@@ -783,6 +783,79 @@ const tests = {
     assert.equal(pg.storage.get('herdr-tasks-board-assistant-wide'), '1');
   },
 
+  // Latest lists the tasks by Claude's latest reply instead of the columns:
+  // those an agent works on first, then the newest reply, then those with
+  // none. Each shows its last reply and how long ago it came. It keeps to
+  // the space and to Priority only, a search takes its place, a row opens
+  // its view, and the browser remembers it.
+  async 'latest lists the tasks by Claude’s latest reply'() {
+    const ago = m => new Date(Date.now() - m * 60e3).toISOString();
+    const claude = (pane, status, m, reply) => ({pane, agent: 'claude', status, title: '', replyAt: ago(m), lastReply: reply});
+    const cards = [
+      card({tab: 'w1:t1', title: 'Old reply', column: 'review', space: 'w1', spaceLabel: 'billing', agents: [claude('w1:p1', 'idle', 90, 'Opened the PR.')]}),
+      card({tab: 'w1:t2', title: 'No Claude', space: 'w1', spaceLabel: 'billing', agents: [{pane: 'w1:p3', agent: 'codex', status: 'idle', title: ''}]}),
+      card({tab: 'w1:t3', title: 'Fresh reply', space: 'w1', spaceLabel: 'billing', agents: [claude('w1:p4', 'done', 20, 'Earlier.'), claude('w1:p5', 'idle', 1, 'The tests pass.')]}),
+      card({tab: 'w2:t1', title: 'Busy', column: 'running', space: 'w2', spaceLabel: 'infra', agents: [claude('w2:p1', 'working', 30, 'Running the migration.')]}),
+    ];
+    const pg = page('k1');
+    await settle();
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    const latest = pg.$('latest');
+    assert.equal(latest.hidden, false);
+    assert.equal(latest.getAttribute('aria-pressed'), 'false');
+    assert.equal(pg.$('results').hidden, true);
+
+    latest.click();
+    assert.equal(latest.getAttribute('aria-pressed'), 'true');
+    assert.equal(pg.storage.get('herdr-tasks-board-latest'), '1');
+    assert.equal(pg.$('board').hidden, true, 'the columns still show');
+    assert.equal(pg.$('results').hidden, false);
+    assert.deepEqual(found(pg), [
+      'Working',
+      'Busy · Running the migration.',
+      'Latest reply',
+      'Fresh reply · The tests pass.',
+      'Old reply · Opened the PR.',
+      'No reply',
+      'No Claude',
+    ]);
+    const row = title => pg.$('results-groups').querySelectorAll('.result').find(r => r.querySelector('.result-title').textContent === title);
+    assert.equal(row('Fresh reply').querySelector('time').textContent, '1m');
+    assert.equal(row('Old reply').querySelector('time').textContent, '1h');
+    assert.equal(row('No Claude').querySelector('time'), null);
+    assert.equal(row('Old reply').getAttribute('data-column'), 'review');
+
+    sideSpace(pg, 'infra').click();
+    assert.deepEqual(found(pg), ['Working', 'Busy · Running the migration.']);
+    pg.$('side-all').click();
+    cards[0].priority = true;
+    pg.send(spaced(cards, SPACES));
+    await settle();
+    pg.$('prio-only').click();
+    assert.deepEqual(found(pg), ['Latest reply', 'Old reply · Opened the PR.']);
+    pg.$('prio-only').click();
+
+    type(pg, 'busy');
+    assert.deepEqual(found(pg), ['Name', '[Busy]']);
+    type(pg, '');
+    assert.equal(found(pg)[0], 'Working');
+
+    row('Fresh reply').click();
+    assert.equal(pg.location.hash, '#tab=w1%3At3');
+
+    seeded = {'herdr-tasks-board-latest': '1'};
+    const again = page('k1');
+    await settle();
+    again.send(spaced(cards, SPACES));
+    await settle();
+    assert.equal(again.$('board').hidden, true, 'the page forgot Latest');
+    assert.equal(found(again)[0], 'Working');
+    again.$('latest').click();
+    assert.equal(again.$('board').hidden, false);
+    assert.equal(again.$('results').hidden, true);
+  },
+
   // Beside a task's view, Esc closes the view, and the assistant only from
   // its column. Wider, the assistant covers the view, so Esc closes it.
   async 'esc beside a view'() {

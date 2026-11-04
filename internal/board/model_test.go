@@ -175,14 +175,14 @@ func TestBuildAgentsSkipStripAndStoppedAgents(t *testing.T) {
 		// A tab without a task isn't on the board.
 		{ID: "w1:p7", TabID: "w1:t2", Agent: "claude", Session: claude("77777777-ffff")},
 	}
-	recapAt := now.Add(-time.Hour)
+	recapAt, replyAt := now.Add(-time.Hour), now.Add(-time.Minute)
 	var asked []string
 	summary := func(p herdr.Pane) (claudelog.Summary, bool) {
 		asked = append(asked, p.ID)
 		switch p.ID {
 		case "w1:p1":
 			return claudelog.Summary{Title: "Plan the board", Recap: "You're adding the board model.", RecapAt: recapAt,
-				RecapStale: true, LastPrompt: "add the tests", LastReply: "Done."}, true
+				RecapStale: true, LastPrompt: "add the tests", LastReply: "Done.", ReplyAt: replyAt}, true
 		case "w1:p5":
 			return claudelog.Summary{Title: "Not this one", Recap: "Old recap."}, true
 		}
@@ -195,7 +195,7 @@ func TestBuildAgentsSkipStripAndStoppedAgents(t *testing.T) {
 	}
 	want := []Agent{
 		{Pane: "w1:p1", Name: "Board model", Agent: "claude", Status: "working", Title: "Plan the board", Recap: "You're adding the board model.",
-			RecapAt: &recapAt, RecapStale: true, LastPrompt: "add the tests", LastReply: "Done."},
+			RecapAt: &recapAt, RecapStale: true, LastPrompt: "add the tests", LastReply: "Done.", ReplyAt: &replyAt},
 		{Pane: "w1:p4", Agent: "codex", Status: "idle", Title: "Fix the build"},
 		{Pane: "w1:p5", Agent: "claude", Status: "idle", Title: "Reading files", Recap: "Old recap."},
 		{Pane: "w1:p6", Agent: "claude", Status: "idle"},
