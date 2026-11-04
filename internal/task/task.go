@@ -110,6 +110,9 @@ var ticketID = regexp.MustCompile(`(?i)^[a-z][a-z0-9]*-\d+$`)
 // "Slack message", "plan.html", "localhost:4100/showcase".
 func LinkLabel(raw string) string {
 	switch KindOf(raw) {
+	case KindGitHubPR:
+		_, n, _ := GitHubPR(raw)
+		return "PR #" + strconv.Itoa(n)
 	case KindSlack:
 		if _, ok := SlackTime(raw); ok {
 			return "Slack message"
@@ -137,9 +140,6 @@ func LinkLabel(raw string) string {
 	parts := strings.FieldsFunc(u.Path, func(r rune) bool { return r == '/' })
 	switch {
 	case host == "github.com":
-		if len(parts) >= 4 && parts[2] == "pull" {
-			return "PR #" + parts[3]
-		}
 		if len(parts) >= 4 && parts[2] == "issues" {
 			return "issue #" + parts[3]
 		}

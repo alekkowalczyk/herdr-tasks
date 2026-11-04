@@ -107,13 +107,14 @@ func TestGrouped(t *testing.T) {
 	linear := Link{URL: "https://linear.app/acme/issue/ABC-12"}
 	slack := Link{URL: slackMsg, Label: "#billing · Dana Reed: can you check…"}
 	page2 := Link{URL: artifact}
-	other := Link{URL: "https://github.com/acme/web/pull/7"}
-	in := []Link{page1, linear, slack, page2, other}
+	other := Link{URL: "https://github.com/acme/web/issues/7"}
+	pr := Link{URL: "https://github.com/acme/web/pull/7"}
+	in := []Link{page1, linear, slack, page2, other, pr}
 	got := Grouped(in)
-	if want := []Link{linear, slack, page1, page2, other}; !reflect.DeepEqual(got, want) {
+	if want := []Link{linear, pr, slack, page1, page2, other}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Grouped = %+v, want %+v", got, want)
 	}
-	if want := []Link{page1, linear, slack, page2, other}; !reflect.DeepEqual(in, want) {
+	if want := []Link{page1, linear, slack, page2, other, pr}; !reflect.DeepEqual(in, want) {
 		t.Errorf("Grouped changed its input: %+v", in)
 	}
 	got[0] = other
@@ -319,11 +320,11 @@ func TestRemovingAnyLinkDismissesIt(t *testing.T) {
 	if _, err := tk.RemoveLink("1"); err != nil {
 		t.Fatal(err)
 	}
-	if len(tk.DismissedIssues) != 0 || !reflect.DeepEqual(tk.DismissedLinks, []string{pr}) {
-		t.Fatalf("DismissedIssues = %q, DismissedLinks = %q, want only the PR's URL", tk.DismissedIssues, tk.DismissedLinks)
+	if len(tk.DismissedIssues) != 0 || !reflect.DeepEqual(tk.DismissedLinks, []string{"github-pr:acme/api#431"}) {
+		t.Fatalf("DismissedIssues = %q, DismissedLinks = %q, want only the PR", tk.DismissedIssues, tk.DismissedLinks)
 	}
-	if !tk.Dismissed(pr, "") {
-		t.Fatal("the removed PR isn't dismissed")
+	if !tk.Dismissed(pr, "") || !tk.Dismissed(pr+"/files", "") {
+		t.Fatal("the removed PR isn't dismissed, under each of its pages")
 	}
 	if _, err := tk.RemoveLink("ABC-12"); err == nil {
 		t.Fatal("removing an issue the task doesn't have should fail")

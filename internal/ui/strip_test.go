@@ -120,8 +120,8 @@ func TestUnlinkRemovesTheLinkYouSaw(t *testing.T) {
 	st := &store.Store{Dir: t.TempDir(), Session: "test"}
 	const src = "/tmp/acme/plan.html"
 	a := task.Link{URL: task.FileURL(src), By: "claude"}
-	b := task.Link{URL: "https://github.com/acme/x/pull/2", By: "claude"}
-	c := task.Link{URL: "https://github.com/acme/x/pull/3", By: "claude"}
+	b := task.Link{URL: "https://github.com/acme/x/issues/2", By: "claude"}
+	c := task.Link{URL: "https://github.com/acme/x/issues/3", By: "claude"}
 	art := task.Link{URL: "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001", Source: src, By: "claude"}
 	setLinks(t, st, a, b, c)
 
@@ -135,7 +135,7 @@ func TestUnlinkRemovesTheLinkYouSaw(t *testing.T) {
 		t.Fatalf("no task loaded: %q", m.err)
 	}
 
-	// You ask to remove link 2, PR #2.
+	// You ask to remove link 2, issue #2.
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	// Meanwhile an artifact published from the file takes its place, and the
@@ -146,8 +146,8 @@ func TestUnlinkRemovesTheLinkYouSaw(t *testing.T) {
 		t.Fatal("the refresh ended unlinking")
 	}
 	// The numbers you're choosing from don't move.
-	if view := m.View(); !slices.ContainsFunc(strings.Split(view, "\n"), func(l string) bool { return strings.Contains(plain(l), "2 Links PR #2") }) {
-		t.Errorf("view doesn't list PR #2 as 2:\n%s", plain(view))
+	if view := m.View(); !slices.ContainsFunc(strings.Split(view, "\n"), func(l string) bool { return strings.Contains(plain(l), "2 Links issue #2") }) {
+		t.Errorf("view doesn't list issue #2 as 2:\n%s", plain(view))
 	}
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
@@ -164,17 +164,17 @@ func TestUnlinkRemovesTheLinkYouSaw(t *testing.T) {
 		t.Errorf("links = %q, want %q", got, want)
 	}
 	if !tk.Dismissed(b.URL, "") || tk.Dismissed(c.URL, "") {
-		t.Errorf("dismissed = %q, want PR #2 only", tk.DismissedLinks)
+		t.Errorf("dismissed = %q, want issue #2 only", tk.DismissedLinks)
 	}
-	if m.msg != "Removed PR #2" {
-		t.Errorf("message = %q, want Removed PR #2", m.msg)
+	if m.msg != "Removed issue #2" {
+		t.Errorf("message = %q, want Removed issue #2", m.msg)
 	}
 }
 
 func TestUnlinkOfALinkGoneMeanwhileSaysSo(t *testing.T) {
 	st := &store.Store{Dir: t.TempDir(), Session: "test"}
-	b := task.Link{URL: "https://github.com/acme/x/pull/2", By: "claude"}
-	c := task.Link{URL: "https://github.com/acme/x/pull/3", By: "claude"}
+	b := task.Link{URL: "https://github.com/acme/x/issues/2", By: "claude"}
+	c := task.Link{URL: "https://github.com/acme/x/issues/3", By: "claude"}
 	setLinks(t, st, b, c)
 
 	m := &stripModel{c: fakeHerdr(t), st: st, opts: reconcile.Options{}, pane: "w1:p9", rows: strip.Rows}
@@ -184,15 +184,15 @@ func TestUnlinkOfALinkGoneMeanwhileSaysSo(t *testing.T) {
 	m.Update(m.load())
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("1")})
-	// The board removes PR #2 before you press enter.
+	// The board removes issue #2 before you press enter.
 	setLinks(t, st, c)
 	m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 
 	if l := linksOfTab(t, st); len(l) != 1 || l[0].URL != c.URL {
-		t.Errorf("links = %+v, want PR #3 alone", l)
+		t.Errorf("links = %+v, want issue #3 alone", l)
 	}
-	if m.msg != "PR #2 was removed already" {
-		t.Errorf("message = %q, want PR #2 was removed already", m.msg)
+	if m.msg != "issue #2 was removed already" {
+		t.Errorf("message = %q, want issue #2 was removed already", m.msg)
 	}
 }
 

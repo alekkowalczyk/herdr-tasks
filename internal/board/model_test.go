@@ -210,7 +210,7 @@ func TestBuildLinearStatus(t *testing.T) {
 	want := []LinkView{
 		{URL: "https://linear.app/acme/issue/ABC-12/fix-the-login", Label: "ABC-12", By: "claude", Kind: "linear", Linear: &fetched},
 		{URL: "https://linear.app/acme/issue/abc-13", Label: "ABC-13", Kind: "linear", Linear: &linear.Issue{ID: "ABC-13"}},
-		{URL: "https://github.com/acme/web/pull/7", Label: "PR #7", Kind: "other"},
+		{URL: "https://github.com/acme/web/pull/7", Label: "PR #7", Kind: "github-pr", PR: &PR{Repo: "acme/web", Number: 7}},
 		{URL: "https://example.com/spec", Label: "the spec", Kind: "other"},
 	}
 	if !reflect.DeepEqual(links, want) {
@@ -240,7 +240,8 @@ func TestLinkViewKinds(t *testing.T) {
 		{URL: "https://acme.github.io/demo/", Added: now},
 		{URL: "file://" + page, By: "claude", Added: now},
 		{URL: "http://localhost:4100", Added: now},
-		{URL: "https://github.com/acme/web/pull/7", Added: now},
+		{URL: "https://github.com/acme/web/pull/7/files", Added: now},
+		{URL: "https://example.com/spec", Added: now},
 	}}
 	state := &store.State{Tasks: map[string]*task.Task{"w1:t1": tk}}
 	links := Build([]Snapshot{{Name: "work", State: state, Live: live}}, noSummary, nil, false, "").Sessions[0].Cards[0].Links
@@ -249,14 +250,17 @@ func TestLinkViewKinds(t *testing.T) {
 	for _, l := range links {
 		got = append(got, l.Kind)
 	}
-	want := "[linear slack slack artifact hosted file local other]"
+	want := "[linear slack slack artifact hosted file local github-pr other]"
 	if fmt.Sprint(got) != want {
 		t.Fatalf("kinds = %v, want %s", got, want)
 	}
 	for i, l := range links {
-		if (l.Path != "") != (i == 5) || (l.At != nil) != (i == 1) || (l.Source != "") != (i == 3) {
+		if (l.Path != "") != (i == 5) || (l.At != nil) != (i == 1) || (l.Source != "") != (i == 3) || (l.PR != nil) != (i == 7) {
 			t.Errorf("link %d = %+v", i, l)
 		}
+	}
+	if pr := links[7].PR; pr == nil || *pr != (PR{Repo: "acme/web", Number: 7}) {
+		t.Errorf("the pull request's link has %+v", pr)
 	}
 	if links[5].Path != page || links[5].Label != "plan.html" {
 		t.Errorf("the file link = %+v", links[5])

@@ -28,6 +28,10 @@ type Link struct{ URL, Label, Source string }
 // task.
 const MaxLinks = 20
 
+// maxReplyPRs is the most pull requests a reply names and has linked. More
+// is a list of them, such as a summary of the open PRs.
+const maxReplyPRs = 5
+
 // Links stops after maxProbes filesystem calls, or once budget has passed,
 // and returns what it found, so the hook has time left to save it.
 var (
@@ -68,8 +72,11 @@ var (
 
 // Links returns the links in a hook call, in the order found, one per
 // task.LinkKey, at most MaxLinks, within its probe and time budget.
-//   - A prompt you wrote gives Slack links, Linear issues and pages.
-//   - A reply gives pages only: Slack digests reply with lists of permalinks.
+//   - A prompt you wrote gives Slack links, Linear issues, GitHub pull
+//     requests and pages.
+//   - A reply gives pull requests and pages only: Slack digests reply with
+//     lists of permalinks. A reply naming more than maxReplyPRs pull
+//     requests gives none of them.
 //   - A tool call gives the artifact it published, the page it wrote, the
 //     Slack message it sent, or the local page it opened.
 //
@@ -105,6 +112,7 @@ type finder struct {
 	deadline time.Time
 	probes   int
 	out      bool              // out of probes or time
+	listed   bool              // the text lists pull requests: they don't count
 	seen     map[string]bool   // keys of the links found
 	tried    map[string]bool   // paths of the files looked at
 	channels map[string]string // Slack channels' names; nil until read
@@ -235,8 +243,10 @@ func (f *finder) abs(p string) string {
 // a reply is an implicit page: replies name the files Claude edited, and
 // those are ordinary coding unless they pass a Write's checks.
 func (f *finder) text(s string, yours bool) {
+	cs := candidates(s)
+	f.listed = !yours && manyPRs(cs)
 	covered := 0
-	for _, c := range candidates(s) {
+	for _, c := range cs {
 		if f.done() || time.Now().After(f.deadline) {
 			return
 		}
@@ -251,10 +261,26 @@ func (f *finder) text(s string, yours bool) {
 	}
 }
 
-// url adds a URL from text when it's a page, or from your prompt also when
-// it's a Slack link or a Linear issue. Other web links don't count.
+// manyPRs reports whether cs name more than maxReplyPRs pull requests.
+func manyPRs(cs []candidate) bool {
+	prs := map[string]bool{}
+	for _, c := range cs {
+		if c.url && task.KindOf(c.text) == task.KindGitHubPR {
+			prs[task.LinkKey(c.text)] = true
+		}
+	}
+	return len(prs) > maxReplyPRs
+}
+
+// url adds a URL from text when it's a page or a pull request, or from your
+// prompt also when it's a Slack link or a Linear issue. Other web links
+// don't count.
 func (f *finder) url(raw string, yours bool) {
 	switch task.KindOf(raw) {
+	case task.KindGitHubPR:
+		if !f.listed {
+			f.add(Link{URL: prURL(raw)})
+		}
 	case task.KindSlack:
 		if u, ok := slackURL(raw); ok && yours {
 			f.addSlack(u, func() string { return f.channel(slackChannel(u)) })
@@ -602,6 +628,12 @@ func linearURL(raw string) string {
 	u.RawQuery, u.ForceQuery = "", false
 	u.Fragment, u.RawFragment = "", ""
 	return u.String()
+}
+
+// prURL is a pull request's plain link, whatever page of it raw opens.
+func prURL(raw string) string {
+	repo, n, _ := task.GitHubPR(raw)
+	return task.GitHubPRURL(repo, n)
 }
 
 // keepParams is a raw query with only the named parameters, in their order.

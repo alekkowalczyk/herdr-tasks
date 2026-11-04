@@ -52,6 +52,7 @@
   // with the other links.
   const SECTIONS = [
     {id: 'linear', title: 'Linear', kinds: ['linear']},
+    {id: 'github', title: 'GitHub', kinds: ['github-pr']},
     {id: 'slack', title: 'Slack', kinds: ['slack']},
     {id: 'pages', title: 'Pages', kinds: ['artifact', 'hosted', 'file', 'local']},
     {id: 'other', title: 'Links', kinds: []},
@@ -1320,6 +1321,12 @@
       if (is.state) chip.append(el('span', 'state', is.state));
       const tip = [is.title, is.assignee ? 'Assignee: ' + is.assignee : '', l.url];
       chip.setAttribute('title', tip.filter(Boolean).join('\n'));
+    } else if (l.kind === 'github-pr' && l.pr) {
+      const name = l.pr.repo + '#' + l.pr.number;
+      chip.classList.add('github');
+      chip.append(el('span', 'kind', 'PR'), el('span', 'label', '#' + l.pr.number));
+      chip.setAttribute('title', [prLabel(l), name, l.url].filter(Boolean).join('\n'));
+      chip.setAttribute('aria-label', 'Pull request ' + name);
     } else if (l.kind === 'slack') {
       chip.classList.add('slack');
       chip.append(el('span', 'kind', 'Slack'), el('span', 'label', l.at ? clock(l.at) : 'channel'));
@@ -1338,6 +1345,10 @@
     }
     return chip;
   }
+
+  // prLabel is the label you gave a pull request's link, or "" when it has
+  // the one it's given, "PR #12".
+  const prLabel = l => (l.label !== 'PR #' + l.pr.number ? l.label : '');
 
   // ---- The search: the tasks with what you typed in them, by where it
   // was found, as the overview's search finds them (see search.js)
@@ -1671,6 +1682,7 @@
     const is = l.linear;
     let about = l.kind === 'file' ? l.path || l.url : l.url;
     if (l.kind === 'linear' && is && is.title) about = is.title + (is.assignee ? ' · ' + is.assignee : '');
+    if (l.kind === 'github-pr' && l.pr) about = [prLabel(l), l.pr.repo].filter(Boolean).join(' · ');
     li.append(attrs(el('span', 'url', about), {title: l.source ? about + '\nPublished from ' + l.source : about}));
     if (l.by) li.append(el('span', 'by', 'via ' + l.by));
     if (l.kind === 'file') li.append(button('copy', 'Copy path', 'copypath', {'data-url': l.url, title: 'Copy ' + (l.path || '')}));

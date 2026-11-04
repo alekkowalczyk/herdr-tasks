@@ -18,6 +18,8 @@ type Kind string
 
 const (
 	KindLinear Kind = "linear"
+	// http(s)://github.com/<owner>/<repo>/pull/<number>, any page of it.
+	KindGitHubPR Kind = "github-pr"
 	// https://*.slack.com/archives/…, any number of subdomain labels.
 	KindSlack Kind = "slack"
 	// https://claude.ai/artifact/<id> or /code/artifact/<id>.
@@ -38,6 +40,9 @@ var staticHosts = []string{".github.io", ".gitlab.io", ".vercel.app", ".netlify.
 func KindOf(raw string) Kind {
 	if _, ok := LinearID(raw); ok {
 		return KindLinear
+	}
+	if _, _, ok := GitHubPR(raw); ok {
+		return KindGitHubPR
 	}
 	if _, ok := FilePath(raw); ok {
 		return KindFile
@@ -64,6 +69,32 @@ func KindOf(raw string) Kind {
 	return KindOther
 }
 
+// GitHubPR is the repository, "acme/web", and number of the GitHub pull
+// request a link opens, whatever page of it: its files, a commit, a comment.
+func GitHubPR(raw string) (repo string, n int, ok bool) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") {
+		return "", 0, false
+	}
+	if host := strings.ToLower(u.Hostname()); host != "github.com" && host != "www.github.com" {
+		return "", 0, false
+	}
+	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")
+	if len(parts) < 4 || parts[0] == "" || parts[1] == "" || parts[2] != "pull" {
+		return "", 0, false
+	}
+	n, err = strconv.Atoi(parts[3])
+	if err != nil || n <= 0 || strings.TrimLeft(parts[3], "0123456789") != "" {
+		return "", 0, false
+	}
+	return parts[0] + "/" + parts[1], n, true
+}
+
+// GitHubPRURL is the plain URL of pull request n of repo, "acme/web".
+func GitHubPRURL(repo string, n int) string {
+	return "https://github.com/" + repo + "/pull/" + strconv.Itoa(n)
+}
+
 // artifactPath reports whether a claude.ai path, split on "/", is
 // artifact/<id> or code/artifact/<id>.
 func artifactPath(parts []string) bool {
@@ -73,12 +104,14 @@ func artifactPath(parts []string) bool {
 	return len(parts) == 2 && parts[0] == "artifact" && parts[1] != ""
 }
 
-// Section is where a kind shows: "Linear", "Slack", "Pages" (artifact,
-// hosted, file, local) or "Links".
+// Section is where a kind shows: "Linear", "GitHub" (pull requests),
+// "Slack", "Pages" (artifact, hosted, file, local) or "Links".
 func (k Kind) Section() string {
 	switch k {
 	case KindLinear:
 		return "Linear"
+	case KindGitHubPR:
+		return "GitHub"
 	case KindSlack:
 		return "Slack"
 	case KindArtifact, KindHosted, KindFile, KindLocal:
@@ -88,7 +121,7 @@ func (k Kind) Section() string {
 }
 
 // Sections in display order.
-var Sections = []string{"Linear", "Slack", "Pages", "Links"}
+var Sections = []string{"Linear", "GitHub", "Slack", "Pages", "Links"}
 
 // LinkKey is a link's identity, for dedupe and dismissal: the same page under
 // another URL form has the same key.
@@ -98,6 +131,10 @@ func LinkKey(raw string) string {
 	case KindLinear:
 		id, _ := LinearID(raw)
 		return "linear:" + id
+	case KindGitHubPR:
+		// GitHub reads owner and repository in any case.
+		repo, n, _ := GitHubPR(raw)
+		return "github-pr:" + strings.ToLower(repo) + "#" + strconv.Itoa(n)
 	case KindFile:
 		p, _ := FilePath(raw)
 		return "file:" + p

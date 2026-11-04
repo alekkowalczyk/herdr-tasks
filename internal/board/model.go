@@ -178,6 +178,14 @@ type LinkView struct {
 	Source string `json:"source,omitempty"`
 	// Linear issues only: the fetched status, or the ID alone until it's fetched.
 	Linear *linear.Issue `json:"linear,omitempty"`
+	// GitHub pull requests only: which one it is.
+	PR *PR `json:"pr,omitempty"`
+}
+
+// PR is a GitHub pull request: its repository, "acme/web", and number.
+type PR struct {
+	Repo   string `json:"repo"`
+	Number int    `json:"number"`
 }
 
 // Agent is an agent running in one of the task's panes. The recap and the
@@ -293,6 +301,9 @@ func linkView(l task.Link, issues map[string]linear.Issue) LinkView {
 			issue = linear.Issue{ID: id}
 		}
 		lv.Linear = &issue
+	case task.KindGitHubPR:
+		repo, n, _ := task.GitHubPR(l.URL)
+		lv.PR = &PR{Repo: repo, Number: n}
 	case task.KindFile:
 		lv.Path, _ = task.FilePath(l.URL)
 	case task.KindSlack:

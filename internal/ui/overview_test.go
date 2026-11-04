@@ -14,7 +14,7 @@ import (
 )
 
 // unlinkCase is the race the overview's unlink tests play out: you see the links
-// [plan.html, PR #2, PR #3] and pick PR #2, while the Claude hook publishes
+// [plan.html, issue #2, issue #3] and pick issue #2, while the Claude hook publishes
 // plan.html as an artifact, which takes the file's place in the list.
 type unlinkCase struct {
 	st        *store.Store
@@ -30,8 +30,8 @@ func newUnlinkCase(t *testing.T) unlinkCase {
 	u := unlinkCase{
 		st:   st,
 		file: task.Link{URL: task.FileURL(src), By: "claude"},
-		b:    task.Link{URL: "https://github.com/acme/x/pull/2", By: "claude"},
-		c:    task.Link{URL: "https://github.com/acme/x/pull/3", By: "claude"},
+		b:    task.Link{URL: "https://github.com/acme/x/issues/2", By: "claude"},
+		c:    task.Link{URL: "https://github.com/acme/x/issues/3", By: "claude"},
 		art:  task.Link{URL: "https://claude.ai/code/artifact/00000000-0000-4000-8000-000000000001", Source: src, By: "claude"},
 	}
 	setLinks(t, st, u.file, u.b, u.c)
@@ -48,7 +48,7 @@ func newUnlinkCase(t *testing.T) unlinkCase {
 // publish is the hook replacing the file with its artifact.
 func (u unlinkCase) publish(t *testing.T) { setLinks(t, u.st, u.b, u.c, u.art) }
 
-// check fails the test unless PR #2 alone was removed and dismissed.
+// check fails the test unless issue #2 alone was removed and dismissed.
 func (u unlinkCase) check(t *testing.T) {
 	t.Helper()
 	tk := func() *task.Task {
@@ -66,10 +66,10 @@ func (u unlinkCase) check(t *testing.T) {
 		t.Errorf("links = %q, want %q", got, want)
 	}
 	if !tk.Dismissed(u.b.URL, "") || tk.Dismissed(u.c.URL, "") {
-		t.Errorf("dismissed = %q, want PR #2 only", tk.DismissedLinks)
+		t.Errorf("dismissed = %q, want issue #2 only", tk.DismissedLinks)
 	}
-	if u.m.msg != "Removed PR #2" {
-		t.Errorf("message = %q, want Removed PR #2", u.m.msg)
+	if u.m.msg != "Removed issue #2" {
+		t.Errorf("message = %q, want Removed issue #2", u.m.msg)
 	}
 }
 
@@ -82,8 +82,8 @@ func TestOverviewUnlinkRemovesTheLinkYouSaw(t *testing.T) {
 		t.Fatal("the refresh ended unlinking")
 	}
 	// The numbers you're choosing from don't move.
-	if view := u.m.View(); !slices.ContainsFunc(strings.Split(view, "\n"), func(l string) bool { return strings.Contains(plain(l), "2 PR #2") }) {
-		t.Errorf("view doesn't list PR #2 as 2:\n%s", plain(view))
+	if view := u.m.View(); !slices.ContainsFunc(strings.Split(view, "\n"), func(l string) bool { return strings.Contains(plain(l), "2 issue #2") }) {
+		t.Errorf("view doesn't list issue #2 as 2:\n%s", plain(view))
 	}
 	u.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	u.check(t)
@@ -99,7 +99,7 @@ func TestOverviewUnlinkClickRemovesTheLinkYouSaw(t *testing.T) {
 		}
 	}
 	if y < 0 {
-		t.Fatalf("PR #2 has no ×: %+v", u.m.linkAt)
+		t.Fatalf("issue #2 has no ×: %+v", u.m.linkAt)
 	}
 	// The hook writes after the overview drew the list, before you click.
 	u.publish(t)
@@ -110,14 +110,14 @@ func TestOverviewUnlinkClickRemovesTheLinkYouSaw(t *testing.T) {
 func TestOverviewUnlinkOfALinkGoneMeanwhileSaysSo(t *testing.T) {
 	u := newUnlinkCase(t)
 	u.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
-	// The board removes PR #2 before you press 2.
+	// The board removes issue #2 before you press 2.
 	setLinks(t, u.st, u.file, u.c)
 	u.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("2")})
 	if l := linksOfTab(t, u.st); len(l) != 2 || l[1].URL != u.c.URL {
-		t.Errorf("links = %+v, want plan.html and PR #3", l)
+		t.Errorf("links = %+v, want plan.html and issue #3", l)
 	}
-	if u.m.msg != "PR #2 was removed already" {
-		t.Errorf("message = %q, want PR #2 was removed already", u.m.msg)
+	if u.m.msg != "issue #2 was removed already" {
+		t.Errorf("message = %q, want issue #2 was removed already", u.m.msg)
 	}
 	u.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("L")})
 	u.m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("7")})
@@ -385,7 +385,7 @@ func TestOverviewGroupsLinks(t *testing.T) {
 
 	st := &store.Store{Dir: t.TempDir(), Session: "test"}
 	page := task.Link{URL: "http://localhost:4100/demo", Label: "Demo", By: "claude"}
-	pr := task.Link{URL: otherLink}
+	pr := task.Link{URL: prLink}
 	slack := task.Link{URL: slackMsg, Label: "#billing · Dana Reed: hi"}
 	issue := task.Link{URL: linearIssue}
 	setLinks(t, st, page, pr, slack, issue)
@@ -414,12 +414,12 @@ func TestOverviewGroupsLinks(t *testing.T) {
 	want := []string{
 		"Linear",
 		"1 ABC-12 linear.app/acme/issue/ABC-12 ×",
+		"GitHub",
+		"2 PR #1 github.com/acme/x/pull/1 ×",
 		"Slack",
-		"2 Nov 15 01:13 #billing · Dana Reed: hi ×",
+		"3 Nov 15 01:13 #billing · Dana Reed: hi ×",
 		"Pages",
-		"3 Demo localhost:4100/demo via claude ×",
-		"Links",
-		"4 PR #1 github.com/acme/x/pull/1 ×",
+		"4 Demo localhost:4100/demo via claude ×",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("LINKS:\n%q\nwant\n%q", got, want)
@@ -435,7 +435,7 @@ func TestOverviewGroupsLinks(t *testing.T) {
 	for _, y := range ys {
 		order = append(order, m.linkAt[y].URL)
 	}
-	if want := []string{issue.URL, slack.URL, page.URL, pr.URL}; !slices.Equal(order, want) {
+	if want := []string{issue.URL, pr.URL, slack.URL, page.URL}; !slices.Equal(order, want) {
 		t.Errorf("× lines remove %q, want %q", order, want)
 	}
 

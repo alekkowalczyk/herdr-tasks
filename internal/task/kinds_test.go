@@ -26,7 +26,13 @@ func TestKindOf(t *testing.T) {
 		"https://acme.github.io/demo/":                           KindHosted,
 		"https://acme.surge.sh":                                  KindHosted,
 		"https://github.io/":                                     KindOther,
-		"https://github.com/acme/x/pull/1":                       KindOther,
+		"https://github.com/acme/x/pull/1":                       KindGitHubPR,
+		"https://www.github.com/acme/x/pull/1/files#diff-1":      KindGitHubPR,
+		"http://github.com/acme/x/pull/1":                        KindGitHubPR,
+		"https://github.com/acme/x/pulls":                        KindOther,
+		"https://github.com/acme/x/pull/new/branch":              KindOther,
+		"https://github.com/acme/x/issues/1":                     KindOther,
+		"https://gitlab.com/acme/x/pull/1":                       KindOther,
 		"file:///tmp/a.html":                                     KindFile,
 		"file://localhost/tmp/a.html":                            KindFile,
 		"file://nas/share/a.html":                                KindOther,
@@ -45,7 +51,7 @@ func TestKindOf(t *testing.T) {
 
 func TestSections(t *testing.T) {
 	cases := map[Kind]string{
-		KindLinear: "Linear", KindSlack: "Slack",
+		KindLinear: "Linear", KindGitHubPR: "GitHub", KindSlack: "Slack",
 		KindArtifact: "Pages", KindHosted: "Pages", KindFile: "Pages", KindLocal: "Pages",
 		KindOther: "Links",
 	}
@@ -63,6 +69,9 @@ func TestLinkKeySameForURLForms(t *testing.T) {
 		{localPage, localPage + "/"},
 		{"file:///tmp/x/../a.html", "file:///tmp/a.html"},
 		{"https://linear.app/acme/issue/ABC-12", "https://linear.app/acme/issue/abc-12/fix-it"},
+		{"https://github.com/acme/x/pull/1", "https://github.com/acme/x/pull/1/"},
+		{"https://github.com/acme/x/pull/1", "https://www.github.com/Acme/X/pull/1/files?w=1#diff-2"},
+		{"https://github.com/acme/x/pull/1", "http://github.com/acme/x/pull/1#issuecomment-3"},
 	}
 	for _, c := range same {
 		if a, b := LinkKey(c[0]), LinkKey(c[1]); a != b {
@@ -73,12 +82,38 @@ func TestLinkKeySameForURLForms(t *testing.T) {
 		{localPage + "/#/a", localPage + "/#/b"},
 		{localPage + "/a", localPage + "/b"},
 		{localPage, "https://localhost:4100"},
-		{"https://github.com/acme/x/pull/1", "https://github.com/acme/x/pull/1/"},
+		{"https://github.com/acme/x/pull/1", "https://github.com/acme/x/pull/2"},
+		{"https://github.com/acme/x/pull/1", "https://github.com/acme/y/pull/1"},
 	}
 	for _, c := range different {
 		if a, b := LinkKey(c[0]), LinkKey(c[1]); a == b {
 			t.Errorf("LinkKey(%q) and LinkKey(%q) are both %q, want them different", c[0], c[1], a)
 		}
+	}
+}
+
+func TestGitHubPR(t *testing.T) {
+	cases := map[string]struct {
+		repo string
+		n    int
+	}{
+		"https://github.com/acme/web/pull/12":                       {"acme/web", 12},
+		"https://www.github.com/Acme/Web/pull/12/commits/abc?w=1#x": {"Acme/Web", 12},
+		"https://github.com/acme/web/pull/0":                        {},
+		"https://github.com/acme/web/pull/12x":                      {},
+		"https://github.com/acme/web/issues/12":                     {},
+		"https://github.com/acme/pull/12":                           {},
+		"https://acme.github.io/web/pull/12":                        {},
+		"ftp://github.com/acme/web/pull/12":                         {},
+	}
+	for in, want := range cases {
+		repo, n, ok := GitHubPR(in)
+		if repo != want.repo || n != want.n || ok != (want.n > 0) {
+			t.Errorf("GitHubPR(%q) = %q, %d, %v, want %q, %d", in, repo, n, ok, want.repo, want.n)
+		}
+	}
+	if got := GitHubPRURL("acme/web", 12); got != "https://github.com/acme/web/pull/12" {
+		t.Errorf("GitHubPRURL = %q", got)
 	}
 }
 
@@ -162,14 +197,15 @@ func TestLinkLabelForNewKinds(t *testing.T) {
 	cases := map[string]string{
 		slackMsg: "Slack message",
 		"https://acme.enterprise.slack.com/archives/C0123ABCD": "Slack channel",
-		artifact:                       "Artifact",
-		"file:///tmp/demo/plan.html":   "plan.html",
-		localPage + "/showcase/?tab=2": "localhost:4100/showcase",
-		localPage + "/":                "localhost:4100",
-		localPage + "/#/showcase":      "localhost:4100#/showcase",
-		"http://[::1]":                 "[::1]",
-		"https://acme.github.io/demo/": "acme.github.io/demo",
-		"file:///tmp/%1B%5B2J.html":    "[2J.html",
+		artifact:                                  "Artifact",
+		"file:///tmp/demo/plan.html":              "plan.html",
+		localPage + "/showcase/?tab=2":            "localhost:4100/showcase",
+		localPage + "/":                           "localhost:4100",
+		localPage + "/#/showcase":                 "localhost:4100#/showcase",
+		"http://[::1]":                            "[::1]",
+		"https://acme.github.io/demo/":            "acme.github.io/demo",
+		"file:///tmp/%1B%5B2J.html":               "[2J.html",
+		"https://github.com/acme/x/pull/12/files": "PR #12",
 	}
 	for in, want := range cases {
 		if got := LinkLabel(in); got != want {

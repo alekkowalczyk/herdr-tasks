@@ -46,6 +46,7 @@
   --ink-link: #2c67c7;
   --ink-slack: #a23d82;
   --ink-pages: #1d6a34;
+  --ink-github: #1f2328;
 
   --radius: 12px;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
@@ -81,6 +82,7 @@
     --ink-link: var(--link);
     --ink-slack: #dc85c0;
     --ink-pages: #6cd08c;
+    --ink-github: #f0f3f6;
   }
 }
 
@@ -630,6 +632,10 @@ a.chip:hover, button.chip:hover { border-color: color-mix(in srgb, var(--link) 5
 .chip.slack .kind { flex: none; color: var(--ink-slack); font-weight: 650; }
 .chip.slack .label { color: var(--muted); font-variant-numeric: tabular-nums; }
 a.chip.slack:hover { border-color: color-mix(in srgb, var(--slack) 55%, transparent); }
+.chip.github { color: var(--fg); }
+.chip.github .kind { flex: none; color: var(--ink-github); font-weight: 650; }
+.chip.github .label { color: var(--muted); font-variant-numeric: tabular-nums; }
+a.chip.github:hover { border-color: color-mix(in srgb, var(--ink-github) 45%, transparent); }
 .chip.page { color: var(--fg); }
 .chip.page .mark {
   flex: none;

@@ -121,6 +121,7 @@ func TestClaudeHookAddsSlackAndPages(t *testing.T) {
 		{URL: "http://[::1]"},
 		{URL: anArtifact + "?sk=abc"},
 		{URL: "https://acme.github.io/demo/"},
+		{URL: "https://github.com/acme/x/pull/1"},
 	}
 	if len(got) != 1 || got[0].pane != "w1:p1" || got[0].f.issue != nil || !slices.Equal(got[0].f.links, want) {
 		t.Errorf("linked %+v, want once with %+v", got, want)

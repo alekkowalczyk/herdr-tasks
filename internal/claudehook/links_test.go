@@ -107,6 +107,7 @@ func TestLinksFromAPrompt(t *testing.T) {
 		{URL: "http://[::1]"},
 		{URL: anArtifact + "?sk=abc"},
 		{URL: "https://acme.github.io/demo/"},
+		{URL: "https://github.com/acme/x/pull/1"},
 	})
 }
 
@@ -212,6 +213,42 @@ func TestLocalLinkWithASecretIsSkipped(t *testing.T) {
 
 // A Linear link keeps only its issue and slug, and an artifact link only its
 // share key: neither keeps a user name, a password, or another parameter.
+// A pull request Claude names in a reply, or you in a prompt, is linked once,
+// whatever page of it the link opens.
+func TestPullRequests(t *testing.T) {
+	pr := "https://github.com/acme/web/pull/12"
+	text := "Opened " + pr + ", see the diff at " + pr + "/files and https://github.com/acme/web/issues/3."
+	checkLinks(t, "reply", Links(reply("", text), ""), []Link{{URL: pr}})
+	checkLinks(t, "prompt", Links(prompt("", text), ""), []Link{{URL: pr}})
+	for raw, want := range map[string]string{
+		pr + "#issuecomment-1":                                  pr,
+		"https://u:p@github.com/acme/web/pull/12?token=x#a":     pr,
+		"https://www.github.com/acme/web/pull/12/commits/abc12": pr,
+		"http://github.com/acme/web/pull/12":                    pr,
+	} {
+		checkLinks(t, raw, Links(reply("", "See "+raw+" now"), ""), []Link{{URL: want}})
+	}
+}
+
+// A reply naming more than maxReplyPRs pull requests lists them, as a
+// summary of open PRs does, and adds none of them. Its pages still count.
+func TestReplyListingPullRequests(t *testing.T) {
+	var b strings.Builder
+	var want []Link
+	for i := range maxReplyPRs + 1 {
+		fmt.Fprintf(&b, "- https://github.com/acme/web/pull/%d\n", i+1)
+		if i < maxReplyPRs {
+			want = append(want, Link{URL: fmt.Sprintf("https://github.com/acme/web/pull/%d", i+1)})
+		}
+	}
+	b.WriteString("Preview: http://localhost:4100/preview\n")
+	checkLinks(t, "a list", Links(reply("", b.String()), ""), []Link{{URL: "http://localhost:4100/preview"}})
+	checkLinks(t, "the same in a prompt", Links(prompt("", b.String()), ""), append(want, Link{URL: "https://github.com/acme/web/pull/6"}, Link{URL: "http://localhost:4100/preview"}))
+	// The same PR named again isn't another.
+	few := strings.Repeat("https://github.com/acme/web/pull/1 ", maxReplyPRs+1)
+	checkLinks(t, "one PR", Links(reply("", few), ""), []Link{{URL: "https://github.com/acme/web/pull/1"}})
+}
+
 func TestLinearAndArtifactLinksDropCredentials(t *testing.T) {
 	for raw, want := range map[string]string{
 		"https://linear.app/acme/issue/ABC-12?token=secret":                      "https://linear.app/acme/issue/ABC-12",

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
@@ -21,7 +22,8 @@ const (
 	slackMsg    = "https://acme.slack.com/archives/C0123ABCD/p1700000000123456"
 	slackChan   = "https://acme.enterprise.slack.com/archives/C0123ABCD"
 	hostedPage  = "https://acme.github.io/demo/"
-	otherLink   = "https://github.com/acme/x/pull/1"
+	prLink      = "https://github.com/acme/x/pull/1"
+	otherLink   = "https://github.com/acme/x/issues/1"
 )
 
 func links(urls ...string) []task.Link {
@@ -49,11 +51,11 @@ func sections(rows []string) []string {
 }
 
 func TestLinkRowsGroupsBySection(t *testing.T) {
-	rows := linkRows(links(hostedPage, linearIssue, otherLink, slackChan), 52, 5, false).rows
-	if got, want := sections(rows), []string{"Linear", "Slack", "Pages", "Links"}; !slices.Equal(got, want) {
+	rows := linkRows(links(hostedPage, linearIssue, otherLink, slackChan, prLink), 52, 5, false).rows
+	if got, want := sections(rows), []string{"Linear", "GitHub", "Slack", "Pages", "Links"}; !slices.Equal(got, want) {
 		t.Fatalf("sections = %q, want %q", got, want)
 	}
-	want := []string{"Linear ABC-12", "Slack channel", "Pages acme.github.io/demo", "Links PR #1"}
+	want := []string{"Linear ABC-12", "GitHub PR #1", "Slack channel", "Pages acme.github.io/demo", "Links issue #1"}
 	for i, r := range rows {
 		if got := plain(r); got != want[i] {
 			t.Errorf("row %d = %q, want %q", i, got, want[i])
@@ -166,7 +168,7 @@ func TestLinkRowsWrapIntoSpareRows(t *testing.T) {
 	want = []string{
 		"Pages  page-1.html · page-2.html · page-3.html",
 		"       page-4.html · page-5.html · page-6.html +2",
-		"Links  PR #1",
+		"Links  issue #1",
 	}
 	if got := stripped(col.rows); !slices.Equal(got, want) {
 		t.Errorf("pages above links:\n%q\nwant\n%q", got, want)
@@ -175,7 +177,7 @@ func TestLinkRowsWrapIntoSpareRows(t *testing.T) {
 	// With fewer rows than sections, the sections below get none.
 	col = linkRows(ls, 52, 1, false)
 	if got := stripped(col.rows); !slices.Equal(got, []string{"Pages  page-1.html · page-2.html · page-3.html +5"}) || col.hidden != 6 {
-		t.Errorf("1 row: %q, hidden %d; want the pages' row, and 6 hidden with the PR", got, col.hidden)
+		t.Errorf("1 row: %q, hidden %d; want the pages' row, and 6 hidden with the issue", got, col.hidden)
 	}
 }
 
@@ -284,7 +286,8 @@ func TestLinkItem(t *testing.T) {
 		{task.Link{URL: hostedPage, Label: "Demo\n  page"}, "Demo page"},
 		{task.Link{URL: hostedPage}, "acme.github.io/demo"},
 		{task.Link{URL: task.FileURL("/tmp/acme/plan.html")}, "plan.html"},
-		{task.Link{URL: otherLink}, "PR #1"},
+		{task.Link{URL: prLink}, "PR #1"},
+		{task.Link{URL: otherLink}, "issue #1"},
 		{task.Link{URL: "http://x/\x1b]8;;http://evil"}, "unsafe link"},
 		{task.Link{URL: "http://x/\x07", Label: "Mine"}, "Mine"},
 	}
@@ -367,5 +370,17 @@ func TestNumberedLinks(t *testing.T) {
 		if !strings.Contains(plain(r), "…") || strings.Count(r, "\x1b]8;;") != 2 || !strings.Contains(r, "\x1b]8;;\x1b\\") {
 			t.Errorf("cut row = %q, want the label cut and its link closed", r)
 		}
+	}
+}
+
+// Each section's name has a color of its own.
+func TestSectionColors(t *testing.T) {
+	seen := map[lipgloss.Color]string{}
+	for _, s := range task.Sections {
+		c := sectionColor(s)
+		if other, ok := seen[c]; ok {
+			t.Errorf("%s has %s's color, %s", s, other, c)
+		}
+		seen[c] = s
 	}
 }

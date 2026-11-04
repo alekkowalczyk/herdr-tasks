@@ -24,6 +24,7 @@ var (
 	cTool   = lipgloss.Color("#8a96a8")
 	cLink   = lipgloss.Color("#9cc4ff")
 	cLinear = lipgloss.Color("#8f8cf2")
+	cGitHub = lipgloss.Color("#f0f3f6")
 	cSlack  = lipgloss.Color("#c965a9")
 	cPages  = lipgloss.Color("#4fb86e")
 	cSelBG  = lipgloss.Color("#232b35")

@@ -78,8 +78,9 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks serve         the task board's server (board and the startup hook
                             start it)
   herdr-tasks claude-hook   run by Claude Code on prompts, replies, and tool
-                            calls, to link the Linear issues, Slack links, and
-                            pages they name to the task (claude_links = true)
+                            calls, to link the Linear issues, GitHub PRs, Slack
+                            links, and pages they name to the task
+                            (claude_links = true)
   herdr-tasks slack-guard   run by Claude Code before each tool call in a Slack
                             check, topic check, or research session, to keep
                             it to reading and answering

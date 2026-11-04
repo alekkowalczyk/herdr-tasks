@@ -1344,6 +1344,37 @@ const tests = {
     assert.equal(pg.$('board').querySelector('[data-act="openlocal"]'), null);
   },
 
+  // A GitHub pull request's chip says PR and its number, and the card shows
+  // it under GitHub, after Linear and before the other links.
+  async 'a pull request shows in its own group'() {
+    const pg = page('k1');
+    await settle();
+    const pr = {url: 'https://github.com/acme/web/pull/12', kind: 'github-pr', label: 'PR #12', pr: {repo: 'acme/web', number: 12}};
+    const other = {url: 'https://example.com/spec', kind: 'other', label: 'example.com'};
+    const issue = {url: 'https://linear.app/acme/issue/ABC-12', kind: 'linear', label: 'ABC-12', linear: {id: 'ABC-12'}};
+    pg.send(board(card({links: [other, pr, issue]})));
+    await settle();
+    const groups = pg.$('board').querySelectorAll('.link-row').map(r => r.getAttribute('aria-label'));
+    assert.deepEqual(groups, ['Linear', 'GitHub', 'Links']);
+    const chip = pg.$('board').querySelector('.chip.github');
+    assert.ok(chip, 'no pull request chip');
+    assert.equal(chip.tag, 'a');
+    assert.equal(chip.getAttribute('href'), pr.url);
+    assert.equal(chip.textContent, 'PR#12');
+    assert.equal(chip.getAttribute('title'), 'acme/web#12\n' + pr.url);
+    assert.equal(chip.getAttribute('aria-label'), 'Pull request acme/web#12');
+
+    // The tab's view says which repository each is in, and the label you
+    // gave one.
+    const named = Object.assign({}, pr, {url: 'https://github.com/acme/api/pull/3', label: 'Retry fix', pr: {repo: 'acme/api', number: 3}});
+    pg.send(board(card({links: [pr, named]})));
+    await settle();
+    pg.$('board').querySelector('.card').click();
+    const rows = pg.$('detail-body').querySelectorAll('.d-link').map(r => r.querySelector('.url').textContent);
+    assert.deepEqual(rows, ['acme/web', 'Retry fix · acme/api']);
+    assert.equal(pg.$('board').querySelectorAll('.chip.github')[1].getAttribute('title'), 'Retry fix\nacme/api#3\n' + named.url);
+  },
+
   // A blocked window says so, and nothing is asked.
   async 'a blocked page window says so'() {
     const pg = page('k1');

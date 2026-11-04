@@ -15,18 +15,24 @@ import (
 // sectionW is the longest section name, so items line up after it.
 const sectionW = 6
 
-// sectionName is a section's name in its color, padded to sectionW.
-func sectionName(section string) string {
-	c := cLink
+// sectionColor is the color of a section's name.
+func sectionColor(section string) lipgloss.Color {
 	switch section {
 	case "Linear":
-		c = cLinear
+		return cLinear
+	case "GitHub":
+		return cGitHub
 	case "Slack":
-		c = cSlack
+		return cSlack
 	case "Pages":
-		c = cPages
+		return cPages
 	}
-	return lipgloss.NewStyle().Foreground(c).Bold(true).Render(section) + strings.Repeat(" ", max(0, sectionW-len(section)))
+	return cLink
+}
+
+// sectionName is a section's name in its color, padded to sectionW.
+func sectionName(section string) string {
+	return lipgloss.NewStyle().Foreground(sectionColor(section)).Bold(true).Render(section) + strings.Repeat(" ", max(0, sectionW-len(section)))
 }
 
 // linkColumn is the strip's links column, as linkRows lays it out.
