@@ -11,14 +11,16 @@ import (
 )
 
 // The overview's other order: s lists the tasks by Claude's latest reply,
-// as the board's Latest reply does. Those an agent works on come first,
-// then the rest, newest reply first, then those Claude hasn't replied in.
+// as the board's Latest reply does. Those where an agent asks you something
+// come first, as they wait for you, then those an agent works on, then the
+// rest, newest reply first, then those Claude hasn't replied in.
 // The tools keep their place at the end. The state file keeps the order
 // you chose.
 
-// activity is what a look saw of a tab's agents: whether one works, and
-// Claude's latest reply there.
+// activity is what a look saw of a tab's agents: whether one asks you
+// something, whether one works, and Claude's latest reply there.
 type activity struct {
+	asking  bool
 	working bool
 	at      time.Time
 	reply   string
@@ -29,7 +31,10 @@ func activities(d searchData) map[string]activity {
 	out := map[string]activity{}
 	for _, p := range d.panes {
 		a := out[p.TabID]
-		if p.AgentStatus == "working" {
+		switch p.AgentStatus {
+		case "blocked":
+			a.asking = true
+		case "working":
 			a.working = true
 		}
 		if sum, ok := d.sums[p.ID]; ok && sum.ReplyAt.After(a.at) {
@@ -70,6 +75,8 @@ func (m *model) latestSections() []section {
 	if m.acts == nil {
 		none = "reading Claude's logs…"
 	}
+	asking := section{}
+	asking.title, asking.hint, asking.color = groupInfo(task.Asking)
 	work := section{title: "WORKING", hint: "an agent works on them", color: cRun}
 	replied := section{title: "LATEST REPLY", hint: "newest first", color: cYou}
 	quiet := section{title: "NO REPLY", hint: none, color: cDim}
@@ -82,6 +89,8 @@ func (m *model) latestSections() []section {
 		switch {
 		case r.group == task.GTool:
 			tools.rows = append(tools.rows, r)
+		case a.asking || r.tab.AgentStatus == "blocked":
+			asking.rows = append(asking.rows, r)
 		case a.working || r.tab.AgentStatus == "working":
 			work.rows = append(work.rows, r)
 		case !a.at.IsZero():
@@ -90,5 +99,5 @@ func (m *model) latestSections() []section {
 			quiet.rows = append(quiet.rows, r)
 		}
 	}
-	return []section{work, replied, quiet, tools}
+	return []section{asking, work, replied, quiet, tools}
 }

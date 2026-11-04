@@ -784,8 +784,8 @@ const tests = {
   },
 
   // Latest lists the tasks by Claude's latest reply instead of the columns:
-  // those an agent works on first, then the newest reply, then those with
-  // none. Each shows its last reply and how long ago it came. It keeps to
+  // those where an agent asks you something first, then those an agent
+  // works on, then the newest reply, then those with none. Each shows its last reply and how long ago it came. It keeps to
   // the space and to Priority only, a search takes its place, a row opens
   // its view, and the browser remembers it.
   async 'latest lists the tasks by Claude’s latest reply'() {
@@ -796,6 +796,7 @@ const tests = {
       card({tab: 'w1:t2', title: 'No Claude', space: 'w1', spaceLabel: 'billing', agents: [{pane: 'w1:p3', agent: 'codex', status: 'idle', title: ''}]}),
       card({tab: 'w1:t3', title: 'Fresh reply', space: 'w1', spaceLabel: 'billing', agents: [claude('w1:p4', 'done', 20, 'Earlier.'), claude('w1:p5', 'idle', 1, 'The tests pass.')]}),
       card({tab: 'w2:t1', title: 'Busy', column: 'running', space: 'w2', spaceLabel: 'infra', agents: [claude('w2:p1', 'working', 30, 'Running the migration.')]}),
+      card({tab: 'w1:t4', title: 'Needs you', column: 'review', space: 'w1', spaceLabel: 'billing', agents: [claude('w1:p6', 'blocked', 5, 'May I run the migration?'), claude('w1:p7', 'working', 40, 'Started.')]}),
     ];
     const pg = page('k1');
     await settle();
@@ -812,6 +813,8 @@ const tests = {
     assert.equal(pg.$('board').hidden, true, 'the columns still show');
     assert.equal(pg.$('results').hidden, false);
     assert.deepEqual(found(pg), [
+      'Asking',
+      'Needs you · May I run the migration?',
       'Working',
       'Busy · Running the migration.',
       'Latest reply',
@@ -839,7 +842,7 @@ const tests = {
     type(pg, 'busy');
     assert.deepEqual(found(pg), ['Name', '[Busy]']);
     type(pg, '');
-    assert.equal(found(pg)[0], 'Working');
+    assert.equal(found(pg)[0], 'Asking');
 
     row('Fresh reply').click();
     assert.equal(pg.location.hash, '#tab=w1%3At3');
@@ -850,7 +853,7 @@ const tests = {
     again.send(spaced(cards, SPACES));
     await settle();
     assert.equal(again.$('board').hidden, true, 'the page forgot Latest');
-    assert.equal(found(again)[0], 'Working');
+    assert.equal(found(again)[0], 'Asking');
     again.$('latest').click();
     assert.equal(again.$('board').hidden, false);
     assert.equal(again.$('results').hidden, true);

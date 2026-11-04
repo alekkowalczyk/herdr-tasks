@@ -1496,6 +1496,7 @@
 
   // LATEST_GROUPS are the parts of Latest's list, in its order.
   const LATEST_GROUPS = [
+    {id: 'asking', label: 'Asking', hint: 'an agent waits for your answer'},
     {id: 'working', label: 'Working', hint: 'an agent works on them'},
     {id: 'replied', label: 'Latest reply', hint: 'newest first'},
     {id: 'none', label: 'No reply', hint: 'Claude hasn’t replied in them'},
@@ -1510,13 +1511,15 @@
     return out;
   }
 
-  // renderLatest lists cards by Claude's latest reply: those an agent works
-  // on, then the rest, newest reply first, then those with none.
+  // renderLatest lists cards by Claude's latest reply: those where an agent
+  // asks you something, as they wait for you, then those an agent works on,
+  // then the rest, newest reply first, then those with none.
   function renderLatest(cards) {
-    const rows = cards.map(c => ({c, reply: lastReply(c), working: c.agents.some(a => a.status === 'working')}));
+    const has = (c, status) => c.agents.some(a => a.status === status);
+    const rows = cards.map(c => ({c, reply: lastReply(c), asking: has(c, 'blocked'), working: has(c, 'working')}));
     const at = x => (x.reply ? Date.parse(x.reply.at) : 0);
     rows.sort((a, b) => at(b) - at(a) || newer(a.c, b.c));
-    const part = x => (x.working ? 'working' : x.reply ? 'replied' : 'none');
+    const part = x => (x.asking ? 'asking' : x.working ? 'working' : x.reply ? 'replied' : 'none');
     $('results').setAttribute('aria-label', 'Tasks by Claude’s latest reply');
     $('results-count').textContent = cards.length ? '' : 'No tasks here.';
     const groups = LATEST_GROUPS.map(f => ({f, rows: rows.filter(x => part(x) === f.id)})).filter(g => g.rows.length);

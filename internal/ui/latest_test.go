@@ -13,9 +13,9 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
-// latestOverview is an overview of four tasks and a tool, with Claude
-// replying in all but one: one tab's agent works, and one tab has two
-// Claude panes. Its looks read the panes and their logs.
+// latestOverview is an overview of five tasks and a tool, with Claude
+// replying in all but one: one tab's agent asks you something, one's works,
+// and one tab has two Claude panes. Its looks read the panes and their logs.
 func latestOverview(t *testing.T, st *store.Store) *model {
 	t.Helper()
 	now := time.Now()
@@ -23,7 +23,7 @@ func latestOverview(t *testing.T, st *store.Store) *model {
 	tabs := []herdr.Tab{
 		{ID: "w1:t1", WorkspaceID: "w1", Number: 1}, {ID: "w1:t2", WorkspaceID: "w1", Number: 2},
 		{ID: "w1:t3", WorkspaceID: "w1", Number: 3}, {ID: "w1:t4", WorkspaceID: "w1", Number: 4},
-		{ID: "w1:t5", WorkspaceID: "w1", Number: 5},
+		{ID: "w1:t5", WorkspaceID: "w1", Number: 5}, {ID: "w1:t6", WorkspaceID: "w1", Number: 6},
 	}
 	m, err := newModel(Env{Client: herdrOf(t, wss, tabs), Store: st, CurrentTab: "w1:t3"})
 	if err != nil {
@@ -37,6 +37,7 @@ func latestOverview(t *testing.T, st *store.Store) *model {
 			panes: []herdr.Pane{
 				claude("w1:p1", "w1:t1", "idle"), claude("w1:p2", "w1:t4", "done"), claude("w1:p3", "w1:t4", "idle"),
 				claude("w1:p4", "w1:t3", "working"), claude("w1:p5", "w1:t5", "idle"),
+				claude("w1:p7", "w1:t6", "blocked"), claude("w1:p8", "w1:t6", "working"),
 				{ID: "w1:p6", TabID: "w1:t2", Agent: "codex", AgentStatus: "idle"},
 			},
 			sums: map[string]claudelog.Summary{
@@ -45,6 +46,7 @@ func latestOverview(t *testing.T, st *store.Store) *model {
 				"w1:p3": {LastReply: "Earlier.", ReplyAt: now.Add(-20 * time.Minute)},
 				"w1:p4": {LastReply: "Running the migration.", ReplyAt: now.Add(-30 * time.Minute)},
 				"w1:p5": {LastReply: "Tailing.", ReplyAt: now},
+				"w1:p7": {LastReply: "May I run the migration?", ReplyAt: now.Add(-5 * time.Minute)},
 			},
 		}
 	}
@@ -52,8 +54,9 @@ func latestOverview(t *testing.T, st *store.Store) *model {
 	return m
 }
 
-// s lists the tasks by Claude's latest reply: those an agent works on,
-// then the rest newest reply first, each with its reply and how long ago it
+// s lists the tasks by Claude's latest reply: those where an agent asks
+// you something, then those an agent works on, then the rest newest reply
+// first, each with its reply and how long ago it
 // came, then those it hasn't replied in, then the tools. ↓ follows that
 // order. The next overview keeps it, and s goes back to the stages.
 func TestOverviewLatestReplyFirst(t *testing.T) {
@@ -66,6 +69,7 @@ func TestOverviewLatestReplyFirst(t *testing.T) {
 			"w1:t3": {Title: "Busy", Stage: task.Active, Since: now},
 			"w1:t4": {Title: "Fresh reply", Stage: task.Parked, Since: now.Add(-48 * time.Hour)},
 			"w1:t5": {Title: "Logs", Stage: task.Tool, Since: now},
+			"w1:t6": {Title: "Needs you", Stage: task.Review, Since: now},
 		} {
 			tk.TabID, tk.Workspace = id, "Acme"
 			s.Tasks[id] = tk
@@ -87,7 +91,7 @@ func TestOverviewLatestReplyFirst(t *testing.T) {
 	m.run(look)
 	lines := listColumn(m)
 	at := -1
-	for _, s := range []string{"WORKING", "Busy", "LATEST REPLY", "Fresh reply", "Old reply", "NO REPLY", "No Claude", "TOOLS", "Logs"} {
+	for _, s := range []string{"AGENT ASKING", "Needs you", "WORKING", "Busy", "LATEST REPLY", "Fresh reply", "Old reply", "NO REPLY", "No Claude", "TOOLS", "Logs"} {
 		i, _ := lineWith(lines, s)
 		if i <= at {
 			t.Fatalf("%q isn't after the line before it:\n%s", s, strings.Join(lines, "\n"))
@@ -107,6 +111,11 @@ func TestOverviewLatestReplyFirst(t *testing.T) {
 		t.Errorf("the footer doesn't offer going back:\n%s", footer)
 	}
 
+	m.press("home")
+	if m.sel != "w1:t6" {
+		t.Errorf("the first task is %s, want w1:t6", m.sel)
+	}
+	m.press("down")
 	m.press("down")
 	if m.sel != "w1:t4" {
 		t.Errorf("↓ from Busy went to %s, want w1:t4", m.sel)
