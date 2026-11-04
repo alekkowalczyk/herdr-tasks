@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
@@ -64,13 +65,16 @@ func installedBinary() string {
 	return exe
 }
 
-// taskActions are what the keys for moving, continuing, research and muting
-// do. Tests replace them.
+// taskActions are what the keys for moving, continuing, research, muting
+// and asking the assistant do. Tests replace them.
 type taskActions struct {
 	move     func(tabID, workspace string) (newTab string, err error)
 	cont     func(tabID string) error
 	research func(tabID string) error
 	mute     func(channel, place string) (bool, error)
+	// ask asks the assistant about tabID's task and shows it; it goes back
+	// to from, the tab you were in.
+	ask func(tabID, from string) error
 }
 
 // realActions does them through herdr and the state in st's folder, as the
@@ -107,6 +111,13 @@ func realActions(c *herdr.Client, st *store.Store, opts reconcile.Options) taskA
 				return nil
 			})
 			return added, err
+		},
+		ask: func(tabID, from string) error {
+			cfg, err := assistant.ConfigFor(opts, st.Dir)
+			if err != nil {
+				return err
+			}
+			return assistant.Show(h, st, opts, cfg, tabID, from, time.Now())
 		},
 	}
 }
@@ -488,7 +499,7 @@ func (m *stripModel) work(doing, done string, fn func() error) tea.Cmd {
 func (m *stripModel) action(k string) tea.Cmd {
 	if m.busy {
 		switch k {
-		case "c", "s", "w":
+		case "c", "s", "w", "A":
 			return nil // one at a time
 		case "a", "v", "p", "z", "d", "o", "x", "m", "n", "l", "L", "r", "f":
 			// The action may be moving the tab these change or close.
@@ -523,6 +534,10 @@ func (m *stripModel) action(k string) tea.Cmd {
 		m.msg = muteChannel(m.act.mute, m.t.Slack)
 	case "w":
 		m.startMove()
+	case "A":
+		// Showing the assistant takes you there, so there's nothing to say.
+		ask := m.act.ask
+		return m.work("Opening the assistant…", "", func() error { return ask(tab, tab) })
 	case "a":
 		return m.setStage(task.Active)
 	case "v":
@@ -867,7 +882,7 @@ func (m *stripModel) bottom(w int) string {
 	if m.t.Stage == task.Done {
 		buttons = append(buttons, button{"x", "close tab"})
 	}
-	buttons = append(buttons, button{"enter", "tasks"}, button{"esc", "back"})
+	buttons = append(buttons, button{"A", "assistant"}, button{"enter", "tasks"}, button{"esc", "back"})
 	current := map[task.Stage]string{task.Active: "a", task.Review: "v", task.Paused: "p", task.Parked: "z", task.Done: "d", task.Tool: "o"}[m.t.Stage]
 
 	var b strings.Builder

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
+	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
@@ -731,6 +732,44 @@ func TestInputRejectsStripPane(t *testing.T) {
 		t.Errorf("typing into the shell: %d %+v", code, reply)
 	}
 	if got := work.typedOps(); !slices.Equal(got, []string{"w1:p2 text ls", "w1:p2 keys enter"}) {
+		t.Errorf("typed %q", got)
+	}
+}
+
+// The assistant's tab is a tool's, but the board shows it, and you can type
+// into it; other tools' tabs stay off the board.
+func TestAssistantTabIsOnTheBoard(t *testing.T) {
+	work := termTab(t)
+	work.live.Workspaces = append(work.live.Workspaces, herdr.Workspace{ID: "w2", Label: "Assistant"})
+	work.live.Tabs = append(work.live.Tabs, herdr.Tab{ID: "w2:t1", WorkspaceID: "w2"})
+	work.panes = append(work.panes, herdr.Pane{ID: "w2:p1", TabID: "w2:t1", Agent: "claude", AgentStatus: "idle", Scroll: herdr.Scroll{Rows: 20}})
+	work.layouts["w2:t1"] = &herdr.TabLayout{TabID: "w2:t1", Focused: "w2:p1", Area: herdr.Rect{X: 26, Y: 1, Width: 80, Height: 20},
+		Panes: []herdr.LayoutPane{{PaneID: "w2:p1", Focused: true, Rect: herdr.Rect{X: 26, Y: 1, Width: 80, Height: 20}}}}
+	work.screens["w2:p1"] = "> what's waiting on me?"
+	err := work.st.Update(func(s *store.State) error {
+		s.Tasks["w2:t1"] = &task.Task{TabID: "w2:t1", Title: "Assistant", Stage: task.Tool, Since: now, Assistant: &task.Assistant{SessionID: "s1"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := startServer(t, Config{Sessions: running(work)}, quickTerms)
+	b, _ := ts.shows(t, "work", "w1:t1")
+	if a := b.Sessions[0].Assistant; a == nil || *a != (AssistantView{Tab: "w2:t1", Status: "idle"}) {
+		t.Fatalf("assistant = %+v", a)
+	}
+
+	events, _ := ts.tabStream(t, "work", "w2:t1")
+	if _, screens := opening(t, events); len(screens) != 1 || screens[0].Pane != "w2:p1" {
+		t.Errorf("screens = %+v", screens)
+	}
+	if code, reply := ts.typeInto(t, "w2:p1", map[string]any{"text": "hi"}); code != http.StatusNoContent {
+		t.Errorf("typing into the assistant: %d %+v", code, reply)
+	}
+	if code, reply := ts.typeInto(t, "w1:p4", map[string]any{"text": "x"}); code != http.StatusForbidden {
+		t.Errorf("typing into a tool's tab: %d %+v", code, reply)
+	}
+	if got := work.typedOps(); !slices.Equal(got, []string{"w2:p1 text hi"}) {
 		t.Errorf("typed %q", got)
 	}
 }

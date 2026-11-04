@@ -116,6 +116,8 @@ type model struct {
 	// meanwhile: quitting would cut a move short.
 	moving    int
 	quitMoved bool
+	// Whether a question for the assistant is on its way.
+	asking bool
 
 	// Hit areas from the last render, for the mouse.
 	rowAt      map[int]string
@@ -181,6 +183,9 @@ type refreshMsg struct{}
 
 // boardOpened says the board opened, with what OpenBoard had to say.
 type boardOpened struct{ say string }
+
+// assistantAsked says how asking the assistant about a task went.
+type assistantAsked struct{ err error }
 
 func tick() tea.Cmd {
 	return tea.Tick(refreshEvery, func(time.Time) tea.Msg { return refreshMsg{} })
@@ -525,6 +530,19 @@ func (m *model) openBoard() tea.Cmd {
 	return func() tea.Msg { return boardOpened{open(tab)} }
 }
 
+// askAssistant asks the assistant about the selected task, which shows it.
+// Starting Claude takes a moment, so it runs as a command. The overview goes
+// once the assistant shows, unless something went wrong.
+func (m *model) askAssistant() tea.Cmd {
+	r := m.selected()
+	if r == nil || m.asking {
+		return nil
+	}
+	m.msg, m.asking = "Opening the assistant…", true
+	ask, tab, from := m.act.ask, r.tab.ID, m.env.CurrentTab
+	return func() tea.Msg { return assistantAsked{ask(tab, from)} }
+}
+
 // quit ends the overview, pressing k. While a move started here runs, it
 // waits for the move, which quitting would cut short; a ctrl+c once you've
 // asked to quit doesn't wait.
@@ -568,6 +586,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.quit("b")
 		}
 		m.msg = msg.say
+		return m, nil
+	case assistantAsked:
+		m.asking = false
+		if msg.err == nil {
+			return m, m.quit("A")
+		}
+		m.msg = msg.err.Error()
 		return m, nil
 	case actionDone:
 		// Only a move ends with this. One that failed cancels a quit you
@@ -698,6 +723,8 @@ func (m *model) key(k string) tea.Cmd {
 		return m.startSearch()
 	case "b":
 		return m.openBoard()
+	case "A":
+		return m.askAssistant()
 	case "a":
 		m.setStage(task.Active)
 	case "p":
@@ -1262,8 +1289,8 @@ func (m *model) footer() string {
 	keys := [][2]string{{"enter", "↵ open"}, {"/", "/ search"}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
 		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
 	if m.help {
-		keys = [][2]string{{"b", "b open on the board"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
-			{"L", "L remove link"}, {"w", "w move to workspace"}, {"m", "m mute channel"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
+		keys = [][2]string{{"b", "b open on the board"}, {"A", "A assistant"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
+			{"L", "L unlink"}, {"w", "w move to workspace"}, {"m", "m mute channel"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}
 	}
 	var b strings.Builder
 	x := 1

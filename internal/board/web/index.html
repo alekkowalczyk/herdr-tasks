@@ -27,6 +27,7 @@
   <div class="top-end">
     <input id="search" class="search" type="search" placeholder="Search tasks" aria-label="Search tasks" aria-keyshortcuts="/" title="Search the tasks' names, panes, recaps and notes (/)" autocomplete="off" spellcheck="false" hidden>
     <button id="prio-only" class="prio-only" type="button" aria-pressed="false" title="Show only the priority tasks" hidden><span class="bang" aria-hidden="true">!</span>Priority only</button>
+    <button id="assistant-open" class="assistant-open" type="button" aria-controls="assistant" aria-expanded="false" title="A Claude session that knows every task here, and can change them when you ask" hidden>Assistant</button>
     <span id="tailnet" class="tailnet-line" hidden></span>
     <span id="conn" class="conn" role="status"></span>
     <span id="version" class="version"></span>
@@ -67,6 +68,16 @@
   </div>
 </section>
 </div>
+<aside id="assistant" class="assistant" aria-labelledby="assistant-title" hidden>
+  <div class="assistant-head">
+    <h2 id="assistant-title" class="assistant-title">Assistant</h2>
+    <span id="assistant-status" class="assistant-status"></span>
+    <button id="assistant-start" class="button" type="button" title="Start the assistant's Claude" hidden>Start</button>
+    <button id="assistant-wide" class="button assistant-widen" type="button" aria-pressed="false">Wider</button>
+    <button id="assistant-close" class="button assistant-close" type="button" aria-label="Close the assistant" title="Close (Esc)">×</button>
+  </div>
+  <div id="assistant-terms" class="terms" role="region" aria-label="The assistant's terminal"></div>
+</aside>
 </div>
 
 <div id="menu" class="menu" role="menu" aria-label="Move to" hidden></div>

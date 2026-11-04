@@ -437,6 +437,39 @@ func TestStripContinueAndResearchKeys(t *testing.T) {
 	}
 }
 
+// A asks the assistant about this tab's task, which shows it; while another
+// action runs, it waits.
+func TestStripAsksTheAssistant(t *testing.T) {
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	setTask(t, st, &task.Task{Stage: task.Active})
+	m := newStrip(t, st, fakeHerdr(t))
+	var asked [][2]string
+	var askErr error
+	m.act.ask = func(tab, from string) error {
+		asked = append(asked, [2]string{tab, from})
+		return askErr
+	}
+	if row := m.buttonRow(); !strings.Contains(row, "A assistant") {
+		t.Errorf("buttons = %q, want A assistant", row)
+	}
+	cmd := m.press("A")
+	if m.msg != "Opening the assistant…" || len(asked) != 0 {
+		t.Errorf("message %q, asked %v; want Opening the assistant… and nothing yet", m.msg, asked)
+	}
+	if m.press("A") != nil {
+		t.Error("A asked again while it ran")
+	}
+	m.finish(t, cmd)
+	if want := [][2]string{{"w1:t1", "w1:t1"}}; !slices.Equal(asked, want) || m.msg != "" {
+		t.Errorf("asked %v, message %q; want %v and no message", asked, m.msg, want)
+	}
+	askErr = errors.New("Claude didn't start in the assistant's tab: no shell")
+	m.finish(t, m.press("A"))
+	if m.msg != askErr.Error() {
+		t.Errorf("message = %q, want the error", m.msg)
+	}
+}
+
 func TestStripMovePicker(t *testing.T) {
 	st := &store.Store{Dir: t.TempDir(), Session: "test"}
 	setTask(t, st, &task.Task{Stage: task.Active})

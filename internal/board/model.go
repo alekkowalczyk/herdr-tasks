@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
@@ -120,6 +121,16 @@ type Session struct {
 	Stale  bool    `json:"stale,omitempty"` // the last read failed; this is the last good one
 	Spaces []Space `json:"spaces"`          // visible spaces, in herdr's order
 	Cards  []Card  `json:"cards"`           // in the overview's order, without tools
+	// The assistant's tab, a tool, when there is one.
+	Assistant *AssistantView `json:"assistant,omitempty"`
+}
+
+// AssistantView is where the session's assistant is.
+type AssistantView struct {
+	Tab string `json:"tab"`
+	// Its Claude's status: idle, working, blocked or done, or "" when no
+	// Claude runs there.
+	Status string `json:"status"`
 }
 
 type Space struct {
@@ -232,14 +243,21 @@ func buildSession(snap Snapshot, summary func(herdr.Pane) (claudelog.Summary, bo
 	if snap.State == nil || snap.Live == nil {
 		return s
 	}
+	a := assistant.Find(snap.State, snap.Live)
 	for _, ws := range snap.Live.Workspaces {
-		if !snap.State.IsHidden(ws.Label) {
+		if !snap.State.IsHidden(ws.Label) && !onlyTab(snap.Live, ws.ID, a) {
 			s.Spaces = append(s.Spaces, Space{ID: ws.ID, Label: ws.Label})
 		}
 	}
 	panes := map[string][]herdr.Pane{}
 	for _, p := range snap.Panes {
 		panes[p.TabID] = append(panes[p.TabID], p)
+	}
+	if a != "" {
+		s.Assistant = &AssistantView{Tab: a}
+		if p, ok := assistant.Pane(a, snap.Panes); ok && p.Agent != "" {
+			s.Assistant.Status = p.AgentStatus
+		}
 	}
 	for _, r := range view.Rows(snap.State, snap.Live) {
 		if r.Group == task.GTool {
@@ -248,6 +266,20 @@ func buildSession(snap Snapshot, summary func(herdr.Pane) (claudelog.Summary, bo
 		s.Cards = append(s.Cards, buildCard(snap.Name, r, panes[r.Tab.ID], summary, issues))
 	}
 	return s
+}
+
+// onlyTab reports whether tab is the only tab in workspace ws.
+func onlyTab(live *herdr.Live, ws, tab string) bool {
+	n := 0
+	for _, t := range live.Tabs {
+		if t.WorkspaceID == ws {
+			if t.ID != tab {
+				return false
+			}
+			n++
+		}
+	}
+	return n == 1
 }
 
 func buildCard(session string, r view.Row, panes []herdr.Pane, summary func(herdr.Pane) (claudelog.Summary, bool), issues map[string]linear.Issue) Card {

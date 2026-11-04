@@ -18,9 +18,9 @@ var uuidV4 = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-
 
 // fastRetries makes StartAgent retries 1 ms apart for the test.
 func fastRetries(t *testing.T) {
-	old := retryDelay
-	retryDelay = time.Millisecond
-	t.Cleanup(func() { retryDelay = old })
+	old := RetryDelay
+	RetryDelay = time.Millisecond
+	t.Cleanup(func() { RetryDelay = old })
 }
 
 // flag is the value after name in args.

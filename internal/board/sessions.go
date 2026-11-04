@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
@@ -52,6 +53,12 @@ type SessionConn interface {
 	// Continue ends a Slack task's locked research session and resumes it
 	// with your own tools.
 	Continue(tabID string) error
+	// Assistant opens the session's assistant, starting its Claude when
+	// none runs there, and returns its tab; with about, a task's tab, it
+	// types the start of a question about that task. herdr goes on showing
+	// what it showed. When something went wrong in the assistant's tab, it
+	// returns the tab and the error.
+	Assistant(about string) (string, error)
 	// Subscribe calls fn for herdr events that can change the board, until
 	// ctx ends or herdr closes the connection.
 	Subscribe(ctx context.Context, fn func(herdr.Event)) error
@@ -189,6 +196,25 @@ func (s herdrSession) Continue(tabID string) error {
 		return fmt.Errorf("reading config: %w", err)
 	}
 	return slack.Continue(strip.Host{Client: s.c}, s.st, opts, tabID, syscall.Kill, time.Now())
+}
+
+func (s herdrSession) Assistant(about string) (string, error) {
+	opts, err := reconcile.LoadOptions()
+	if err != nil {
+		return "", fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := assistant.ConfigFor(opts, s.st.Dir)
+	if err != nil {
+		return "", err
+	}
+	h := strip.Host{Client: s.c}
+	var o assistant.Opened
+	if about == "" {
+		o, err = assistant.Open(h, s.st, opts, cfg, time.Now())
+	} else {
+		o, err = assistant.Ask(h, s.st, opts, cfg, about, time.Now())
+	}
+	return o.Tab, err
 }
 
 func (s herdrSession) Subscribe(ctx context.Context, fn func(herdr.Event)) error {

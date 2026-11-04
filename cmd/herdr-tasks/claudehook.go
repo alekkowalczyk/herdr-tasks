@@ -187,7 +187,8 @@ func addFound(st *store.Store, tab string, f found) error {
 	}
 	// Keep the workspace for issues known only by their ID, in any session.
 	rememberOrg(st.Dir, foundOrg(s, f))
-	if t, ok := s.Tasks[tab]; ok && !changes(t, f) {
+	// The assistant names other tasks' links, and its tab isn't a task.
+	if t, ok := s.Tasks[tab]; ok && (t.Assistant != nil || !changes(t, f)) {
 		return nil
 	}
 	afterLoad()
@@ -200,6 +201,9 @@ func addFound(st *store.Store, tab string, f found) error {
 		t, ok := s.Tasks[tab]
 		if !ok {
 			return fmt.Errorf("no task for tab %s", tab)
+		}
+		if t.Assistant != nil {
+			return errNothingToSave
 		}
 		links := f.links
 		if is := f.issue; is != nil && !hasIssue(t, is.ID) {

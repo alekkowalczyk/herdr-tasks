@@ -22,9 +22,9 @@ const (
 	promptTime   = "Mon Jan 2 2006 15:04 MST"
 )
 
-// retryDelay is the wait between tries to start Claude in a pane that isn't
+// RetryDelay is the wait between tries to start Claude in a pane that isn't
 // at its shell prompt yet. Tests shorten it.
-var retryDelay = time.Second
+var RetryDelay = time.Second
 
 var (
 	errNoAsk   = errors.New("This tab has no Slack ask")
@@ -72,7 +72,7 @@ func StartResearch(h Herdr, st *store.Store, opt reconcile.Options, set Settings
 	if err == nil {
 		return nil
 	}
-	launched := mayHaveLaunched(err)
+	launched := MayHaveLaunched(err)
 	_, werr := reconcile.ChangeTask(tasksOnly{h}, st, opt, now, tabID, func(t *task.Task) error {
 		if t.Slack == nil || t.Slack.SessionID != id || t.Slack.Research != task.ResearchLocked {
 			return errOtherSession
@@ -100,9 +100,9 @@ func StartResearch(h Herdr, st *store.Store, opt reconcile.Options, set Settings
 	return fmt.Errorf("Research didn't start: %w", err)
 }
 
-// mayHaveLaunched reports whether herdr's error says it launched Claude,
+// MayHaveLaunched reports whether herdr's error says it launched Claude,
 // which didn't get ready: it may still be starting, or waiting on a dialog.
-func mayHaveLaunched(err error) bool {
+func MayHaveLaunched(err error) bool {
 	var he *herdr.Error
 	return errors.As(err, &he) && (he.Code == "agent_not_ready" || he.Code == "timeout")
 }
@@ -119,19 +119,24 @@ func lockable() error {
 
 // startLocked writes the guard's settings and starts the locked session.
 func startLocked(h Herdr, set Settings, tabID, stripPane, exe, stateDir, id, prompt, name string) error {
-	panes, err := workPanes(h, tabID, stripPane)
+	panes, err := WorkPanes(h, tabID, stripPane)
 	if err != nil {
 		return err
 	}
 	settings := filepath.Join(stateDir, "slack", "research.json")
-	if err := writePrivate(settings, GuardSettings(exe, ResearchProfile, set.Cwd)); err != nil {
+	if err := WritePrivate(settings, GuardSettings(exe, ResearchProfile, set.Cwd)); err != nil {
 		return err
 	}
-	return startClaude(h, "slack-"+id[:8], panes[0], ResearchArgs(prompt, settings, id, name))
+	return StartClaude(h, "slack-"+id[:8], panes[0], ResearchArgs(prompt, settings, id, name))
 }
 
-// workPanes are a tab's panes but its strip, left to right and top to bottom.
-func workPanes(h Herdr, tabID, stripPane string) ([]string, error) {
+// Layouts reads a tab's layout, as herdr.Client.Layout does.
+type Layouts interface {
+	Layout(tabID string) (*herdr.Node, error)
+}
+
+// WorkPanes are a tab's panes but its strip, left to right and top to bottom.
+func WorkPanes(h Layouts, tabID, stripPane string) ([]string, error) {
 	root, err := h.Layout(tabID)
 	if err != nil {
 		return nil, err
@@ -148,27 +153,32 @@ func workPanes(h Herdr, tabID, stripPane string) ([]string, error) {
 	return panes, nil
 }
 
-// startClaude starts Claude as agent name in a pane. herdr needs the pane at
+// AgentStarter starts an agent in a pane, as herdr.Client.StartAgent does.
+type AgentStarter interface {
+	StartAgent(name, kind, paneID string, args []string, timeout time.Duration) error
+}
+
+// StartClaude starts Claude as agent name in a pane. herdr needs the pane at
 // its shell prompt, so a start is tried up to 5 times, 1 s apart, unless
 // herdr says Claude was launched and didn't get ready: trying again would
 // start a second one.
-func startClaude(h Herdr, name, pane string, args []string) error {
+func StartClaude(h AgentStarter, name, pane string, args []string) error {
 	var err error
 	for i := range startTries {
 		if i > 0 {
-			time.Sleep(retryDelay)
+			time.Sleep(RetryDelay)
 		}
-		if err = h.StartAgent(name, "claude", pane, args, agentTimeout); err == nil || mayHaveLaunched(err) {
+		if err = h.StartAgent(name, "claude", pane, args, agentTimeout); err == nil || MayHaveLaunched(err) {
 			return err
 		}
 	}
 	return err
 }
 
-// writePrivate replaces path with b, readable by you only. The new file takes
+// WritePrivate replaces path with b, readable by you only. The new file takes
 // the old one's place at once, so a session starting meanwhile never reads
 // half of it.
-func writePrivate(path string, b []byte) error {
+func WritePrivate(path string, b []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err

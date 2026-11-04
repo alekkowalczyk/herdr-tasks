@@ -52,7 +52,7 @@ func Continue(h Herdr, st *store.Store, opt reconcile.Options, tabID string, kil
 		return err
 	}
 
-	panes, err := workPanes(h, tabID, stripPane)
+	panes, err := WorkPanes(h, tabID, stripPane)
 	if err != nil {
 		return err
 	}
@@ -74,8 +74,8 @@ func Continue(h Herdr, st *store.Store, opt reconcile.Options, tabID string, kil
 		}
 	}
 
-	startErr := startClaude(h, "slack-"+id[:8]+"-go", pane, []string{"--resume", id})
-	if startErr != nil && !mayHaveLaunched(startErr) {
+	startErr := StartClaude(h, "slack-"+id[:8]+"-go", pane, []string{"--resume", id})
+	if startErr != nil && !MayHaveLaunched(startErr) {
 		return fmt.Errorf("%w: %v", errNotAtPrompt, startErr)
 	}
 	_, err = reconcile.ChangeTask(tasksOnly{h}, st, opt, now, tabID, func(t *task.Task) error {

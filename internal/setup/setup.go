@@ -16,11 +16,12 @@ import (
 )
 
 const (
-	beginMark   = "# >>> herdr-tasks (added by the herdr-tasks plugin; `herdr-tasks remove` takes it out)"
-	endMark     = "# <<< herdr-tasks"
-	OverviewKey = "prefix+t"
-	StripKey    = "prefix+i"
-	SidebarKey  = "prefix+a"
+	beginMark    = "# >>> herdr-tasks (added by the herdr-tasks plugin; `herdr-tasks remove` takes it out)"
+	endMark      = "# <<< herdr-tasks"
+	OverviewKey  = "prefix+t"
+	StripKey     = "prefix+i"
+	SidebarKey   = "prefix+a"
+	AssistantKey = "prefix+shift+a"
 )
 
 // ConfigPath is herdr's config file.
@@ -241,6 +242,10 @@ func Apply(src, statusCommand string) (string, []string, error) {
 	if sidebarKeyTaken {
 		notes = append(notes, "ctrl+b a is already bound in your config, so switching the sidebar between tasks and counts has no key. Bind the plugin action herdr-tasks.sidebar to a free key.")
 	}
+	assistantKeyTaken := usesKey(cfg["keys"], AssistantKey)
+	if assistantKeyTaken {
+		notes = append(notes, "ctrl+b A is already bound in your config, so the assistant has no key. Bind the plugin action herdr-tasks.assistant to a free key.")
+	}
 
 	out := src
 	var tail []string
@@ -277,6 +282,16 @@ func Apply(src, statusCommand string) (string, []string, error) {
 			`type = "plugin_action"`,
 			`command = "herdr-tasks.sidebar"`,
 			`description = "sidebar tasks or counts"`,
+			"")
+	}
+	if !assistantKeyTaken {
+		tail = append(tail,
+			"# ctrl+b A shows the assistant, a Claude session that knows every task, and goes back",
+			"[[keys.command]]",
+			`key = "`+AssistantKey+`"`,
+			`type = "plugin_action"`,
+			`command = "herdr-tasks.assistant"`,
+			`description = "task assistant"`,
 			"")
 	}
 	if !stripKeyTaken {

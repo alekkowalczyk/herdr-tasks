@@ -94,6 +94,13 @@ func (s *Store) LoadContext(ctx context.Context) (*State, error) {
 	return s.read()
 }
 
+// Hold takes the session's lock called name until unlock is called, for
+// work that mustn't run twice at once but takes too long to do under the
+// state's lock, such as making the assistant's tab and starting Claude in it.
+func (s *Store) Hold(name string) (unlock func(), err error) {
+	return File{Dir: s.Dir, Name: s.Session + "." + name}.lock(syscall.LOCK_EX)
+}
+
 // Update runs fn on the state under an exclusive lock and saves the result.
 // Nothing is saved if fn returns an error.
 func (s *Store) Update(fn func(*State) error) error {

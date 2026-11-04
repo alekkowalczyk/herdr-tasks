@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
@@ -185,6 +186,7 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("POST /api/unshare", s.stopSharing)
 	mux.HandleFunc("POST /api/slack/fetch", s.slackFetch)
 	mux.HandleFunc("POST /api/slack/take", s.slackTake)
+	mux.HandleFunc("POST /api/assistant", s.openAssistant)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
 	mux.HandleFunc("POST /api/pane/input", s.paneInput)
 	mux.HandleFunc("POST /api/pane/zoom", s.paneZoom)
@@ -564,6 +566,55 @@ func (s *Server) taskAction(ctx context.Context, conn SessionConn, req taskReque
 	}
 	s.Refresh()
 	return "", nil
+}
+
+// assistantRequest is what POST /api/assistant takes: the session, and the
+// tab of a task to ask about, if any.
+type assistantRequest struct {
+	Session string `json:"session"`
+	About   string `json:"about"`
+}
+
+// assistantReply is what it answers: the assistant's tab, and, when
+// something went wrong, what.
+type assistantReply struct {
+	Tab   string `json:"tab,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// openAssistant opens the session's assistant, or asks it about a task, and
+// has the session read again, so the board has the assistant's tab. Its
+// Claude takes a few seconds to start, and the request waits for it. It
+// answers with the tab even when something went wrong there, as Claude
+// asking you something, so the page shows it.
+func (s *Server) openAssistant(w http.ResponseWriter, r *http.Request) {
+	var req assistantRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil || req.Session == "" {
+		writeError(w, http.StatusBadRequest, "That isn't an assistant request.")
+		return
+	}
+	conn, ok := s.hub.conn(req.Session)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session))
+		return
+	}
+	tab, err := conn.Assistant(req.About)
+	s.hub.refresh(req.Session)
+	reply, status := assistantReply{Tab: tab}, http.StatusOK
+	switch {
+	case err == nil:
+	case errors.Is(err, reconcile.ErrNoTab):
+		writeError(w, http.StatusNotFound, "That tab is gone.")
+		return
+	case errors.Is(err, assistant.ErrAsking), errors.Is(err, assistant.ErrOwnTab):
+		status = http.StatusConflict
+	default:
+		status = http.StatusInternalServerError
+	}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	writeJSON(w, status, reply)
 }
 
 // loadTasks reads a session's tasks as saved now: not the board's copy,

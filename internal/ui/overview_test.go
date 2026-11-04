@@ -295,6 +295,60 @@ func TestOverviewOpensTheBoard(t *testing.T) {
 	}
 }
 
+// A asks the assistant about the selected task, from the tab the overview
+// is in, and goes once the assistant shows; it stays to say what went wrong.
+func TestOverviewAsksTheAssistant(t *testing.T) {
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	setTask(t, st, &task.Task{Stage: task.Active})
+	m, err := newModel(Env{Client: fakeHerdr(t), Store: st, CurrentTab: "w1:t1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Update(tea.WindowSizeMsg{Width: 140, Height: 30})
+	var asked [][2]string
+	var askErr error
+	m.act.ask = func(tab, from string) error {
+		asked = append(asked, [2]string{tab, from})
+		return askErr
+	}
+	press := func(key string) tea.Cmd {
+		_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		return cmd
+	}
+	quits := func(cmd tea.Cmd) bool {
+		if cmd == nil {
+			return false
+		}
+		_, ok := cmd().(tea.QuitMsg)
+		return ok
+	}
+
+	ask := press("A")
+	if m.msg != "Opening the assistant…" || ask == nil || len(asked) != 0 {
+		t.Fatalf("message = %q, asked %v; want Opening the assistant… and a command", m.msg, asked)
+	}
+	// Starting Claude takes a moment: A again meanwhile asks nothing more.
+	if again := press("A"); again != nil {
+		t.Error("A asked again while the question was on its way")
+	}
+	if _, next := m.Update(ask()); !quits(next) {
+		t.Error("the overview stayed after the assistant showed")
+	}
+	if want := [][2]string{{"w1:t1", "w1:t1"}}; !slices.Equal(asked, want) {
+		t.Errorf("asked %v, want %v", asked, want)
+	}
+
+	askErr = errors.New("The assistant is waiting for your answer. Answer it first")
+	if _, next := m.Update(press("A")()); quits(next) || m.msg != askErr.Error() {
+		t.Errorf("message = %q, quit %v; want the error, and to stay", m.msg, quits(next))
+	}
+
+	press("?")
+	if view := plain(m.View()); !strings.Contains(view, "A assistant") {
+		t.Errorf("help doesn't list A:\n%s", view)
+	}
+}
+
 // Quitting while a move the overview started runs would cut the move
 // short: the overview quits once the move is done, or at a second ctrl+c.
 func TestOverviewQuitsOnceItsMoveIsDone(t *testing.T) {

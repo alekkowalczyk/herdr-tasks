@@ -153,7 +153,9 @@ function page(platform) {
       this.selection = '';
       if (this.selectionHandler) this.selectionHandler();
     }
-    focus() {}
+    focus() {
+      this.focused = (this.focused || 0) + 1;
+    }
     dispose() {
       this.disposed = true;
     }
@@ -433,6 +435,23 @@ function heads(pg) {
 }
 
 const tests = {
+  // focus puts the cursor in the tab's focused pane, at once, or once the
+  // tab's panes show; a layout after that takes no focus.
+  async 'focus goes to the focused pane'() {
+    const pg = page('MacIntel');
+    await settle();
+    pg.view.focus();
+    pg.server.send('layout', {zoomed: false, area, panes: [{...A, focused: false}, {...B, focused: true}]});
+    await settle();
+    const focused = () => pg.live().map(t => t.focused || 0);
+    assert.deepEqual(focused(), [0, 1]);
+    pg.server.send('layout', {zoomed: false, area, panes: [A, B]});
+    await settle();
+    assert.deepEqual(focused(), [0, 1]);
+    pg.view.focus();
+    assert.deepEqual(focused(), [1, 1]);
+  },
+
   // A pane's name in herdr heads its terminal, before the agent and its
   // title, as in herdr's borders; a shell with a name isn't called Shell.
   async "a pane's name heads its terminal"() {

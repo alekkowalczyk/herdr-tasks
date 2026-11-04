@@ -392,8 +392,20 @@ function page(stored, path, hash, search, tailnet) {
     location.hash = i < 0 ? '' : String(url).slice(i);
   };
 
+  // The terminals: what each mount of a tab was given, how many times it
+  // was focused, and whether it was closed.
+  pg.mounts = [];
+  const herdrTerm = {
+    mount(box, opts) {
+      const m = {box, session: opts.session, tab: opts.tab, focused: 0, closed: false};
+      pg.mounts.push(m);
+      return {close: () => (m.closed = true), focus: () => m.focused++};
+    },
+  };
+
   const ctx = {
     window: {
+      herdrTerm,
       addEventListener: (type, fn) => (windowListeners[type] = windowListeners[type] || []).push(fn),
       getSelection: () => '',
       open: (url, target, features) => {
@@ -640,6 +652,172 @@ const tests = {
     assert.match(pg.$('empty-text').textContent, /^Sign in again/);
   },
 
+  // The header's Assistant opens the assistant beside the board, starting
+  // it when it isn't running, and shows its tab once the board has it. Esc
+  // or × closes it, and the page remembers whether it's open.
+  async 'the assistant opens beside the board'() {
+    const pg = page('k1');
+    await settle();
+    const b = board(card());
+    pg.send(b);
+    await settle();
+    const open = pg.$('assistant-open');
+    assert.equal(open.hidden, false);
+    assert.equal(pg.$('assistant').hidden, true);
+
+    open.click();
+    await settle();
+    assert.equal(pg.$('assistant').hidden, false);
+    assert.equal(open.getAttribute('aria-expanded'), 'true');
+    assert.ok(pg.body.classList.contains('assistant-shown'));
+    assert.deepEqual(pg.posts.map(p => [p.url, p.body]), [['/api/assistant', {session: 'work'}]]);
+    assert.equal(pg.$('assistant-terms').textContent, 'Starting the assistant…');
+    // It toggles, and opened again while it starts, it doesn't start twice.
+    open.click();
+    assert.equal(pg.$('assistant').hidden, true);
+    open.click();
+    await settle();
+    assert.equal(pg.posts.length, 1, 'it started the assistant twice');
+    assert.equal(pg.$('assistant-terms').textContent, 'Starting the assistant…');
+
+    pg.posts[0].answer(200, {tab: 'w9:t1'});
+    await settle();
+    assert.equal(pg.mounts.length, 0, 'it showed a tab the board doesn’t have yet');
+    b.sessions[0].assistant = {tab: 'w9:t1', status: 'idle'};
+    pg.send(b);
+    await settle();
+    assert.deepEqual(pg.mounts.map(m => [m.box, m.session, m.tab, m.focused]), [[pg.$('assistant-terms'), 'work', 'w9:t1', 1]]);
+    assert.equal(pg.$('assistant-status').textContent, 'Ready');
+    assert.equal(pg.storage.get('herdr-tasks-board-assistant-open'), '1');
+    pg.send(b);
+    await settle();
+    assert.equal(pg.mounts.length, 1, 'a new board mounted it again');
+
+    // Esc on the board closes it, and the page forgets it.
+    pg.$('board').dispatch('keydown', {key: 'Escape'});
+    assert.equal(pg.$('assistant').hidden, true);
+    assert.equal(open.getAttribute('aria-expanded'), 'false');
+    assert.ok(pg.mounts[0].closed, 'its terminal stayed open');
+    assert.equal(pg.storage.get('herdr-tasks-board-assistant-open'), '');
+
+    // Running, it opens without starting it again; × closes it.
+    open.click();
+    await settle();
+    assert.equal(pg.posts.length, 1, 'it started a running assistant');
+    assert.equal(pg.mounts.length, 2);
+    pg.$('assistant-close').click();
+    assert.equal(pg.$('assistant').hidden, true);
+    assert.ok(pg.mounts[1].closed);
+
+    // A key typed in its terminal is the terminal's.
+    open.click();
+    const pane = pg.$('assistant-terms');
+    pane.setAttribute('class', 'term-pane');
+    pane.dispatch('keydown', {key: 'Escape'});
+    assert.equal(pg.$('assistant').hidden, false, 'Esc in its terminal closed it');
+  },
+
+  // Ask the assistant, on a card or in its tab's view, opens the assistant
+  // with the start of a question about the task typed. What went wrong
+  // shows, with the assistant still open, as Claude may ask something.
+  async 'asking the assistant about a task'() {
+    const pg = page('k1');
+    await settle();
+    const b = board(card());
+    b.sessions[0].assistant = {tab: 'w9:t1', status: 'blocked'};
+    pg.send(b);
+    await settle();
+    pg.menu();
+    pg.item('ask').click();
+    await settle();
+    assert.deepEqual(pg.posts.map(p => p.body), [{session: 'work', about: 'w1:t1'}]);
+    assert.equal(pg.$('assistant').hidden, false);
+    assert.equal(pg.$('assistant-status').textContent, 'Asks you something');
+    assert.equal(pg.mounts.length, 1);
+    pg.posts[0].answer(409, {tab: 'w9:t1', error: 'The assistant is waiting for your answer. Answer it first'});
+    await settle();
+    assert.deepEqual(pg.toasts(), ['The assistant is waiting for your answer. Answer it first']);
+    assert.equal(pg.$('assistant').hidden, false);
+    assert.equal(pg.mounts.length, 1);
+    assert.equal(pg.mounts[0].focused, 2, 'focus didn’t go to its terminal once it answered');
+
+    pg.$('board').querySelector('.card').click();
+    pg.$('detail-body').querySelector('[data-act="ask"]').click();
+    await settle();
+    assert.deepEqual(pg.posts[1].body, {session: 'work', about: 'w1:t1'});
+  },
+
+  // An assistant left open shows again when the page opens, but isn't
+  // started until you say: Start starts it.
+  async 'an assistant left open waits to be started'() {
+    seeded = {'herdr-tasks-board-assistant-open': '1'};
+    const pg = page('k1');
+    await settle();
+    const b = board(card());
+    pg.send(b);
+    await settle();
+    assert.equal(pg.$('assistant').hidden, false);
+    assert.equal(pg.$('assistant-terms').textContent, 'The assistant isn’t running.');
+    assert.equal(pg.$('assistant-start').hidden, false);
+    assert.equal(pg.posts.length, 0);
+    pg.$('assistant-start').click();
+    await settle();
+    assert.deepEqual(pg.posts.map(p => p.body), [{session: 'work'}]);
+    assert.equal(pg.$('assistant-start').hidden, true, 'Start shows while it starts');
+
+    // Its tab with no Claude running: Start again.
+    pg.posts[0].answer(500, {tab: 'w9:t1', error: 'Claude didn’t start in the assistant’s tab: no shell'});
+    b.sessions[0].assistant = {tab: 'w9:t1', status: ''};
+    pg.send(b);
+    await settle();
+    assert.equal(pg.mounts.length, 1, 'its tab didn’t show');
+    assert.equal(pg.$('assistant-status').textContent, 'Not running');
+    assert.equal(pg.$('assistant-start').hidden, false);
+
+    // Wider gives it the page, and the page remembers.
+    const wide = pg.$('assistant-wide');
+    assert.equal(wide.getAttribute('aria-pressed'), 'false');
+    wide.click();
+    assert.ok(pg.body.classList.contains('assistant-wide'));
+    assert.equal(wide.getAttribute('aria-pressed'), 'true');
+    assert.equal(pg.storage.get('herdr-tasks-board-assistant-wide'), '1');
+  },
+
+  // Beside a task's view, Esc closes the view, and the assistant only from
+  // its column. Wider, the assistant covers the view, so Esc closes it.
+  async 'esc beside a view'() {
+    seeded = {'herdr-tasks-board-assistant-open': '1', 'herdr-tasks-board-assistant-wide': '1'};
+    const pg = page('k1', '/work/', '#tab=w1%3At1');
+    await settle();
+    const b = board(card());
+    b.sessions[0].assistant = {tab: 'w9:t1', status: 'idle'};
+    pg.send(b);
+    await settle();
+    assert.ok(pg.body.classList.contains('viewing'), 'no view opened');
+    assert.ok(pg.body.classList.contains('assistant-wide'));
+    pg.body.dispatch('keydown', {key: 'Escape'});
+    assert.equal(pg.$('assistant').hidden, true, 'Esc left the wide assistant open');
+    assert.ok(pg.body.classList.contains('viewing'), 'Esc closed the view behind it');
+
+    pg.$('assistant-open').click();
+    pg.$('assistant-wide').click();
+    assert.ok(!pg.body.classList.contains('assistant-wide'));
+    pg.body.dispatch('keydown', {key: 'Escape'});
+    assert.ok(!pg.body.classList.contains('viewing'), 'Esc left the view open');
+    assert.equal(pg.$('assistant').hidden, false, 'Esc closed the assistant beside the view');
+  },
+
+  // The session list has no assistant.
+  async 'the session list has no assistant'() {
+    seeded = {'herdr-tasks-board-assistant-open': '1'};
+    const pg = page('k1', '/');
+    await settle();
+    pg.send({sessions: [{name: 'work', cards: 2, stale: false}, {name: 'side', cards: 1, stale: false}]}, 'sessions');
+    await settle();
+    assert.equal(pg.$('assistant-open').hidden, true);
+    assert.equal(pg.$('assistant').hidden, true);
+  },
+
   // After the stages, the menu offers a move to another workspace, and a
   // Slack task's research and mute, as its research and channel allow. So
   // does the tab's view.
@@ -656,15 +834,17 @@ const tests = {
         assert.equal(pg.$('menu').hidden, true);
       });
     };
-    await offers(slackCard({research: ''}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
-    await offers(slackCard({research: 'held'}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
-    await offers(slackCard({research: 'failed'}), null, ['Move to workspace…', 'Start research', 'Mute #billing']);
-    await offers(slackCard({research: 'locked'}), null, ['Move to workspace…', 'Continue with my tools', 'Mute #billing']);
-    await offers(slackCard({research: 'open'}), null, ['Move to workspace…', 'Mute #billing']);
-    await offers(slackCard({research: 'locked', muted: true}), null, ['Move to workspace…', 'Continue with my tools']);
-    // A plain card: only the move, and nothing in a session of one space.
-    await offers(card({space: 'w1', spaceLabel: 'billing'}), null, ['Move to workspace…']);
-    await offers(card({space: 'w1', spaceLabel: 'billing'}), [SPACES[0]], []);
+    const ask = 'Ask the assistant';
+    await offers(slackCard({research: ''}), null, ['Move to workspace…', 'Start research', 'Mute #billing', ask]);
+    await offers(slackCard({research: 'held'}), null, ['Move to workspace…', 'Start research', 'Mute #billing', ask]);
+    await offers(slackCard({research: 'failed'}), null, ['Move to workspace…', 'Start research', 'Mute #billing', ask]);
+    await offers(slackCard({research: 'locked'}), null, ['Move to workspace…', 'Continue with my tools', 'Mute #billing', ask]);
+    await offers(slackCard({research: 'open'}), null, ['Move to workspace…', 'Mute #billing', ask]);
+    await offers(slackCard({research: 'locked', muted: true}), null, ['Move to workspace…', 'Continue with my tools', ask]);
+    // A plain card: the move and the assistant, and only the assistant in a
+    // session of one space.
+    await offers(card({space: 'w1', spaceLabel: 'billing'}), null, ['Move to workspace…', ask]);
+    await offers(card({space: 'w1', spaceLabel: 'billing'}), [SPACES[0]], [ask]);
 
     // The tab's view has the same buttons.
     pg.send(spaced([slackCard({research: 'locked'})], SPACES));
@@ -675,7 +855,7 @@ const tests = {
       .querySelector('.detail-actions')
       .querySelectorAll('button')
       .map(b => b.textContent);
-    assert.deepEqual(acts.slice(-3), ['Move to workspace…', 'Continue with my tools', 'Mute #billing']);
+    assert.deepEqual(acts.slice(-4), ['Move to workspace…', 'Continue with my tools', 'Mute #billing', 'Ask the assistant']);
   },
 
   // Picking a workspace moves the card there. An open view follows it to
@@ -741,12 +921,12 @@ const tests = {
     await settle();
     assert.deepEqual(pg.posts.map(p => p.body), [{session: 'work', tab: 'w1:t1', action: 'research'}]);
     assert.deepEqual(pg.toasts(), ['Starting research…']);
-    assert.deepEqual(pg.menu(), ['Mute #billing'], 'a second start was offered');
+    assert.deepEqual(pg.menu(), ['Mute #billing'], 'a second start, or a question about a task on the move, was offered');
     pg.close();
     pg.posts[0].answer(409, {error: 'Research already started.'});
     await settle();
     assert.deepEqual(pg.toasts(), ['Starting research…', 'Research already started.']);
-    assert.deepEqual(pg.menu(), ['Move to workspace…', 'Start research', 'Mute #billing']);
+    assert.deepEqual(pg.menu(), ['Move to workspace…', 'Start research', 'Mute #billing', 'Ask the assistant']);
     pg.close();
 
     pg.send(spaced([slackCard({research: 'locked'})], SPACES));

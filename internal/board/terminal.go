@@ -236,11 +236,15 @@ func (s *Server) tabStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// onBoard reports whether a tab has a card on the board that's out: it's a
-// task's tab, not a tool's, in a space that isn't hidden.
+// onBoard reports whether the board that's out shows a tab: as a card,
+// which is a task's tab, not a tool's, in a space that isn't hidden; or as
+// the session's assistant.
 func (s *Server) onBoard(session, tab string) bool {
 	for _, ss := range s.hub.current().board.Sessions {
 		if ss.Name == session {
+			if a := ss.Assistant; a != nil && a.Tab == tab {
+				return true
+			}
 			return slices.ContainsFunc(ss.Cards, func(c Card) bool { return c.Tab == tab })
 		}
 	}

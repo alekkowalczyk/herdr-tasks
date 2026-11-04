@@ -67,6 +67,9 @@ type Options struct {
 	// "" takes every ask.
 	SlackTopic string `toml:"slack_topic"`
 
+	// Where the assistant starts; "" is its own folder in the state folder.
+	AssistantCwd string `toml:"assistant_cwd"`
+
 	// Set for the run after herdr starts, when strips need restarting.
 	Startup bool `toml:"-"`
 	// The strip pane running this, if any. It's never closed from here: the

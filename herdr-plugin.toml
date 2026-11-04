@@ -35,6 +35,11 @@ title = "Sidebar: tasks or counts"
 command = ["bin/herdr-tasks", "sidebar-toggle"]
 
 [[actions]]
+id = "assistant"
+title = "Task assistant"
+command = ["bin/herdr-tasks", "assistant"]
+
+[[actions]]
 id = "sync"
 title = "Redo task markers and counts"
 command = ["bin/herdr-tasks", "sync"]

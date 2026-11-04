@@ -540,9 +540,9 @@ func Guard(args []string, in io.Reader, out io.Writer) error {
 // 2.1.295 on) blocks it too when the hook times out after 10 s, or its shell
 // can't start: Claude Code would otherwise go on to its own permissions.
 func GuardSettings(exe string, p Profile, dir string) []byte {
-	command := shellQuote(exe) + " slack-guard " + string(p)
+	command := ShellQuote(exe) + " slack-guard " + string(p)
 	if dir != "" {
-		command += " " + shellQuote(dir)
+		command += " " + ShellQuote(dir)
 	}
 	command += " || exit 2"
 	type hook struct {
@@ -565,8 +565,8 @@ func GuardSettings(exe string, p Profile, dir string) []byte {
 	return b
 }
 
-// shellQuote puts s in single quotes for sh. Each quote in s ends the
+// ShellQuote puts s in single quotes for sh. Each quote in s ends the
 // quoting, adds an escaped quote, and starts it again.
-func shellQuote(s string) string {
+func ShellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

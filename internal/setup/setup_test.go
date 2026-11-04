@@ -39,7 +39,7 @@ func TestApplyGoesInsideYourUISection(t *testing.T) {
 		t.Fatal("sidebar rows missing")
 	}
 	keys := m["keys"].(map[string]any)
-	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 3 {
+	if keys["cycle_pane_next"] != "prefix+o" || len(keys["command"].([]map[string]any)) != 4 {
 		t.Fatalf("keys = %v", keys)
 	}
 	if !strings.HasPrefix(out, "[ui]\n"+beginMark) {
@@ -94,6 +94,7 @@ rows = [["workspace"]]
 toggle_sidebar = "prefix+t"
 zoom = "prefix+i"
 new_workspace = "prefix+a"
+previous_agent = "prefix+shift+a"
 `
 	out, notes, err := Apply(src, cmd)
 	if err != nil {
@@ -102,9 +103,26 @@ new_workspace = "prefix+a"
 	if out != src {
 		t.Fatalf("config changed though everything was already set:\n%s", out)
 	}
-	if len(notes) != 5 {
-		t.Fatalf("want 5 notes, got %v", notes)
+	if len(notes) != 6 {
+		t.Fatalf("want 6 notes, got %v", notes)
 	}
+}
+
+// ctrl+b A shows the assistant, by the plugin's action.
+func TestApplyBindsTheAssistant(t *testing.T) {
+	out, _, err := Apply("", cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range decode(t, out)["keys"].(map[string]any)["command"].([]map[string]any) {
+		if c["key"] == "prefix+shift+a" {
+			if c["type"] != "plugin_action" || c["command"] != "herdr-tasks.assistant" {
+				t.Errorf("ctrl+b A = %v", c)
+			}
+			return
+		}
+	}
+	t.Errorf("ctrl+b A isn't bound:\n%s", out)
 }
 
 func TestApplyRefusesABrokenConfig(t *testing.T) {

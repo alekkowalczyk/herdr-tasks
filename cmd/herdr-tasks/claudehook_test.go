@@ -685,6 +685,19 @@ func TestAddIssueKeepsDismissedIssuesOff(t *testing.T) {
 	}
 }
 
+// The assistant names the links of other tasks, so its tab gets none.
+func TestAddFoundLeavesTheAssistantAlone(t *testing.T) {
+	st := seed(t, map[string]*task.Task{"w2:t1": {TabID: "w2:t1", Stage: task.Tool, Assistant: &task.Assistant{SessionID: "s"}}})
+	f := pages(claudehook.Link{URL: "https://github.com/acme/web/pull/12"})
+	f.issue = &claudehook.Issue{ID: "ABC-12", URL: "https://linear.app/acme/issue/ABC-12"}
+	if err := addFound(st, "w2:t1", f); err != nil {
+		t.Fatal(err)
+	}
+	if l := linksOf(t, st, "w2:t1"); len(l) > 0 {
+		t.Errorf("links = %+v, want none on the assistant's tab", l)
+	}
+}
+
 func TestAddIssueNeedsATask(t *testing.T) {
 	st := seed(t, map[string]*task.Task{"w1:t1": {TabID: "w1:t1"}})
 	err := addFound(st, "w1:t9", issue("ABC-12", "https://linear.app/acme/issue/ABC-12"))

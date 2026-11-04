@@ -51,6 +51,13 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
   herdr-tasks list [--json]                               every task
   herdr-tasks move <workspace>                            move this task, with its panes, to another workspace
   herdr-tasks rename <name>                               name the task (empty: tab number)
+  herdr-tasks context [--json]                            every task, with its note, links, and what
+                                                          its agents last said (--tab ID: one task)
+
+  herdr-tasks assistant       show the assistant: a Claude session that knows every task,
+                              in a tab of its own; from there, go back (ctrl+b A)
+  herdr-tasks assistant ask   open the assistant with this tab's task typed in, to ask
+                              about it
 
   herdr-tasks setup [--no-config]   put herdr-tasks on PATH, add herdr config, sync
                                     (herdr plugin install runs this for you)
@@ -81,6 +88,8 @@ Inside a herdr pane, commands apply to that pane's tab. Use --tab ID for another
                             calls, to link the Linear issues, GitHub PRs, Slack
                             links, and pages they name to the task
                             (claude_links = true)
+  herdr-tasks assistant hook  run by the assistant's Claude before each of your
+                              messages, to give it the tasks as they are
   herdr-tasks slack-guard   run by Claude Code before each tool call in a Slack
                             check, topic check, or research session, to keep
                             it to reading and answering
@@ -276,6 +285,10 @@ func run(args []string) error {
 		return a.show()
 	case "list", "ls":
 		return a.list()
+	case "context":
+		return a.contextCmd(os.Stdout)
+	case "assistant":
+		return a.assistantCmd()
 	}
 	return fmt.Errorf("unknown command %q (see herdr-tasks help)", cmd)
 }
@@ -339,13 +352,14 @@ func paneTab(c *herdr.Client, st *store.Store, pane string) (string, error) {
 	return "", err
 }
 
-// change edits the target tab's task and syncs herdr.
+// change edits the target tab's task and syncs herdr. The assistant's tab
+// isn't a task, so it isn't changed.
 func (a *app) change(fn func(t *task.Task) error) error {
 	id, err := a.targetTab()
 	if err != nil {
 		return err
 	}
-	_, err = reconcile.ChangeTask(a.host(), a.store, a.opts, time.Now(), id, fn)
+	_, err = reconcile.ChangeTask(a.host(), a.store, a.opts, time.Now(), id, notAssistant(fn))
 	return err
 }
 
@@ -732,7 +746,7 @@ func (a *app) setup(noConfig bool) error {
 			if err != nil {
 				return fmt.Errorf("updating %s: %w", path, err)
 			}
-			fmt.Printf("herdr-tasks: added ctrl+b t, the tab bar status, and sidebar counts to %s\n", path)
+			fmt.Printf("herdr-tasks: added ctrl+b t, ctrl+b A, the tab bar status, and sidebar counts to %s\n", path)
 			if backup != "" {
 				fmt.Printf("herdr-tasks: your previous config is saved as %s\n", backup)
 			}
@@ -970,6 +984,14 @@ func (a *app) move() error {
 	id, err := a.targetTab()
 	if err != nil {
 		return err
+	}
+	// As change does, it leaves the assistant's own tab alone.
+	s, err := a.store.Load()
+	if err != nil {
+		return err
+	}
+	if t := s.Tasks[id]; t != nil && t.Assistant != nil {
+		return errAssistantTab
 	}
 	return moveAndSay(os.Stdout, a.store, to, func() (string, error) {
 		return move.Task(a.host(), a.store, a.opts, time.Now(), id, to)

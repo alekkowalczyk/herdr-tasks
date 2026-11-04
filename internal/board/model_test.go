@@ -73,6 +73,52 @@ func TestBuildLeavesOutToolsAndHiddenSpaces(t *testing.T) {
 	}
 }
 
+// A session says which tab its assistant is in, and how its Claude is,
+// though the assistant is a tool. The space that holds only the assistant
+// isn't one to show or move tasks to.
+func TestBuildFindsTheAssistant(t *testing.T) {
+	live := &herdr.Live{
+		Workspaces: []herdr.Workspace{{ID: "w1", Label: "acme"}, {ID: "w2", Label: "Assistant"}},
+		Tabs:       []herdr.Tab{{ID: "w1:t1", WorkspaceID: "w1"}, {ID: "w2:t1", WorkspaceID: "w2"}},
+	}
+	state := &store.State{Tasks: map[string]*task.Task{
+		"w1:t1": {TabID: "w1:t1", Stage: task.Active, Since: now},
+		"w2:t1": {TabID: "w2:t1", Title: "Assistant", Stage: task.Tool, Since: now, Assistant: &task.Assistant{SessionID: "s1"}},
+	}}
+	panes := []herdr.Pane{{ID: "w2:p1", TabID: "w2:t1", WorkspaceID: "w2", Agent: "claude", AgentStatus: "working"}}
+	build := func() Session {
+		return Build([]Snapshot{{Name: "work", State: state, Live: live, Panes: panes}}, noSummary, nil, false, "").Sessions[0]
+	}
+	s := build()
+	if want := (&AssistantView{Tab: "w2:t1", Status: "working"}); !reflect.DeepEqual(s.Assistant, want) {
+		t.Errorf("assistant = %+v, want %+v", s.Assistant, want)
+	}
+	if want := []Space{{ID: "w1", Label: "acme"}}; !reflect.DeepEqual(s.Spaces, want) {
+		t.Errorf("spaces = %+v, want %+v", s.Spaces, want)
+	}
+	if got := tabIDs(s.Cards); got != "w1:t1" {
+		t.Errorf("cards = %s", got)
+	}
+
+	// A task in the assistant's space shows the space. A Claude that
+	// exited has no status, though herdr keeps the pane's last one.
+	live.Tabs = append(live.Tabs, herdr.Tab{ID: "w2:t2", WorkspaceID: "w2"})
+	state.Tasks["w2:t2"] = &task.Task{TabID: "w2:t2", Stage: task.Active, Since: now}
+	panes[0].Agent = ""
+	s = build()
+	if s.Assistant == nil || s.Assistant.Status != "" || len(s.Spaces) != 2 {
+		t.Errorf("assistant = %+v, spaces = %+v", s.Assistant, s.Spaces)
+	}
+
+	delete(state.Tasks, "w2:t1")
+	if s = build(); s.Assistant != nil {
+		t.Errorf("assistant = %+v, want none", s.Assistant)
+	}
+	if data, _ := json.Marshal(s); strings.Contains(string(data), `"assistant"`) {
+		t.Errorf("a session without an assistant has one in JSON: %s", data)
+	}
+}
+
 func TestBuildColumnsFollowAgentStatus(t *testing.T) {
 	live := &herdr.Live{
 		Workspaces: []herdr.Workspace{{ID: "w1", Label: "acme"}},

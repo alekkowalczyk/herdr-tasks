@@ -243,6 +243,18 @@ type Task struct {
 	StripOn   bool   `json:"strip_on,omitempty"`
 	// Set on a task made from a Slack message.
 	Slack *SlackAsk `json:"slack,omitempty"`
+	// Set on the assistant's tab, a tool, not a task.
+	Assistant *Assistant `json:"assistant,omitempty"`
+}
+
+// Assistant is what the assistant's tab keeps: the assistant is a Claude
+// session that knows every task, in a tab of its own (see package
+// assistant). It moves with the tab's record.
+type Assistant struct {
+	// The Claude session's ID, which a start after Claude exits resumes.
+	SessionID string `json:"session_id"`
+	// The tab you came from, which going back from the assistant shows.
+	Back string `json:"back,omitempty"`
 }
 
 // SlackAsk is what a task made from a Slack message keeps about it. It

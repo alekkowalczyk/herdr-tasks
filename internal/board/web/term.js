@@ -134,6 +134,7 @@
     let retryIn = 0;
     let retryTimer = 0;
     let placing = 0;
+    let wantFocus = false; // focus waits for the tab's panes
 
     function setStatus(text) {
       status.textContent = text;
@@ -251,6 +252,16 @@
       setStatus(l.panes.length ? '' : 'This tab has no panes to show. It may have closed.');
       showZoom();
       place();
+      if (wantFocus) wantFocus = !focusPane();
+    }
+
+    // focusPane puts the cursor in the pane zoomed on this page, or the
+    // tab's focused one, or its first, and says whether there was one.
+    function focusPane() {
+      const all = [...panes.values()];
+      const p = panes.get(pageZoom) || all.find(x => x.info.focused) || all[0];
+      if (p) p.term.focus();
+      return Boolean(p);
     }
 
     // showZoom shows the zoom each pane offers, and hides the panes a zoom on
@@ -521,6 +532,10 @@
     connect();
 
     return {
+      // focus puts the cursor in the tab's focused pane, once it shows.
+      focus() {
+        if (!closed) wantFocus = !focusPane();
+      },
       close() {
         if (closed) return;
         closed = true;

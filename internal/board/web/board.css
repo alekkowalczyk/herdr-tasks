@@ -190,6 +190,21 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .prio-only[aria-pressed="true"] { border-color: var(--ask); background: var(--ask); color: #fff; }
 .prio-only[aria-pressed="true"] .bang { background: #fff; color: var(--ask); }
 
+/* Opens and closes the assistant. */
+.assistant-open {
+  height: 26px;
+  padding: 0 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 550;
+  white-space: nowrap;
+}
+.assistant-open:hover { color: var(--fg); border-color: var(--faint); }
+.assistant-open[aria-expanded="true"] { border-color: var(--focus); background: color-mix(in srgb, var(--focus) 14%, transparent); color: var(--fg); }
+
 /* The Slack watcher's line: its status, Fetch and what the last fetch or
    take said, and the skipped asks. */
 .slack-bar { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
@@ -776,6 +791,44 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); -web
 .button.primary { border-color: transparent; background: var(--fg); color: var(--bg); }
 .button.primary:hover { opacity: 0.88; }
 
+/* The assistant: a column on the right, beside the board or a tab's view,
+   or, wider, the whole page but the side panel. Its terminal is herdr's
+   tab at herdr's size, scaled to fit, so the wider it is, the bigger its
+   text. On a phone, it's the whole screen. */
+.assistant {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: clamp(380px, 48%, 1200px);
+  min-height: 0;
+  border-left: 1px solid var(--line);
+  background: var(--surface);
+  animation: fade 0.14s ease-out;
+}
+body.assistant-wide .main { display: none; }
+body.assistant-wide .assistant { flex: 1; width: auto; border-left: 0; }
+.assistant-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px 10px 18px;
+  border-bottom: 1px solid var(--line);
+}
+.assistant-title { flex: none; margin: 0; font-size: 15px; font-weight: 650; }
+.assistant-status {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assistant-head .button { flex: none; height: 30px; padding: 0 12px; }
+.assistant-widen[aria-pressed="true"] { border-color: var(--focus); background: color-mix(in srgb, var(--focus) 14%, var(--surface)); }
+.assistant-head .assistant-close { width: 30px; padding: 0; font-size: 18px; line-height: 1; }
+.assistant .terms { flex: 1; }
+
 /* A tab's view: its terminals on the left, the whole card on the right. */
 
 body.viewing .hint,
@@ -1085,6 +1138,10 @@ body.details-below .text.long { max-height: none; }
   .view-head { padding: 10px 16px; }
   .view-body { overflow: visible; }
   .terms { padding: 8px; }
+  .assistant { position: fixed; inset: 0; z-index: 30; width: auto; border-left: 0; }
+  .assistant-head { padding: 10px 16px; }
+  .assistant-widen { display: none; }
+  body.assistant-shown { overflow: hidden; }
 }
 
 @media (hover: none) {

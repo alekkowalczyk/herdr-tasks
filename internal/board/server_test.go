@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
@@ -88,6 +89,9 @@ type fakeConn struct {
 	newTab  string
 	moveErr error
 	hold    chan struct{}
+	// What Assistant answers: its tab, and an error.
+	assistantTab string
+	assistantErr error
 }
 
 func newConn(t *testing.T, name string, live *herdr.Live, tasks ...*task.Task) *fakeConn {
@@ -171,6 +175,13 @@ func (c *fakeConn) Research(tabID string) error {
 func (c *fakeConn) Continue(tabID string) error {
 	c.ask("continue " + tabID)
 	return nil
+}
+
+func (c *fakeConn) Assistant(about string) (string, error) {
+	c.ask("assistant " + about)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.assistantTab, c.assistantErr
 }
 
 func (c *fakeConn) ask(what string) {
@@ -959,6 +970,68 @@ func TestResearchAndContinueOnASlackTask(t *testing.T) {
 	want := []string{"research w1:t1", "research w1:t2", "research w1:t3", "continue w1:t4"}
 	if got := work.actions(); !reflect.DeepEqual(got, want) {
 		t.Errorf("asked %v, want %v", got, want)
+	}
+}
+
+// openAssistant posts body to /api/assistant.
+func (ts *testServer) openAssistant(t *testing.T, body string) (int, assistantReply) {
+	t.Helper()
+	req, err := http.NewRequest("POST", ts.url("/api/assistant"), strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+ts.key)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := plain.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var reply assistantReply
+	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
+		t.Fatalf("answer %d: %v", resp.StatusCode, err)
+	}
+	return resp.StatusCode, reply
+}
+
+// The board opens the session's assistant, or asks it about a task, and
+// answers with its tab. It answers with the tab when something went wrong
+// there too, so the page shows it.
+func TestAssistantOpensAndAsks(t *testing.T) {
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}), &task.Task{TabID: "w1:t1", Stage: task.Active, Since: now})
+	work.assistantTab = "w1:t2"
+	ts := startServer(t, Config{Sessions: running(work)}, nil)
+	ts.shows(t, "work", "w1:t1")
+
+	if code, reply := ts.openAssistant(t, `{"session":"work"}`); code != http.StatusOK || reply != (assistantReply{Tab: "w1:t2"}) {
+		t.Errorf("open: %d %+v", code, reply)
+	}
+	if code, reply := ts.openAssistant(t, `{"session":"work","about":"w1:t1"}`); code != http.StatusOK || reply.Tab != "w1:t2" {
+		t.Errorf("ask: %d %+v", code, reply)
+	}
+	if want := []string{"assistant ", "assistant w1:t1"}; !slices.Equal(work.actions(), want) {
+		t.Errorf("asked %q, want %q", work.actions(), want)
+	}
+
+	work.assistantErr = assistant.ErrAsking
+	if code, reply := ts.openAssistant(t, `{"session":"work","about":"w1:t1"}`); code != http.StatusConflict || reply != (assistantReply{Tab: "w1:t2", Error: assistant.ErrAsking.Error()}) {
+		t.Errorf("while Claude asks: %d %+v", code, reply)
+	}
+	work.assistantErr = errors.New("Claude didn't start in the assistant's tab: no shell")
+	if code, reply := ts.openAssistant(t, `{"session":"work"}`); code != http.StatusInternalServerError || reply.Tab != "w1:t2" || reply.Error != work.assistantErr.Error() {
+		t.Errorf("when Claude didn't start: %d %+v", code, reply)
+	}
+	work.assistantTab, work.assistantErr = "", fmt.Errorf("%w w1:t9", reconcile.ErrNoTab)
+	if code, reply := ts.openAssistant(t, `{"session":"work","about":"w1:t9"}`); code != http.StatusNotFound || reply != (assistantReply{Error: "That tab is gone."}) {
+		t.Errorf("about a tab that's gone: %d %+v", code, reply)
+	}
+	for body, want := range map[string]int{`{}`: 400, `ask it`: 400, `{"session":"home"}`: 404} {
+		if code, reply := ts.openAssistant(t, body); code != want || reply.Error == "" || reply.Tab != "" {
+			t.Errorf("%s: %d %+v, want %d with an error", body, code, reply, want)
+		}
+	}
+	if n := len(work.actions()); n != 5 {
+		t.Errorf("asked %d times, want 5", n)
 	}
 }
 

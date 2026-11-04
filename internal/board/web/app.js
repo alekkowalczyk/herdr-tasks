@@ -20,6 +20,8 @@
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
   const DETAILS_BELOW = 'herdr-tasks-board-details-below';
   const SIDE_FOLDED = 'herdr-tasks-board-side-folded';
+  const ASSISTANT_OPEN = 'herdr-tasks-board-assistant-open';
+  const ASSISTANT_WIDE = 'herdr-tasks-board-assistant-wide';
 
   const COLUMNS = [
     {id: 'asking', label: 'Asking', hint: 'The agent stopped mid-work, waiting for your answer'},
@@ -110,6 +112,9 @@
   let detailKey = null; // the card the detail panel shows
   let detailSig = null;
   let viewing = null; // {session, tab, terms} while a tab's view is open
+  let assistantView = null; // {tab, terms} while the assistant's drawer shows its tab
+  let assistantStarting = false; // a request to start or ask the assistant is on its way
+  let assistantFocus = false; // the assistant's terminal takes focus once it shows
   // Cards with a move, a research start or a continue under way. Each can
   // take a while, so the card offers none of them again until it's answered.
   const working = new Set();
@@ -703,8 +708,9 @@
   const muteLabel = a => (/^#/.test(a.place || '') ? 'Mute ' + a.place : 'Mute this channel');
 
   // cardActions are what the Move to menu offers after the stages, and the
-  // tab's view next to its buttons: a move to another workspace, and a
-  // Slack task's research and mute, as its research and channel allow.
+  // tab's view next to its buttons: a move to another workspace, a Slack
+  // task's research and mute, as its research and channel allow, and a
+  // question to the assistant.
   function cardActions(c) {
     const busy = working.has(keyOf(c));
     const out = [];
@@ -716,6 +722,8 @@
       if (!busy && (research === '' || research === 'held' || research === 'failed')) out.push({act: 'research', label: 'Start research'});
       if (!a.muted) out.push({act: 'mute', label: muteLabel(a)});
     }
+    // A move changes the task's tab, which the question names.
+    if (!busy) out.push({act: 'ask', label: 'Ask the assistant'});
     return out;
   }
 
@@ -813,6 +821,93 @@
     input.select();
   }
 
+  // ---- The assistant
+
+  // ASSISTANT_STATUS says what the assistant's Claude is doing.
+  const ASSISTANT_STATUS = {idle: 'Ready', working: 'Working', blocked: 'Asks you something', done: 'Done'};
+
+  // openAssistant opens the assistant's drawer, and its terminal takes
+  // focus. It starts the assistant when no Claude runs there, and with c,
+  // types the start of a question about c's task.
+  function openAssistant(c) {
+    save(ASSISTANT_OPEN, '1');
+    assistantFocus = true;
+    renderAssistant();
+    const s = board && board.sessions.find(x => x.name === session);
+    const a = s && s.assistant;
+    if (c || !a || !a.status) startAssistant(c);
+  }
+
+  // startAssistant has the server open the assistant, starting its Claude,
+  // and with c, type the start of a question about c's task. The board
+  // then has its tab. What went wrong shows, as the assistant may be asking
+  // you something.
+  function startAssistant(c) {
+    if (assistantStarting) {
+      if (c) toast('The assistant is starting. Ask again once it’s ready.');
+      return;
+    }
+    assistantStarting = true;
+    renderAssistant();
+    const body = {session};
+    if (c) body.about = c.tab;
+    const done = () => {
+      assistantStarting = false;
+      assistantFocus = true;
+      renderAssistant();
+    };
+    post(body, '/api/assistant').then(done, err => {
+      done();
+      toast(err.message);
+    });
+  }
+
+  function closeAssistant() {
+    const inside = $('assistant').contains(document.activeElement);
+    save(ASSISTANT_OPEN, '');
+    renderAssistant();
+    if (inside) $('assistant-open').focus();
+  }
+
+  // renderAssistant shows the assistant's drawer while it's open, on a
+  // session's page: its tab's terminal once the board has its tab, what its
+  // Claude is doing, and Start while none runs there.
+  function renderAssistant() {
+    const s = board && session && !signedOut ? board.sessions.find(x => x.name === session) : null;
+    const open = Boolean(s) && load(ASSISTANT_OPEN) === '1';
+    const wide = load(ASSISTANT_WIDE) === '1';
+    const toggle = $('assistant-open');
+    toggle.hidden = !s;
+    toggle.setAttribute('aria-expanded', String(open));
+    $('assistant').hidden = !open;
+    document.body.classList.toggle('assistant-shown', open);
+    document.body.classList.toggle('assistant-wide', open && wide);
+    const w = $('assistant-wide');
+    w.setAttribute('aria-pressed', String(wide));
+    w.textContent = wide ? 'Narrower' : 'Wider';
+    w.title = wide ? 'Show the board beside the assistant' : 'Give the assistant the whole page';
+
+    const a = (open && s.assistant) || null;
+    const tab = a ? a.tab : '';
+    if (assistantView && assistantView.tab !== tab) {
+      assistantView.terms.close();
+      assistantView = null;
+    }
+    const box = $('assistant-terms');
+    if (tab && !assistantView) {
+      if (window.herdrTerm) assistantView = {tab, terms: window.herdrTerm.mount(box, {session, tab, key, parseEvent, toast, signOut})};
+      else box.replaceChildren(el('p', 'term-status', 'The terminals didn’t load. Reload the page to try again.'));
+    } else if (!tab && open) {
+      box.replaceChildren(el('p', 'term-status', assistantStarting ? 'Starting the assistant…' : 'The assistant isn’t running.'));
+    }
+    $('assistant-status').textContent = a ? ASSISTANT_STATUS[a.status] || 'Not running' : assistantStarting ? 'Starting…' : '';
+    $('assistant-start').hidden = !open || assistantStarting || Boolean(a && a.status);
+    if (assistantView && assistantFocus) {
+      assistantFocus = false;
+      assistantView.terms.focus();
+    }
+  }
+
   function toast(msg) {
     const box = $('toasts');
     const t = el('div', 'toast', msg);
@@ -858,6 +953,7 @@
     if (signedOut) {
       for (const id of ['side', 'side-open', 'prio-only', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       shareEls.box.hidden = true;
+      renderAssistant();
       showMessage(
         document.createTextNode('Sign in again: run '),
         el('code', '', 'herdr-tasks board'),
@@ -897,6 +993,7 @@
       $('empty').hidden = true;
     }
     renderDetail();
+    renderAssistant();
   }
 
   // renderSlack shows the Slack watcher's line, while the board has one: its
@@ -1806,7 +1903,7 @@
     for (const a of acts) {
       const more = {'data-act': a.act};
       if (a.act === 'spaces') more['aria-haspopup'] = 'menu';
-      items.push(menuItem(a.act === 'spaces' ? 'menu-item' : 'menu-item slack-act', a.label, more));
+      items.push(menuItem(a.act === 'spaces' || a.act === 'ask' ? 'menu-item' : 'menu-item slack-act', a.label, more));
     }
     return items;
   }
@@ -2007,7 +2104,10 @@
       if (act === 'openslack') return;
       if (act === 'take') takeAsk(item.getAttribute('data-id'));
       else if (item.hasAttribute('data-space')) moveToSpace(k, item.getAttribute('data-space'));
-      else if (act) slackAction(k, act);
+      else if (act === 'ask') {
+        const c = cardByKey(k);
+        if (c) openAssistant(c);
+      } else if (act) slackAction(k, act);
       else moveTo(k, item.getAttribute('data-stage'));
     });
     menu.addEventListener('keydown', e => {
@@ -2172,6 +2272,7 @@
       } else if (act === 'priority') setPriority(c, !c.priority);
       else if (act === 'focus') showInHerdr(c);
       else if (act === 'research' || act === 'continue' || act === 'mute') slackAction(detailKey, act);
+      else if (act === 'ask') openAssistant(c);
       else if (act === 'unlink') unlink(c, btn.getAttribute('data-url'));
       else if (act === 'openfile') openFile(c, btn.getAttribute('data-url'));
       else if (act === 'openlocal') openLocal(c, btn.getAttribute('data-url'));
@@ -2182,6 +2283,32 @@
       save(DETAILS_BELOW, load(DETAILS_BELOW) === '1' ? '' : '1');
       showLayout();
     });
+    // The assistant's drawer: the header's Assistant opens and closes it.
+    // Esc closes it too, unless it's for a terminal, the menu or a dialog;
+    // in a view, only from the drawer, as elsewhere it goes back to the
+    // board.
+    $('assistant-open').addEventListener('click', () => {
+      if ($('assistant').hidden) openAssistant(null);
+      else closeAssistant();
+    });
+    $('assistant-close').addEventListener('click', closeAssistant);
+    $('assistant-start').addEventListener('click', () => startAssistant(null));
+    $('assistant-wide').addEventListener('click', () => {
+      save(ASSISTANT_WIDE, load(ASSISTANT_WIDE) === '1' ? '' : '1');
+      renderAssistant();
+    });
+    document.addEventListener('keydown', e => {
+      if (e.key !== 'Escape' || e.defaultPrevented || menuFor || $('assistant').hidden || document.querySelector('dialog[open]')) return;
+      const t = e.target instanceof Element ? e.target : null;
+      if (t && t.closest('.term-pane')) return;
+      // Beside a view, Esc is the view's, unless it's from the assistant's
+      // column, or the assistant is wide and covers the view.
+      const wide = document.body.classList.contains('assistant-wide');
+      if (viewing && !wide && !(t && $('assistant').contains(t))) return;
+      e.preventDefault();
+      closeAssistant();
+    });
+
     // Esc goes back to the board, unless it's for a terminal, the menu or a
     // dialog.
     document.addEventListener('keydown', e => {
@@ -2237,6 +2364,7 @@
   buildColumns();
   showFold();
   showLayout();
+  renderAssistant();
   wire();
   setInterval(tickAges, 30e3);
   signIn().then(() => {
