@@ -37,7 +37,13 @@ The Agents list is left alone.
 
 ![The strip along the bottom of a tab: stage and agent state, note, Claude's entry, links, and a row of buttons](docs/screenshots/strip.png)
 
-The screenshots show real Claude Code sessions in throwaway demo repos.
+![The task board in the browser: each workspace's tasks in a side panel, and cards in columns for agents asking, your turn, working and in review, with Linear issues, pull requests, Slack messages and local pages](docs/screenshots/board.png)
+
+![The board's Latest reply list: the task where an agent asks first, then the one an agent works on, then the rest by Claude's newest reply, each with that reply and how long ago it came, then those Claude hasn't replied in](docs/screenshots/board-latest.png)
+
+![The board's search for "invoice": the tasks with it in their name first, then those with it in their note or a Slack message, each with the text it was found in](docs/screenshots/board-search.png)
+
+The terminal screenshots show real Claude Code sessions in throwaway demo repos. The board screenshots show a demo board with invented tasks.
 
 ## Install
 
@@ -74,6 +80,8 @@ Without the keys, the strips and tab markers still work, and `↵` in a strip op
 ### Remote herdr
 
 The board is the way to see a remote machine's tasks and terminals without attaching. Two ways in: your tailnet, or an SSH tunnel. Both end at the same boards.
+
+<img src="docs/screenshots/board-phone.png" width="300" alt="The board on a phone: the header with the Slack line, search and buttons, then the Asking and Your turn columns">
 
 **Through your tailnet.** Add `board_tailnet = true` to the [settings](#settings). The board's server then shares itself with `tailscale serve`, and the machine's owner gets in by their Tailscale login, with no code. The address is `https://<machine>.<tailnet>.ts.net:7391/<session>/`, such as `https://devbox.tail0000.ts.net:7391/work/`. `herdr-tasks board` prints it when it can't open a browser, and `herdr-tasks board --print` prints the local address and then, on a second line, the tailnet one.
 
@@ -152,6 +160,8 @@ Space chips count agents asking (`?`) and tasks where it's your turn (`●`). If
 
 **Open** on a card, or a click on the card, shows its tab: the tab's panes, live, laid out as in herdr and headed by their names in herdr, and the whole card next to them (stage, priority, note, log, links, and each agent's recap, last prompt and last reply). The task strip is left out. **Details below** moves the card under the terminals, as four columns side by side (the card, its note and log, its agents, its links), so the terminals get the view's whole width; click it again to put the card back on the right. The browser remembers which. In a window narrower than 1000 pixels the card is always under the terminals. The address is `/<session>/#tab=<tab>`, so a reload keeps the view. **Back**, or `esc` when no terminal has focus, goes back to the board.
 
+![A task's view on the board: its Claude pane asking to run a command and its shell pane, named tests in herdr, live, with the whole card on the right](docs/screenshots/board-tab.png)
+
 Point at a pane and click **⤢** in its corner, or click its header twice, to zoom it on the page: it fills the view, as big as it fits, and herdr is left alone. **⤡** shows all the panes again. Zoomed, **Zoom in herdr** also gives the pane the whole tab in herdr, so it has more room (the page then shows the whole tab again, at the usual size), and **Unzoom in herdr** undoes that, or a zoom made in herdr. Click a pane to type into it; it gets an outline. Keys such as `enter`, `esc`, `tab`, the arrows, `F1`–`F12` and `ctrl`/`alt` combinations go to herdr by name, so herdr sends them the way the pane's program expects. Text goes as typed, and a paste goes in one piece. With a terminal focused, `esc` goes to the terminal. Cmd shortcuts stay with the browser: `cmd+c` copies selected text and `cmd+v` pastes. On Linux, `ctrl+shift+c` (or `ctrl+insert`) copies and `ctrl+shift+v` (or `shift+insert`) pastes, as in a terminal; `ctrl+c` goes to the pane. On macOS, Option types the letters it makes (`ą`, `ł`, `é`…), except in the chords terminal programs use: `option` with `b`, `d`, `f`, `p`, `t`, `y` or `.`, or with `enter`, `backspace`, `esc`, `tab` and the arrows, goes to the pane as `alt` (`option+b` is `alt+b`). If herdr turns something down, a note says so, and whatever you typed after it is dropped rather than sent late.
 
 What it can't do:
@@ -171,6 +181,8 @@ The assistant is a Claude Code session that knows every task in its herdr sessio
 - `ctrl+b A` shows the assistant, starting it the first time. From the assistant, `ctrl+b A` goes back to the tab you came from. `herdr-tasks assistant` does the same.
 - `A` in the overview or the strip shows it with `About <task> (<tab ID>): ` typed in, for you to finish the question. So does `herdr-tasks assistant ask`, for this tab or `--tab ID`.
 - On the board, **Assistant** at the top right opens it in a column beside the cards or a task's view, and **Ask the assistant** in a card's menu or a task's view does what `A` does. Its terminal is its herdr tab at herdr's size, scaled to fit, so text in the column is small; **Wider** gives it the page but the side panel, and the browser remembers it. **×** closes it, and so does `esc` unless its terminal has focus; beside a task's view, `esc` closes the view, and the assistant only from its column or when it's wider. On a phone it takes the screen.
+
+![The assistant beside the board's cards, having listed the three tasks that wait on you, and parked another when asked](docs/screenshots/board-assistant.png)
 
 Before each of your messages, a hook (`herdr-tasks assistant hook`) gives it the tasks as they are: each one's name, tab, workspace, where it stands, and whether it's a priority. For more, it runs `herdr-tasks context`, which prints every task with its note, log, links, and each agent's status, recap, and last prompt and reply, or all of one with `--tab ID`. It knows herdr's commands from `herdr --skill`.
 
