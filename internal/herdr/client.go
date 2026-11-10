@@ -356,9 +356,11 @@ type AgentSession struct {
 	Value  string `json:"value"`
 }
 
-// Scroll is how far a pane is scrolled back, and how many rows it shows.
+// Scroll is how far a pane is scrolled back, how far back it can scroll,
+// and how many rows it shows.
 type Scroll struct {
 	Offset int `json:"offset_from_bottom"`
+	Max    int `json:"max_offset_from_bottom"`
 	Rows   int `json:"viewport_rows"`
 }
 

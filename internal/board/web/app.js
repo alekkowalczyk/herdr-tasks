@@ -604,7 +604,7 @@
       {action: 'stage', stage: stage === 'active' ? activeColumn(c.agentStatus) : stage, reason},
       x => {
         const y = Object.assign({}, x, {stage, column: stage === 'active' ? activeColumn(x.agentStatus) : stage});
-        if (x.stage !== stage) y.since = at;
+        if (x.stage !== stage) y.since = y.active = at;
         if (!REASONS[stage]) y.reason = '';
         else if (reason) y.reason = reason;
         if (stage === 'done') y.priority = false;
@@ -1164,9 +1164,9 @@
   const SIDE_URGENT = ['asking', 'yourturn', 'running'];
 
   // sideOrder puts a workspace's tasks as the side panel lists them:
-  // priority first, then by column, newest first.
+  // priority first, then by column, the last active first.
   const columnIndex = c => COLUMNS.findIndex(x => x.id === c.column);
-  const sideOrder = (a, b) => b.priority - a.priority || columnIndex(a) - columnIndex(b) || Date.parse(b.since) - Date.parse(a.since);
+  const sideOrder = (a, b) => b.priority - a.priority || columnIndex(a) - columnIndex(b) || Date.parse(b.active) - Date.parse(a.active);
 
   // renderSide shows every workspace of s, with chosen picked, and the
   // cards shown in each. The open task is marked.
@@ -1254,8 +1254,8 @@
   }
 
   // newer orders a column's cards as the overview does: priority first,
-  // then the newest stage. Ties keep the board's order.
-  const newer = (a, b) => b.priority - a.priority || Date.parse(b.since) - Date.parse(a.since);
+  // then the last active. Ties keep the board's order.
+  const newer = (a, b) => b.priority - a.priority || Date.parse(b.active) - Date.parse(a.active);
 
   function renderColumns(cards) {
     const lists = new Map(COLUMNS.map(col => [col.id, []]));
@@ -1324,7 +1324,7 @@
 
     const meta = el('div', 'meta');
     if (c.spaceLabel) meta.append(el('span', 'space', c.spaceLabel));
-    meta.append(ageEl(c.since, 'In this stage since'));
+    meta.append(ageEl(c.active, 'Last active'));
     const reason = reasonText(c);
     if (reason) meta.append(el('span', 'reason', reason));
     parts.push(meta);

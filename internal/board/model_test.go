@@ -414,7 +414,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		{"board", v, "linearKey sessions slackSession version"},
 		{"session", session, "cards name spaces stale"},
 		{"space", session.(map[string]any)["spaces"].([]any)[0], "id label"},
-		{"card", card, "agentStatus agents column links log note panes priority reason session since space spaceLabel stage tab title"},
+		{"card", card, "active agentStatus agents column links log note panes priority reason session since space spaceLabel stage tab title"},
 		{"link", link, "by kind label linear url"},
 		{"issue", link["linear"], "assignee color id state stateType title url"},
 		{"agent", card["agents"].([]any)[0], "agent lastPrompt lastReply name pane recap recapAt recapStale status title"},

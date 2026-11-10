@@ -221,9 +221,14 @@ func addFound(st *store.Store, tab string, f found) error {
 			links = append([]claudehook.Link{{URL: url}}, links...)
 		}
 		before := len(t.Links)
-		merged := merge(t, links, time.Now())
+		now := time.Now()
+		merged := merge(t, links, now)
 		if labelled := label(t, f.labels); !merged && !labelled {
 			return errNothingToSave
+		}
+		if merged {
+			// A link Claude adds is activity in the task, as one you add is.
+			t.Touch(now)
 		}
 		full = before < maxClaudeLinks && len(t.Links) >= maxClaudeLinks
 		return nil

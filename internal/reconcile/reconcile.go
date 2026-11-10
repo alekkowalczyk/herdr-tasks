@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -137,11 +138,14 @@ func LoadOptions() (Options, error) {
 	return opt, nil
 }
 
-// Event is the herdr event that triggered a hook, if any.
+// Event is the herdr event that triggered a hook, if any. PaneID and
+// AgentStatus are set for pane.agent_status_changed.
 type Event struct {
-	Name  string
-	TabID string
-	Label string
+	Name        string
+	TabID       string
+	Label       string
+	PaneID      string
+	AgentStatus string
 }
 
 func EventFromEnv() *Event {
@@ -152,9 +156,11 @@ func EventFromEnv() *Event {
 	ev := &Event{Name: name}
 	var payload struct {
 		Data struct {
-			TabID string `json:"tab_id"`
-			Label string `json:"label"`
-			Tab   struct {
+			TabID       string `json:"tab_id"`
+			Label       string `json:"label"`
+			PaneID      string `json:"pane_id"`
+			AgentStatus string `json:"agent_status"`
+			Tab         struct {
 				TabID string `json:"tab_id"`
 				Label string `json:"label"`
 			} `json:"tab"`
@@ -162,6 +168,7 @@ func EventFromEnv() *Event {
 	}
 	if json.Unmarshal([]byte(os.Getenv("HERDR_PLUGIN_EVENT_JSON")), &payload) == nil {
 		ev.TabID, ev.Label = payload.Data.TabID, payload.Data.Label
+		ev.PaneID, ev.AgentStatus = payload.Data.PaneID, payload.Data.AgentStatus
 		if ev.TabID == "" {
 			ev.TabID, ev.Label = payload.Data.Tab.TabID, payload.Data.Tab.Label
 		}
@@ -199,9 +206,11 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 			}
 		}
 		if mutate != nil {
+			before := workOf(s)
 			if err := mutate(s, live); err != nil {
 				return err
 			}
+			touchChanged(s, before, now)
 		}
 		if strips {
 			stripErr = syncStrips(sh, s, live, opt)
@@ -220,6 +229,35 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 		err = stripErr
 	}
 	return live, err
+}
+
+// work is what a change to counts as activity in a task: its stage, note,
+// log and links.
+type work struct {
+	stage task.Stage
+	note  string
+	log   []task.Entry
+	links []task.Link
+}
+
+func workOf(s *store.State) map[string]work {
+	out := make(map[string]work, len(s.Tasks))
+	for id, t := range s.Tasks {
+		out[id] = work{t.Stage, t.Note, slices.Clone(t.Log), slices.Clone(t.Links)}
+	}
+	return out
+}
+
+// touchChanged notes activity in each task whose work changed since before.
+// A task that's new has none yet.
+func touchChanged(s *store.State, before map[string]work, now time.Time) {
+	for id, t := range s.Tasks {
+		w, ok := before[id]
+		if !ok || w.stage == t.Stage && w.note == t.Note && slices.Equal(w.log, t.Log) && slices.Equal(w.links, t.Links) {
+			continue
+		}
+		t.Touch(now)
+	}
 }
 
 // ErrNoTab is ChangeTask's error for a tab without a task.
@@ -622,6 +660,41 @@ func RefreshTokens(h Herdr, st *store.Store) error {
 	}
 	return reportTokens(h, s, live)
 }
+
+// AgentActive notes activity in the task of ev's pane when its agent started
+// working, asks you something, or finished: herdr runs the hook when an
+// agent's state changes. Going idle doesn't count, as agents go idle when
+// they start, and when you look at a finished turn.
+func AgentActive(h Herdr, st *store.Store, ev *Event, now time.Time) error {
+	if ev.AgentStatus != "working" && ev.AgentStatus != "blocked" && ev.AgentStatus != "done" {
+		return nil
+	}
+	sh, ok := h.(Strips)
+	if !ok {
+		return nil
+	}
+	panes, err := sh.Panes()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(panes, func(p herdr.Pane) bool { return p.ID == ev.PaneID })
+	if i < 0 {
+		return nil
+	}
+	err = st.Update(func(s *store.State) error {
+		if t, ok := s.Tasks[panes[i].TabID]; ok && !s.Removed && t.Touch(now) {
+			return nil
+		}
+		return errUnchanged
+	})
+	if errors.Is(err, errUnchanged) {
+		return nil
+	}
+	return err
+}
+
+// errUnchanged ends an Update that leaves the state as it was.
+var errUnchanged = errors.New("unchanged")
 
 // noticeGoneStrips handles strips that went away since the last run. If the
 // tab still wanted one, you closed it, which hides the strip for that tab.

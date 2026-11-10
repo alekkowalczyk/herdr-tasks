@@ -139,7 +139,8 @@ func (c *fakeConn) Panes() ([]herdr.Pane, error) {
 	if c.down {
 		return nil, errDown
 	}
-	return c.panes, nil
+	// herdr's answer is new each time.
+	return slices.Clone(c.panes), nil
 }
 
 // errDown is what a call to a herdr that doesn't answer returns.
@@ -669,6 +670,48 @@ func TestEventsSendsBoardOnConnectAndOnChange(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no board on connect")
+	}
+}
+
+func TestTerminalOutputIsActivity(t *testing.T) {
+	later := now.Add(time.Hour)
+	work := newConn(t, "work", oneSpace(herdr.Tab{ID: "w1:t1"}, herdr.Tab{ID: "w1:t2"}, herdr.Tab{ID: "w1:t3"}),
+		&task.Task{TabID: "w1:t1", Stage: task.Active, Since: now, StripPane: "w1:p9"},
+		&task.Task{TabID: "w1:t2", Stage: task.Active, Since: now},
+		&task.Task{TabID: "w1:t3", Stage: task.Active, Since: now})
+	shell := func(id, tab string) herdr.Pane {
+		return herdr.Pane{ID: id, TabID: tab, Title: "acme@devbox:~/api", Cwd: "/home/acme/api", Scroll: herdr.Scroll{Max: 120, Rows: 40}}
+	}
+	work.panes = []herdr.Pane{shell("w1:p1", "w1:t1"), {ID: "w1:p9", TabID: "w1:t1", Title: "strip"}, shell("w1:p2", "w1:t2"), shell("w1:p3", "w1:t3")}
+	ts := startServer(t, Config{Sessions: running(work), Now: func() time.Time { return later }}, nil)
+	boards := ts.stream(t)
+	waitFor(t, boards, "the cards", hasCard("work", "w1:t1"))
+	// The first read is what the panes were, not activity.
+	for _, tab := range []string{"w1:t1", "w1:t2", "w1:t3"} {
+		if at := work.stored(t, tab).Active; !at.IsZero() {
+			t.Errorf("%s: active = %v before anything happened", tab, at)
+		}
+	}
+
+	work.mu.Lock()
+	work.panes[0].Scroll.Max = 123                                // output scrolled
+	work.panes[1].Title = "strip, drawn again"                    // the strip isn't the task's terminal
+	work.panes[2].Title = "npm test"                              // a command started
+	work.panes[3].Scroll.Offset, work.panes[3].Focused = 10, true // you scrolled back, in focus
+	work.mu.Unlock()
+	work.nudge()
+	b := waitFor(t, boards, "w1:t1 active", func(b Board) bool {
+		c, _ := findCard(b, "work", "w1:t1")
+		return c.Active.Equal(later)
+	})
+	if c, _ := findCard(b, "work", "w1:t2"); !c.Active.Equal(later) {
+		t.Errorf("w1:t2 ran a command: active = %v, want %v", c.Active, later)
+	}
+	if c, _ := findCard(b, "work", "w1:t3"); !c.Active.Equal(now) {
+		t.Errorf("w1:t3 had no output: active = %v, want its stage's %v", c.Active, now)
+	}
+	if at := work.stored(t, "w1:t1").Active; !at.Equal(later) {
+		t.Errorf("w1:t1 stored active = %v, want %v", at, later)
 	}
 }
 

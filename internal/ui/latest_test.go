@@ -155,3 +155,32 @@ func TestOverviewLatestReplyFirst(t *testing.T) {
 		t.Error("going back wasn't kept")
 	}
 }
+
+// By stage, each group lists the last active task first, with how long
+// ago that was.
+func TestOverviewListsTheLastActiveFirst(t *testing.T) {
+	now := time.Now()
+	st := &store.Store{Dir: t.TempDir(), Session: "test"}
+	err := st.Update(func(s *store.State) error {
+		for id, tk := range map[string]*task.Task{
+			"w1:t1": {Title: "Made today", Stage: task.Active, Since: now.Add(-time.Hour)},
+			"w1:t2": {Title: "Made last week", Stage: task.Active, Since: now.Add(-7 * 24 * time.Hour), Active: now.Add(-5 * time.Minute)},
+		} {
+			tk.TabID, tk.Workspace = id, "Acme"
+			s.Tasks[id] = tk
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := listColumn(latestOverview(t, st))
+	week, wl := lineWith(lines, "Made last week")
+	today, tl := lineWith(lines, "Made today")
+	if week < 0 || today < week {
+		t.Fatalf("Made last week isn't first:\n%s", strings.Join(lines, "\n"))
+	}
+	if !strings.HasSuffix(wl, " 5m") || !strings.HasSuffix(tl, " 1h") {
+		t.Errorf("lines are %q and %q, want them to end 5m and 1h", wl, tl)
+	}
+}

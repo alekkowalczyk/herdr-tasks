@@ -25,7 +25,8 @@ func TestRowsOrder(t *testing.T) {
 	s := &store.State{
 		Hidden: []string{"side project"},
 		Tasks: map[string]*task.Task{
-			"w1:t1": {TabID: "w1:t1", Stage: task.Active, Since: now.Add(-3 * time.Hour)},
+			// Made first, but last active most recently.
+			"w1:t1": {TabID: "w1:t1", Stage: task.Active, Since: now.Add(-3 * time.Hour), Active: now.Add(-10 * time.Minute)},
 			// A tool, newest of all, still comes last.
 			"w1:t2": {TabID: "w1:t2", Stage: task.Tool, Since: now},
 			// Oldest, but a priority.
@@ -40,10 +41,10 @@ func TestRowsOrder(t *testing.T) {
 	for _, r := range rows {
 		got = append(got, fmt.Sprintf("%s %s", r.Tab.ID, r.Group))
 	}
-	if fmt.Sprint(got) != "[w1:t3 yourturn w1:t4 yourturn w1:t1 yourturn w1:t2 tool]" {
+	if fmt.Sprint(got) != "[w1:t3 yourturn w1:t1 yourturn w1:t4 yourturn w1:t2 tool]" {
 		t.Fatalf("rows = %v", got)
 	}
-	if r := rows[1]; r.Pos != 4 || r.Workspace.Label != "acme" || r.Task != s.Tasks["w1:t4"] {
+	if r := rows[2]; r.Pos != 4 || r.Workspace.Label != "acme" || r.Task != s.Tasks["w1:t4"] {
 		t.Fatalf("row = %+v", r)
 	}
 }

@@ -657,6 +657,24 @@ func TestAddFoundLeavesYourLinksAlone(t *testing.T) {
 	}
 }
 
+func TestALinkClaudeAddsIsActivity(t *testing.T) {
+	pr := task.Link{URL: "https://github.com/acme/web/pull/12"}
+	st := seed(t, map[string]*task.Task{"w1:t1": {TabID: "w1:t1"}, "w1:t2": {TabID: "w1:t2", Links: []task.Link{pr}}})
+	start := time.Now()
+	for _, tab := range []string{"w1:t1", "w1:t2"} {
+		if err := addFound(st, tab, pages(claudehook.Link{URL: pr.URL})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s, _ := st.Load()
+	if at := s.Tasks["w1:t1"].Active; at.Before(start) {
+		t.Errorf("new link: active = %v, want from %v", at, start)
+	}
+	if at := s.Tasks["w1:t2"].Active; !at.IsZero() {
+		t.Errorf("a link it had: active = %v", at)
+	}
+}
+
 func TestAddIssueUsesTheRememberedOrg(t *testing.T) {
 	dir := t.TempDir()
 	one := seedIn(t, dir, "one", map[string]*task.Task{

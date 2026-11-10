@@ -224,7 +224,10 @@ type Task struct {
 	Title     string    `json:"title,omitempty"`
 	Stage     Stage     `json:"stage"`
 	Since     time.Time `json:"since"`
-	Reason    string    `json:"reason,omitempty"`
+	// When something was last done in it: an agent's turn, its terminal's
+	// output, or your change to it. See LastActive.
+	Active time.Time `json:"active"`
+	Reason string    `json:"reason,omitempty"`
 	// A priority task shows in the sidebar with a red ! whatever its stage.
 	Priority bool    `json:"priority,omitempty"`
 	Note     string  `json:"note,omitempty"`
@@ -345,6 +348,29 @@ func (t *Task) SetStage(s Stage, reason string, now time.Time) {
 	if !s.TakesPriority() {
 		t.Priority = false
 	}
+}
+
+// activeEvery is how far apart the saved times of activity are: a busy
+// terminal would otherwise save the state all the time.
+const activeEvery = time.Minute
+
+// Touch notes that something was done in the task at now, and reports
+// whether that changed Active: it doesn't within a minute of the last time.
+func (t *Task) Touch(now time.Time) bool {
+	if now.Sub(t.Active) < activeEvery {
+		return false
+	}
+	t.Active = now
+	return true
+}
+
+// LastActive is when something was last done in the task, which is when it
+// last changed stage if that came later, or nothing was done in it yet.
+func (t *Task) LastActive() time.Time {
+	if t.Since.After(t.Active) {
+		return t.Since
+	}
+	return t.Active
 }
 
 // TakesPriority reports whether a task in this stage can be a priority:

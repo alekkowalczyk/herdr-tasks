@@ -146,9 +146,11 @@ type Card struct {
 	Space      string `json:"space"`
 	SpaceLabel string `json:"spaceLabel"`
 	// The overview's group: asking, yourturn, running, review, paused, parked or done.
-	Column      string       `json:"column"`
-	Stage       string       `json:"stage"`
-	Since       time.Time    `json:"since"`
+	Column string    `json:"column"`
+	Stage  string    `json:"stage"`
+	Since  time.Time `json:"since"`
+	// When something was last done in it, as task.LastActive has it.
+	Active      time.Time    `json:"active"`
 	Reason      string       `json:"reason,omitempty"`
 	Priority    bool         `json:"priority"`
 	AgentStatus string       `json:"agentStatus"`
@@ -294,6 +296,7 @@ func buildCard(session string, r view.Row, panes []herdr.Pane, summary func(herd
 		Column:      string(r.Group),
 		Stage:       string(t.Stage),
 		Since:       t.Since,
+		Active:      t.LastActive(),
 		Reason:      t.Reason,
 		Priority:    t.Priority,
 		AgentStatus: r.Tab.AgentStatus,
