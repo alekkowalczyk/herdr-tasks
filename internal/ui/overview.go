@@ -1160,7 +1160,7 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 			info += fmt.Sprintf(" +%d", n-1)
 		}
 	}
-	age := task.Age(time.Since(r.task.Since))
+	age := task.Age(time.Since(r.task.LastActive()))
 	// In the order of Claude's replies, its latest reply, and when it came.
 	if a := m.acts[r.tab.ID]; m.latest() {
 		age = ""

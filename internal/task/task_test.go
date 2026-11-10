@@ -102,6 +102,27 @@ func TestSetStage(t *testing.T) {
 	}
 }
 
+func TestLastActive(t *testing.T) {
+	t0 := time.Date(2026, 10, 14, 10, 0, 0, 0, time.UTC)
+	tk := &Task{Stage: Active, Since: t0}
+	if !tk.LastActive().Equal(t0) {
+		t.Fatalf("nothing done yet: last active %v, want the stage's %v", tk.LastActive(), t0)
+	}
+	if !tk.Touch(t0.Add(time.Hour)) || !tk.LastActive().Equal(t0.Add(time.Hour)) {
+		t.Fatalf("after activity: %+v", tk)
+	}
+	if tk.Touch(t0.Add(time.Hour+59*time.Second)) || !tk.Active.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("activity within a minute of the last shouldn't change it: %+v", tk)
+	}
+	if !tk.Touch(t0.Add(time.Hour+time.Minute)) || !tk.Active.Equal(t0.Add(time.Hour+time.Minute)) {
+		t.Fatalf("activity a minute later should: %+v", tk)
+	}
+	tk.SetStage(Paused, "", t0.Add(2*time.Hour))
+	if !tk.LastActive().Equal(t0.Add(2 * time.Hour)) {
+		t.Fatalf("a newer stage change is the last activity: %v", tk.LastActive())
+	}
+}
+
 func TestGrouped(t *testing.T) {
 	page1 := Link{URL: localPage + "/one"}
 	linear := Link{URL: "https://linear.app/acme/issue/ABC-12"}

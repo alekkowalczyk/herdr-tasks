@@ -109,7 +109,7 @@ func TestPanesDecodeAgentFields(t *testing.T) {
 			Agent: "claude", AgentStatus: "working",
 			Session: &AgentSession{Source: "herdr:claude", Agent: "claude", Kind: "id", Value: "0b5c-session"},
 			Title:   "Fix the login form", Cwd: "/src/acme-web",
-			Scroll: Scroll{Offset: 3, Rows: 38},
+			Scroll: Scroll{Offset: 3, Max: 120, Rows: 38},
 		},
 		{
 			ID: "w1:p5", TabID: "w1:t2", WorkspaceID: "w1", Label: "Task strip",

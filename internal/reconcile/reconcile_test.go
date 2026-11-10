@@ -279,6 +279,85 @@ func TestChangeTaskSavesAndSyncs(t *testing.T) {
 	}
 }
 
+func TestChangesToATaskAreActivity(t *testing.T) {
+	f, st := newFake(), newStore(t)
+	t0 := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	if _, err := Run(f, st, on, t0, nil); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		what string
+		fn   func(*task.Task)
+	}{
+		{"a note", func(t *task.Task) { t.Note = "waiting on CI" }},
+		{"a log line", func(t *task.Task) { t.Log = append(t.Log, task.Entry{Who: "claude", Text: "Opened PR #431."}) }},
+		{"a link", func(t *task.Task) { t.AddLink("https://github.com/acme/api/pull/431", "", "", t0) }},
+		{"a link removed", func(t *task.Task) { t.RemoveLink("1") }},
+		{"a stage", func(t *task.Task) { t.Stage = task.Review }},
+	}
+	for i, c := range cases {
+		now := t0.Add(time.Duration(i+1) * time.Hour)
+		if _, err := ChangeTask(f, st, on, now, "w1:t2", func(t *task.Task) error { c.fn(t); return nil }); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := st.Load()
+		if got := s.Tasks["w1:t2"].Active; !got.Equal(now) {
+			t.Errorf("%s: active = %v, want %v", c.what, got, now)
+		}
+		if got := s.Tasks["w1:t1"].Active; !got.IsZero() {
+			t.Errorf("%s: another task's active = %v", c.what, got)
+		}
+	}
+	// A change to anything else isn't activity.
+	later := t0.Add(24 * time.Hour)
+	if _, err := ChangeTask(f, st, on, later, "w1:t2", func(t *task.Task) error { t.Priority = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := st.Load(); s.Tasks["w1:t2"].Active.Equal(later) {
+		t.Errorf("priority: active = %v", s.Tasks["w1:t2"].Active)
+	}
+}
+
+func TestAgentStatusEvent(t *testing.T) {
+	t.Setenv("HERDR_PLUGIN_EVENT", "pane.agent_status_changed")
+	t.Setenv("HERDR_PLUGIN_EVENT_JSON", `{"event":"pane_agent_status_changed","data":{"type":"pane_agent_status_changed","pane_id":"w1:p2","workspace_id":"w1","agent":"claude","agent_status":"working"}}`)
+	ev := EventFromEnv()
+	if ev == nil || ev.PaneID != "w1:p2" || ev.AgentStatus != "working" {
+		t.Fatalf("event = %+v", ev)
+	}
+}
+
+func TestAnAgentsTurnIsActivity(t *testing.T) {
+	f, st := newFakeStrips(), newStore(t)
+	t0 := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	if _, err := Run(f, st, on, t0, nil); err != nil {
+		t.Fatal(err)
+	}
+	pane := f.panes[1].ID // w1:t2's
+	for i, status := range []string{"working", "blocked", "done", "idle", "unknown"} {
+		now := t0.Add(time.Duration(i+1) * time.Hour)
+		if err := AgentActive(f, st, &Event{Name: "pane.agent_status_changed", PaneID: pane, AgentStatus: status}, now); err != nil {
+			t.Fatal(err)
+		}
+		s, _ := st.Load()
+		got, want := s.Tasks["w1:t2"].Active, now
+		if status == "idle" || status == "unknown" {
+			// Agents go idle as they start, and when you look at a finished turn.
+			want = t0.Add(3 * time.Hour)
+		}
+		if !got.Equal(want) {
+			t.Errorf("%s: active = %v, want %v", status, got, want)
+		}
+		if got := s.Tasks["w1:t1"].Active; !got.IsZero() {
+			t.Errorf("%s: another task's active = %v", status, got)
+		}
+	}
+	// A pane that's gone, or not in a task's tab, changes nothing.
+	if err := AgentActive(f, st, &Event{Name: "pane.agent_status_changed", PaneID: "w9:p9", AgentStatus: "working"}, t0.Add(9*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTokens(t *testing.T) {
 	tok := Tokens([]task.Stage{task.Active, task.Active, task.Done})
 	if *tok["tasks"] != "● 2" || *tok["tasks_active"] != "● 2" || *tok["tasks_done"] != "✓ 1" || tok["tasks_paused"] != nil {

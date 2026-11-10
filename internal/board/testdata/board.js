@@ -224,6 +224,7 @@ function card(more) {
       stage: 'active',
       column: 'yourturn',
       since: '2026-10-31T09:00:00Z',
+      active: '2026-10-31T09:00:00Z',
       reason: '',
       priority: false,
       space: 's1',
@@ -1668,17 +1669,34 @@ const tests = {
   // The side panel lists every workspace, as herdr's sidebar does: its
   // circle has the colour of its most urgent task (asking, then your turn,
   // then running) and is hollow when none needs you. Under it are its tasks,
-  // priority first, then by column, newest first, each with its column's
+  // priority first, then by column, the last active first, each with its column's
   // glyph. Paused, parked and done tasks are left out unless they're a
   // priority, and counted on a line under the list. It follows new boards,
   // and goes when the session does.
+  async 'a column lists the last active first'() {
+    const pg = page('k1');
+    await settle();
+    const b = board(card({tab: 'w1:t1', title: 'Made first', since: '2026-10-28T09:00:00Z', active: '2026-10-31T09:00:00Z'}));
+    b.sessions[0].cards.push(
+      card({tab: 'w1:t2', title: 'Made last', since: '2026-10-30T09:00:00Z', active: '2026-10-30T09:00:00Z'}),
+      card({tab: 'w1:t3', title: 'Priority', since: '2026-10-20T09:00:00Z', active: '2026-10-20T09:00:00Z', priority: true}),
+    );
+    pg.send(b);
+    await settle();
+    assert.deepEqual(pg.$('board').querySelectorAll('.card-title').map(e => e.textContent), ['Priority', 'Made first', 'Made last']);
+    const age = pg.$('board').querySelectorAll('.card')[1].querySelector('.age');
+    assert.equal(age.getAttribute('datetime'), '2026-10-31T09:00:00Z');
+    assert.match(age.getAttribute('title'), /^Last active /);
+  },
+
   async 'the side panel lists each workspace and its tasks'() {
     const pg = page('k1');
     await settle();
     const billing = more => card(Object.assign({space: 'w1', spaceLabel: 'billing'}, more));
     const cards = [
-      billing({tab: 'w1:t1', title: 'Older', since: '2026-10-30T09:00:00Z'}),
-      billing({tab: 'w1:t2', title: 'Newer', since: '2026-10-31T09:00:00Z'}),
+      billing({tab: 'w1:t1', title: 'Older', since: '2026-10-29T09:00:00Z', active: '2026-10-30T09:00:00Z'}),
+      // Made first, but active since.
+      billing({tab: 'w1:t2', title: 'Newer', since: '2026-10-28T09:00:00Z', active: '2026-10-31T09:00:00Z'}),
       billing({tab: 'w1:t3', title: 'Asks', column: 'asking', agentStatus: 'blocked'}),
       billing({tab: 'w1:t4', title: 'Urgent', column: 'review', stage: 'review', priority: true}),
       billing({tab: 'w1:t5', title: 'Shipped', column: 'done', stage: 'done'}),

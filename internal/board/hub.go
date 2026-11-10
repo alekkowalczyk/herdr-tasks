@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -16,6 +17,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
+	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -370,8 +372,9 @@ type read struct {
 }
 
 // goRead reads w's session in a goroutine, and sends what it read to done.
-// Once ctx has ended, it reads nothing and returns false.
-func (h *hub) goRead(ctx context.Context, w *worker, done chan<- read) bool {
+// before is the panes the last read saw. Once ctx has ended, it reads
+// nothing and returns false.
+func (h *hub) goRead(ctx context.Context, w *worker, before []herdr.Pane, now time.Time, done chan<- read) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if ctx.Err() != nil {
@@ -380,12 +383,14 @@ func (h *hub) goRead(ctx context.Context, w *worker, done chan<- read) bool {
 	h.reads.Add(1)
 	go func() {
 		defer h.reads.Done()
-		done <- readSession(w.name, w.conn)
+		done <- readSession(w.name, w.conn, before, now)
 	}()
 	return true
 }
 
-func readSession(name string, c SessionConn) read {
+// readSession reads a session, and saves that its tasks were active at now
+// where their terminals' output changed since before.
+func readSession(name string, c SessionConn, before []herdr.Pane, now time.Time) read {
 	live, err := c.Live()
 	if err != nil {
 		return read{err: err}
@@ -398,8 +403,65 @@ func readSession(name string, c SessionConn) read {
 	if err != nil {
 		return read{err: err}
 	}
+	if tabs := outputIn(before, panes, st, now); len(tabs) > 0 {
+		if err := touch(c.Store(), tabs, now); err != nil {
+			log.Printf("session %s: saving when tasks were active: %v", name, err)
+		} else if st, err = c.Store().Load(); err != nil {
+			return read{err: err}
+		}
+	}
 	return read{snap: Snapshot{Name: name, State: st, Live: live, Panes: panes}}
 }
+
+// outputIn is the tabs whose terminal output changed from before to after:
+// a pane's output scrolled, or its title changed, as it does when a command
+// starts or ends, or it changed folder. herdr doesn't say when a pane last
+// wrote, so this is what tells. The strip isn't its task's terminal, and a
+// task active within the minute needs nothing saved.
+func outputIn(before, after []herdr.Pane, s *store.State, now time.Time) []string {
+	was := make(map[string]herdr.Pane, len(before))
+	for _, p := range before {
+		was[p.ID] = p
+	}
+	var tabs []string
+	for _, p := range after {
+		b, ok := was[p.ID]
+		if !ok || b.TabID != p.TabID || b.Scroll.Max == p.Scroll.Max && b.Title == p.Title && b.Cwd == p.Cwd {
+			continue
+		}
+		t, ok := s.Tasks[p.TabID]
+		if !ok || t.StripPane == p.ID || slices.Contains(tabs, p.TabID) {
+			continue
+		}
+		if probe := *t; probe.Touch(now) {
+			tabs = append(tabs, p.TabID)
+		}
+	}
+	return tabs
+}
+
+// touch saves that the tasks of tabs were active at now.
+func touch(st *store.Store, tabs []string, now time.Time) error {
+	err := st.Update(func(s *store.State) error {
+		changed := false
+		for _, tab := range tabs {
+			if t, ok := s.Tasks[tab]; ok && !s.Removed && t.Touch(now) {
+				changed = true
+			}
+		}
+		if !changed {
+			return errUnchanged
+		}
+		return nil
+	})
+	if errors.Is(err, errUnchanged) {
+		return nil
+	}
+	return err
+}
+
+// errUnchanged ends an Update that leaves the state as it was.
+var errUnchanged = errors.New("unchanged")
 
 // work keeps one session's snapshot. It reads the session every s.poll,
 // s.quiet after herdr's events stop coming, and when kicked. A read that
@@ -426,7 +488,7 @@ func (s *Server) work(ctx context.Context, w *worker) {
 			again = again || soon
 			return
 		}
-		if s.hub.goRead(ctx, w, done) {
+		if s.hub.goRead(ctx, w, snap.Panes, s.now(), done) {
 			reading, late = true, time.After(s.timeout)
 		}
 	}

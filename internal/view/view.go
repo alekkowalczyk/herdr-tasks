@@ -21,7 +21,8 @@ type Row struct {
 }
 
 // Rows lists tasks in visible spaces the way the overview does: by group,
-// priority first, newest stage change first. Tools are included.
+// priority first, then the last active first (see task.LastActive). Tools
+// are included.
 func Rows(s *store.State, live *herdr.Live) []Row {
 	var rows []Row
 	for _, tab := range live.Tabs {
@@ -43,7 +44,7 @@ func Rows(s *store.State, live *herdr.Live) []Row {
 		if a.Task.Priority != b.Task.Priority {
 			return a.Task.Priority
 		}
-		return a.Task.Since.After(b.Task.Since)
+		return a.Task.LastActive().After(b.Task.LastActive())
 	})
 	return rows
 }
