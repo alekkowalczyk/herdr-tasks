@@ -25,7 +25,9 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reopen"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
+	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
 )
 
@@ -187,6 +189,7 @@ func NewServer(cfg Config, auth *Auth, lock *os.File) *Server {
 	mux.HandleFunc("POST /api/slack/fetch", s.slackFetch)
 	mux.HandleFunc("POST /api/slack/take", s.slackTake)
 	mux.HandleFunc("POST /api/assistant", s.openAssistant)
+	mux.HandleFunc("POST /api/reopen", s.reopenTask)
 	mux.HandleFunc("GET /api/tab/stream", s.tabStream)
 	mux.HandleFunc("POST /api/pane/input", s.paneInput)
 	mux.HandleFunc("POST /api/pane/zoom", s.paneZoom)
@@ -617,11 +620,70 @@ func (s *Server) openAssistant(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, reply)
 }
 
+// reopenRequest is what POST /api/reopen takes: the session, and the ID of
+// one of its closed tasks.
+type reopenRequest struct {
+	Session string `json:"session"`
+	ID      string `json:"id"`
+}
+
+// reopenReply is what it answers: the task's new tab, what to say about
+// it, and, when something went wrong, what.
+type reopenReply struct {
+	Tab   string `json:"tab,omitempty"`
+	Said  string `json:"said,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// reopenTask reopens a closed task in a new tab, and has the session read
+// again, so the board has it. Claude takes a few seconds to resume, and the
+// request waits for it. It answers with the tab even when Claude didn't
+// resume, so the page shows it.
+func (s *Server) reopenTask(w http.ResponseWriter, r *http.Request) {
+	var req reopenRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil || req.Session == "" || req.ID == "" {
+		writeError(w, http.StatusBadRequest, "That isn't a reopen request.")
+		return
+	}
+	conn, ok := s.hub.conn(req.Session)
+	if !ok {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("Session %s isn't running.", req.Session))
+		return
+	}
+	name := "the task"
+	if st, err := s.loadState(r.Context(), conn); err == nil {
+		if c, ok := st.ClosedTask(req.ID); ok && task.CleanLabel(c.Task.Title) != "" {
+			name = task.CleanLabel(c.Task.Title)
+		}
+	}
+	got, err := conn.Reopen(req.ID)
+	s.hub.refresh(req.Session)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, reopenReply{Tab: got.Tab, Said: got.Say(name)})
+	case got.Tab != "":
+		writeJSON(w, http.StatusInternalServerError, reopenReply{Tab: got.Tab, Error: err.Error()})
+	case errors.Is(err, reopen.ErrGone):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
 // loadTasks reads a session's tasks as saved now: not the board's copy,
 // which may be a few seconds old. A session whose tasks stay locked gets
 // s.timeout, as the hub's reads do, and the wait ends with the request:
 // nothing is left waiting on the lock.
 func (s *Server) loadTasks(ctx context.Context, conn SessionConn) (map[string]*task.Task, error) {
+	st, err := s.loadState(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	return st.Tasks, nil
+}
+
+// loadState reads a session's state as saved now, as loadTasks does.
+func (s *Server) loadState(ctx context.Context, conn SessionConn) (*store.State, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
 	st, err := conn.Store().LoadContext(ctx)
@@ -634,7 +696,7 @@ func (s *Server) loadTasks(ctx context.Context, conn SessionConn) (map[string]*t
 		}
 		return nil, errors.New("Couldn't read the task: " + err.Error())
 	}
-	return st.Tasks, nil
+	return st, nil
 }
 
 // taskChange is what an action other than focus does to the task.

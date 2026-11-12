@@ -160,7 +160,7 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
 .session-name:hover { background: var(--well); }
 
 /* Shows only the priority tasks while pressed. Latest lists the tasks by
-   Claude's latest reply. */
+   Claude's latest reply, and Closed those whose tabs closed. */
 .prio-only,
 .latest {
   display: inline-flex;
@@ -442,6 +442,8 @@ code { font-family: var(--mono); font-size: 0.92em; padding: 1px 5px; border-rad
   white-space: nowrap;
 }
 .result mark { padding: 0 1px; border-radius: 3px; background: color-mix(in srgb, var(--paused) 38%, transparent); color: inherit; }
+.result.closed { border-style: dashed; box-shadow: none; }
+.result.closed .result-title { color: var(--muted); }
 
 /* Board */
 
@@ -782,6 +784,14 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); -web
 }
 .field:focus { border-color: var(--focus); outline: 2px solid color-mix(in srgb, var(--focus) 30%, transparent); outline-offset: 0; }
 .sheet-buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+
+/* A closed task: what reopening it brings back. */
+.closed-sheet { width: min(560px, calc(100vw - 32px)); }
+.closed-body { max-height: min(60vh, 520px); overflow-y: auto; }
+.closed-body .section:first-child { margin-top: 8px; }
+.closed-body .detail-reason { margin-top: 4px; }
+.closed-body .text + .text { margin-top: 4px; }
+.closed-link { overflow-wrap: anywhere; }
 .button {
   height: 32px;
   padding: 0 14px;

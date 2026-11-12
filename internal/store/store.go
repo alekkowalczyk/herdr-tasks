@@ -28,6 +28,8 @@ type State struct {
 	// what knows it by the old one, like the env of the process in it,
 	// still finds it.
 	PaneAliases map[string]string `json:"pane_aliases,omitempty"`
+	// Tasks whose tabs closed, newest first, so you can reopen them.
+	Closed []Closed `json:"closed,omitempty"`
 }
 
 func (s *State) IsHidden(workspaceLabel string) bool {

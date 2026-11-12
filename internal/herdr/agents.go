@@ -18,22 +18,35 @@ type createdReply struct {
 	} `json:"root_pane"`
 }
 
-// CreateWorkspace makes a workspace without focusing it.
+// CreateWorkspace makes a workspace without focusing it. herdr names it,
+// and picks its folder, when label or cwd is "".
 func (c *Client) CreateWorkspace(label, cwd string) (Created, error) {
 	var r createdReply
-	err := c.Call("workspace.create", map[string]any{"label": label, "cwd": cwd, "focus": false}, &r)
+	err := c.Call("workspace.create", created(map[string]any{"focus": false}, label, cwd), &r)
 	return Created{WorkspaceID: r.Workspace.ID, TabID: r.Tab.ID, PaneID: r.Root.ID}, err
 }
 
-// CreateTab makes a tab in a workspace without focusing it.
+// CreateTab makes a tab in a workspace without focusing it, named and
+// placed as CreateWorkspace's.
 func (c *Client) CreateTab(workspaceID, label, cwd string) (Created, error) {
 	var r createdReply
-	err := c.Call("tab.create", map[string]any{"workspace_id": workspaceID, "label": label, "cwd": cwd, "focus": false}, &r)
+	err := c.Call("tab.create", created(map[string]any{"workspace_id": workspaceID, "focus": false}, label, cwd), &r)
 	ws := r.Tab.WorkspaceID
 	if ws == "" {
 		ws = workspaceID
 	}
 	return Created{WorkspaceID: ws, TabID: r.Tab.ID, PaneID: r.Root.ID}, err
+}
+
+// created adds a label and a folder to params, leaving out either when "".
+func created(params map[string]any, label, cwd string) map[string]any {
+	if label != "" {
+		params["label"] = label
+	}
+	if cwd != "" {
+		params["cwd"] = cwd
+	}
+	return params
 }
 
 // StartAgent starts an agent in a pane at its shell prompt and returns once

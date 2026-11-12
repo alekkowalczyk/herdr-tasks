@@ -46,8 +46,8 @@ func activities(d searchData) map[string]activity {
 }
 
 // latest reports whether the list is in the order of Claude's replies: you
-// chose it, and aren't searching.
-func (m *model) latest() bool { return m.state.OverviewLatest && !m.searching() }
+// chose it, and aren't searching or looking at the closed tasks.
+func (m *model) latest() bool { return m.state.OverviewLatest && !m.searching() && !m.showClosed }
 
 // toggleLatest switches the list between the stages and Claude's replies,
 // and reads the logs for the replies.

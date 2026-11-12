@@ -16,9 +16,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
+	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reopen"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
@@ -75,6 +77,8 @@ type taskActions struct {
 	// ask asks the assistant about tabID's task and shows it; it goes back
 	// to from, the tab you were in.
 	ask func(tabID, from string) error
+	// reopen reopens the closed task id in a new tab.
+	reopen func(id string) (reopen.Reopened, error)
 }
 
 // realActions does them through herdr and the state in st's folder, as the
@@ -118,6 +122,9 @@ func realActions(c *herdr.Client, st *store.Store, opts reconcile.Options) taskA
 				return err
 			}
 			return assistant.Show(h, st, opts, cfg, tabID, from, time.Now())
+		},
+		reopen: func(id string) (reopen.Reopened, error) {
+			return reopen.Task(h, st, opts, claudelog.ConfigDir(), id, time.Now())
 		},
 	}
 }

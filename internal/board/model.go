@@ -121,6 +121,8 @@ type Session struct {
 	Stale  bool    `json:"stale,omitempty"` // the last read failed; this is the last good one
 	Spaces []Space `json:"spaces"`          // visible spaces, in herdr's order
 	Cards  []Card  `json:"cards"`           // in the overview's order, without tools
+	// The tasks whose tabs closed, newest first, but those in hidden spaces.
+	Closed []ClosedCard `json:"closed"`
 	// The assistant's tab, a tool, when there is one.
 	Assistant *AssistantView `json:"assistant,omitempty"`
 }
@@ -163,6 +165,30 @@ type Card struct {
 	Panes []string `json:"panes,omitempty"`
 	// Tasks made from a Slack message only.
 	Slack *CardSlack `json:"slack,omitempty"`
+}
+
+// ClosedCard is a task whose tab closed, which the page can reopen in a new
+// tab, as it was.
+type ClosedCard struct {
+	Session string `json:"session"`
+	// Its ID among the closed tasks, which POST /api/reopen takes.
+	ID string `json:"id"`
+	// Its name; "" when it had none but its tab's number.
+	Title      string       `json:"title"`
+	SpaceLabel string       `json:"spaceLabel"`
+	Closed     time.Time    `json:"closed"` // when its tab closed
+	Stage      string       `json:"stage"`
+	Since      time.Time    `json:"since"`
+	Reason     string       `json:"reason,omitempty"`
+	Priority   bool         `json:"priority"`
+	Note       string       `json:"note,omitempty"`
+	Log        []task.Entry `json:"log,omitempty"`
+	Links      []LinkView   `json:"links"`
+	Slack      *CardSlack   `json:"slack,omitempty"`
+	// Where it reopens: the folder its tab last worked in, and whether
+	// Claude resumes a session there.
+	Cwd    string `json:"cwd,omitempty"`
+	Claude bool   `json:"claude"`
 }
 
 // CardSlack is what a card made from a Slack message shows of it.
@@ -242,9 +268,14 @@ func Build(snaps []Snapshot, summary func(herdr.Pane) (claudelog.Summary, bool),
 }
 
 func buildSession(snap Snapshot, summary func(herdr.Pane) (claudelog.Summary, bool), issues map[string]linear.Issue) Session {
-	s := Session{Name: snap.Name, Stale: snap.Stale, Spaces: []Space{}, Cards: []Card{}}
+	s := Session{Name: snap.Name, Stale: snap.Stale, Spaces: []Space{}, Cards: []Card{}, Closed: []ClosedCard{}}
 	if snap.State == nil || snap.Live == nil {
 		return s
+	}
+	for _, c := range snap.State.Closed {
+		if c.Task != nil && !snap.State.IsHidden(c.Task.Workspace) {
+			s.Closed = append(s.Closed, buildClosed(snap.Name, c, issues))
+		}
 	}
 	a := assistant.Find(snap.State, snap.Live)
 	for _, ws := range snap.Live.Workspaces {
@@ -324,6 +355,33 @@ func buildCard(session string, r view.Row, panes []herdr.Pane, summary func(herd
 		}
 	}
 	return c
+}
+
+func buildClosed(session string, c store.Closed, issues map[string]linear.Issue) ClosedCard {
+	t := c.Task
+	cc := ClosedCard{
+		Session:    session,
+		ID:         c.ID,
+		Title:      task.CleanLabel(t.Title),
+		SpaceLabel: t.Workspace,
+		Closed:     c.At,
+		Stage:      string(t.Stage),
+		Since:      t.Since,
+		Reason:     t.Reason,
+		Priority:   t.Priority,
+		Note:       t.Note,
+		Log:        t.Log,
+		Links:      []LinkView{},
+		Cwd:        t.Cwd,
+		Claude:     t.Claude != "",
+	}
+	for _, l := range t.Links {
+		cc.Links = append(cc.Links, linkView(l, issues))
+	}
+	if a := t.Slack; a != nil {
+		cc.Slack = &CardSlack{Place: task.CleanLabel(a.Place), Channel: task.CleanLabel(a.Channel), Research: string(a.Research)}
+	}
+	return cc
 }
 
 func linkView(l task.Link, issues map[string]linear.Issue) LinkView {

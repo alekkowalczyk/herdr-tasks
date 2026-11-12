@@ -220,10 +220,14 @@ type Entry struct {
 type Task struct {
 	TabID string `json:"tab_id"`
 	// Workspace label, used to find the tab again if herdr hands out new IDs.
-	Workspace string    `json:"workspace"`
-	Title     string    `json:"title,omitempty"`
-	Stage     Stage     `json:"stage"`
-	Since     time.Time `json:"since"`
+	Workspace string `json:"workspace"`
+	// The folder its tab last worked in, and the Claude session herdr last
+	// saw there: reopening the task once its tab closes starts there.
+	Cwd    string    `json:"cwd,omitempty"`
+	Claude string    `json:"claude_session,omitempty"`
+	Title  string    `json:"title,omitempty"`
+	Stage  Stage     `json:"stage"`
+	Since  time.Time `json:"since"`
 	// When something was last done in it: an agent's turn, its terminal's
 	// output, or your change to it. See LastActive.
 	Active time.Time `json:"active"`

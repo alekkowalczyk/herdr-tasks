@@ -28,6 +28,7 @@
     <input id="search" class="search" type="search" placeholder="Search tasks" aria-label="Search tasks" aria-keyshortcuts="/" title="Search the tasks' names, panes, recaps and notes (/)" autocomplete="off" spellcheck="false" hidden>
     <button id="prio-only" class="prio-only" type="button" aria-pressed="false" title="Show only the priority tasks" hidden><span class="bang" aria-hidden="true">!</span>Priority only</button>
     <button id="latest" class="latest" type="button" aria-pressed="false" title="List the tasks by Claude’s latest reply, with those where an agent asks you something first, then those it works on" hidden>Latest reply</button>
+    <button id="closed-view" class="latest closed-view" type="button" aria-pressed="false" title="List the tasks whose tabs closed, newest first, to reopen one" hidden>Closed</button>
     <button id="assistant-open" class="assistant-open" type="button" aria-controls="assistant" aria-expanded="false" title="A Claude session that knows every task here, and can change them when you ask" hidden>Assistant</button>
     <span id="tailnet" class="tailnet-line" hidden></span>
     <span id="conn" class="conn" role="status"></span>
@@ -94,6 +95,18 @@
       <button class="button primary" type="submit">Save</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="closed-task" class="sheet closed-sheet" aria-labelledby="closed-title">
+  <div class="sheet-body">
+    <h2 id="closed-title" class="sheet-title"></h2>
+    <div id="closed-meta" class="detail-meta"></div>
+    <div id="closed-body" class="closed-body"></div>
+    <div class="sheet-buttons">
+      <button id="closed-cancel" class="button" type="button">Back</button>
+      <button id="closed-reopen" class="button primary" type="button">Reopen</button>
+    </div>
+  </div>
 </dialog>
 
 <div id="toasts" class="toasts" role="status" aria-live="polite"></div>

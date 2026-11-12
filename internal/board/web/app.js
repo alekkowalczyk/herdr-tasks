@@ -19,6 +19,7 @@
   const DONE_OPEN = 'herdr-tasks-board-done-open';
   const PRIO_ONLY = 'herdr-tasks-board-priority-only';
   const LATEST = 'herdr-tasks-board-latest';
+  const CLOSED = 'herdr-tasks-board-closed';
   const DETAILS_BELOW = 'herdr-tasks-board-details-below';
   const SIDE_FOLDED = 'herdr-tasks-board-side-folded';
   const ASSISTANT_OPEN = 'herdr-tasks-board-assistant-open';
@@ -97,10 +98,12 @@
   // prioOnly is whether the board shows only the priority tasks.
   const prioOnly = () => load(PRIO_ONLY) === '1';
   const latestOn = () => load(LATEST) === '1';
+  const closedOn = () => load(CLOSED) === '1';
 
   let board = null; // the latest board the server sent
   let list = null; // at /, the latest list of sessions
   let index = new Map(); // card key → that card on the board
+  let closedIndex = new Map(); // closed task key → that closed task on the board
   let signedOut = false;
   // Changes posted but not on the board yet, by card key. Each changes how
   // the card shows until the board has it, the post fails, or 5 s pass.
@@ -114,6 +117,11 @@
   let detailKey = null; // the card the detail panel shows
   let detailSig = null;
   let viewing = null; // {session, tab, terms} while a tab's view is open
+  let closedFor = null; // the closed task's key while it shows, to reopen
+  let reopening = false; // a reopen is on its way
+  // The tab a task was reopened in, as {key, until}: its view opens once the
+  // board has it, if that's soon.
+  let following = null;
   let assistantView = null; // {tab, terms} while the assistant's drawer shows its tab
   let assistantStarting = false; // a request to start or ask the assistant is on its way
   let assistantFocus = false; // the assistant's terminal takes focus once it shows
@@ -472,10 +480,20 @@
   function gotBoard(b) {
     board = b;
     index = new Map();
-    for (const s of b.sessions) for (const c of s.cards) index.set(keyOf(c), c);
+    closedIndex = new Map();
+    for (const s of b.sessions) {
+      for (const c of s.cards) index.set(keyOf(c), c);
+      for (const c of s.closed || []) closedIndex.set(closedKey(c), c);
+    }
     retryIn = 0;
     $('conn').textContent = '';
     render();
+    const f = following;
+    if (f && Date.now() >= f.until) following = null;
+    else if (f && index.has(f.key)) {
+      following = null;
+      openView(f.key);
+    }
   }
 
   // signOut shows the page signed out, and says whether it did. A 401 for a
@@ -953,7 +971,7 @@
     }
     held = false;
     if (signedOut) {
-      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'closed-view', 'search', 'slack-bar', 'stale', 'hint', 'tailnet']) $(id).hidden = true;
       shareEls.box.hidden = true;
       renderAssistant();
       showMessage(
@@ -973,7 +991,7 @@
     const s = sessions.find(x => x.name === session);
     $('stale').hidden = !s || !s.stale;
     if (!s) {
-      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'search']) $(id).hidden = true;
+      for (const id of ['side', 'side-open', 'prio-only', 'latest', 'closed-view', 'search']) $(id).hidden = true;
       showMessage(...goneText());
     } else {
       const cards = s.cards.map(c => cardByKey(keyOf(c)));
@@ -983,16 +1001,21 @@
       toggle.setAttribute('aria-pressed', String(prioOnly()));
       $('latest').hidden = false;
       $('latest').setAttribute('aria-pressed', String(latestOn()));
+      $('closed-view').hidden = false;
+      $('closed-view').setAttribute('aria-pressed', String(closedOn()));
       let space = spaceChoices()[s.name] || '';
       if (!s.spaces.some(x => x.id === space)) space = '';
       renderSide(s, shown, space);
-      // A search looks through every task, and what it found takes the
-      // columns' place, as Latest's list does. A view has no search.
+      // A search looks through every task, the closed ones too, and what it
+      // found takes the columns' place, as Latest's and Closed's lists do. A
+      // view has no search.
       $('search').hidden = !window.herdrSearch || Boolean(viewing);
       const words = searchWords();
       const inSpace = space ? shown.filter(c => c.space === space) : shown;
-      const list = words.length > 0 || latestOn();
-      if (words.length) renderResults(cards, words);
+      const closed = s.closed || [];
+      const list = words.length > 0 || latestOn() || closedOn();
+      if (words.length) renderResults(cards, words, closed);
+      else if (closedOn()) renderClosed(closedIn(s, closed, space));
       else if (list) renderLatest(inSpace);
       else renderColumns(inSpace);
       $('results').hidden = !list;
@@ -1472,25 +1495,37 @@
     return window.herdrSearch && !box.hidden ? window.herdrSearch.words(box.value) : [];
   }
 
+  // FOUND_CLOSED is where a search shows the closed tasks it found, after
+  // the others.
+  const FOUND_CLOSED = {id: 'found-closed', label: 'Closed', hint: 'tabs closed; open one to reopen it'};
+
   // renderResults shows the cards that have every one of words, by where
-  // they were found, and then in the board's order.
-  function renderResults(cards, words) {
+  // they were found, and then in the board's order; then the closed tasks
+  // that have them, the same way.
+  function renderResults(cards, words, closed) {
     const S = window.herdrSearch;
-    const hits = [];
-    for (const c of cards) {
-      const h = S.search(words, S.cardFields(c));
-      if (h.match) hits.push({c, h});
-    }
-    hits.sort((a, b) => a.h.match - b.h.match);
+    const find = list => {
+      const hits = [];
+      for (const c of list) {
+        const h = S.search(words, S.cardFields(c));
+        if (h.match) hits.push({c, h});
+      }
+      return hits.sort((a, b) => a.h.match - b.h.match);
+    };
+    const hits = find(cards);
+    const shut = find(closed);
     $('results').setAttribute('aria-label', 'Search results');
-    $('results-count').textContent = hits.length
-      ? hits.length + ' of ' + cards.length + ' tasks match'
-      : 'No task matches “' + $('search').value.trim() + '”.';
+    $('results-count').textContent =
+      hits.length || shut.length
+        ? hits.length + ' of ' + cards.length + ' tasks match' + (shut.length ? ' · ' + shut.length + ' closed' : '')
+        : 'No task matches “' + $('search').value.trim() + '”.';
     const groups = FOUND.map((f, i) => ({f, hits: hits.filter(x => x.h.match === i + 1)})).filter(g => g.hits.length);
-    sync($('results-groups'), groups, g => g.f.id, resultGroup, (g, {f, hits}) => {
+    if (shut.length) groups.push({f: FOUND_CLOSED, hits: shut, closed: true});
+    sync($('results-groups'), groups, g => g.f.id, resultGroup, (g, {f, hits, closed}) => {
       g.querySelector('.result-label').textContent = f.label;
       g.querySelector('.result-hint').textContent = f.hint || '';
-      sync(g.querySelector('.result-list'), hits, x => keyOf(x.c), result, fillResult);
+      if (closed) sync(g.querySelector('.result-list'), hits, x => closedKey(x.c), result, (r, x) => fillClosed(r, x.c, x.h));
+      else sync(g.querySelector('.result-list'), hits, x => keyOf(x.c), result, fillResult);
     });
   }
 
@@ -1546,6 +1581,159 @@
     const where = r.querySelector('.result-where');
     where.hidden = !(reply && reply.text);
     where.textContent = reply ? reply.text : '';
+  }
+
+  // ---- Closed: the tasks whose tabs closed, kept to reopen
+
+  // closedKey is a closed task's key on the page, where a card's is its tab's.
+  const closedKey = c => 'closed\n' + c.session + '\n' + c.id;
+
+  // closedColumn is the column a closed task's stage shows as: an Active
+  // one's tab has no agent to say which.
+  const closedColumn = c => (c.stage === 'active' ? 'yourturn' : c.stage);
+
+  const closedName = c => c.title || 'Untitled task';
+
+  // closedIn are the closed tasks of session s that show: those of the space
+  // chosen, by its name, and only the priority ones with Priority only.
+  function closedIn(s, closed, space) {
+    const sp = space && s.spaces.find(x => x.id === space);
+    const label = sp ? sp.label.toLowerCase() : '';
+    return closed.filter(c => (!prioOnly() || c.priority) && (!label || (c.spaceLabel || '').toLowerCase() === label));
+  }
+
+  // renderClosed lists the closed tasks, newest first.
+  function renderClosed(closed) {
+    $('results').setAttribute('aria-label', 'Closed tasks');
+    $('results-count').textContent = closed.length ? '' : 'No closed tasks. When a task’s tab closes, the task is kept here, to reopen.';
+    const groups = closed.length ? [{id: 'closed', label: 'Closed', hint: 'newest first; open one to reopen it'}] : [];
+    sync($('results-groups'), groups, g => g.id, resultGroup, (g, f) => {
+      g.querySelector('.result-label').textContent = f.label;
+      g.querySelector('.result-hint').textContent = f.hint;
+      sync(g.querySelector('.result-list'), closed, closedKey, result, (r, c) => fillClosed(r, c, null));
+    });
+  }
+
+  // fillClosed shows closed task c, with its space and how long ago its tab
+  // closed: found as h, as fillResult shows a card, or else with its
+  // note's first line.
+  function fillClosed(r, c, h) {
+    const column = closedColumn(c);
+    const inName = Boolean(h) && h.match === 1;
+    r.setAttribute('data-column', column);
+    r.classList.add('closed');
+    r.classList.toggle('pri', Boolean(c.priority));
+    const tip = h ? (inName ? '' : h.text) : c.note || '';
+    if (tip) r.setAttribute('title', tip);
+    else r.removeAttribute('title');
+    r.querySelector('.result-prio').textContent = c.priority ? '!' : '';
+    r.querySelector('.result-glyph').textContent = SIDE_GLYPHS[column] || '●';
+    const title = r.querySelector('.result-title');
+    if (inName) title.replaceChildren(...markedText(h, false));
+    else title.textContent = closedName(c);
+    const label = c.spaceLabel || '';
+    r.querySelector('.result-space').replaceChildren(label ? label + ' · ' : '', ageEl(c.closed, 'Its tab closed'));
+    const where = r.querySelector('.result-where');
+    if (h) {
+      where.hidden = inName;
+      where.replaceChildren(...(inName ? [] : markedText(h, true)));
+    } else {
+      const note = firstLine(c.note);
+      where.hidden = !note;
+      where.textContent = note;
+    }
+  }
+
+  // openResult opens what a list row stands for: a task's view, or a closed
+  // task, to reopen.
+  function openResult(k) {
+    if (closedIndex.has(k)) openClosed(k);
+    else openView(k);
+  }
+
+  // openClosed shows closed task k: what it was, and what reopening it
+  // brings back.
+  function openClosed(k) {
+    const c = closedIndex.get(k);
+    if (!c) return;
+    closeMenu(false);
+    closedFor = k;
+    const column = closedColumn(c);
+    $('closed-title').textContent = closedName(c);
+    const meta = $('closed-meta');
+    const col = COLUMNS.find(x => x.id === column);
+    meta.replaceChildren(attrs(el('span', 'stage-badge', c.stage === 'active' ? 'Active' : col ? col.label : c.stage), {'data-column': column}));
+    if (c.priority) meta.append(el('span', 'badge prio-badge', '! Priority'));
+    if (c.spaceLabel) meta.append(el('span', 'space', c.spaceLabel));
+    meta.append(document.createTextNode('closed '), ageEl(c.closed, 'Its tab closed'), document.createTextNode(' ago'));
+
+    const parts = [];
+    const reason = reasonText(c);
+    if (reason) parts.push(attrs(el('p', 'detail-reason', reason), {'data-column': column}));
+    parts.push(detailSection('Note', c.note ? el('p', 'text', c.note) : el('p', 'empty-line', 'No note yet.')));
+    if (c.log && c.log.length) {
+      const log = el('ul', 'd-log');
+      for (const entry of c.log) {
+        const li = el('li', 'd-entry');
+        li.append(attrs(el('span', 'who', entry.who + ' ' + clock(entry.at)), {title: new Date(entry.at).toLocaleString()}));
+        li.append(el('span', 'what', entry.text));
+        log.append(li);
+      }
+      parts.push(detailSection('Log', log));
+    }
+    if (c.links.length) {
+      const links = el('ul', 'd-links');
+      for (const l of c.links) {
+        const li = el('li', 'd-link');
+        const text = l.label || l.url;
+        li.append(linkable(l.url) ? attrs(el('a', 'closed-link', text), {href: l.url, target: '_blank', rel: 'noopener noreferrer'}) : el('span', '', text));
+        links.append(li);
+      }
+      parts.push(detailSection('Links', links));
+    }
+    const s = board && board.sessions.find(x => x.name === c.session);
+    const there = s && s.spaces.some(x => x.label.toLowerCase() === (c.spaceLabel || '').toLowerCase());
+    const where = [el('p', 'text', there ? 'A new tab in ' + c.spaceLabel + '.' : 'A new tab in a new workspace, ' + c.spaceLabel + '.')];
+    if (c.cwd) where.push(el('p', 'text', 'In ' + c.cwd + '.'));
+    if (c.claude) where.push(el('p', 'text', 'Claude resumes its session there.'));
+    parts.push(detailSection('Reopens', ...where));
+    $('closed-body').replaceChildren(...parts);
+
+    const go = $('closed-reopen');
+    go.disabled = reopening;
+    go.textContent = reopening ? 'Reopening…' : 'Reopen';
+    $('closed-task').showModal();
+    go.focus();
+  }
+
+  // reopen reopens the closed task the sheet shows, and opens its tab's
+  // view once the board has it. Claude takes a few seconds to resume.
+  async function reopen() {
+    const k0 = closedFor;
+    const c = k0 && closedIndex.get(k0);
+    if (!c || reopening) return;
+    const sheet = $('closed-task');
+    const go = $('closed-reopen');
+    reopening = true;
+    go.disabled = true;
+    go.textContent = 'Reopening…';
+    let tab = '';
+    try {
+      const reply = await post({session: c.session, id: c.id}, '/api/reopen');
+      tab = (reply && reply.tab) || '';
+      toast((reply && reply.said) || 'Reopened ' + closedName(c));
+    } catch (err) {
+      tab = (err.reply && err.reply.tab) || '';
+      toast(err.message);
+    }
+    reopening = false;
+    go.disabled = false;
+    go.textContent = 'Reopen';
+    if (closedFor === k0) sheet.close();
+    if (!tab) return;
+    const k = keyOf({session: c.session, tab});
+    if (index.has(k)) openView(k);
+    else following = {key: k, until: Date.now() + 15000};
   }
 
   function resultGroup() {
@@ -2277,12 +2465,12 @@
       const first = $('results').hidden ? null : $('results-groups').querySelector('.result');
       if (!first) return;
       e.preventDefault();
-      if (e.key === 'Enter') openView(first.getAttribute('data-key'));
+      if (e.key === 'Enter') openResult(first.getAttribute('data-key'));
       else first.focus();
     });
     $('results-groups').addEventListener('click', e => {
       const r = e.target instanceof Element ? e.target.closest('.result') : null;
-      if (r) openView(r.getAttribute('data-key'));
+      if (r) openResult(r.getAttribute('data-key'));
     });
     $('results-groups').addEventListener('keydown', e => {
       if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
@@ -2305,9 +2493,26 @@
       save(PRIO_ONLY, prioOnly() ? '' : '1');
       render();
     });
+    // Latest and Closed take the columns' place in turn.
     $('latest').addEventListener('click', () => {
       save(LATEST, latestOn() ? '' : '1');
+      save(CLOSED, '');
       render();
+    });
+    $('closed-view').addEventListener('click', () => {
+      save(CLOSED, closedOn() ? '' : '1');
+      save(LATEST, '');
+      render();
+    });
+
+    const closedSheet = $('closed-task');
+    $('closed-reopen').addEventListener('click', reopen);
+    $('closed-cancel').addEventListener('click', () => closedSheet.close());
+    closedSheet.addEventListener('close', () => {
+      closedFor = null;
+    });
+    closedSheet.addEventListener('click', e => {
+      if (e.target === closedSheet) closedSheet.close();
     });
 
     const reason = $('reason');

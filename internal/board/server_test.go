@@ -30,6 +30,7 @@ import (
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/linear"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reopen"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/task"
@@ -92,6 +93,9 @@ type fakeConn struct {
 	// What Assistant answers: its tab, and an error.
 	assistantTab string
 	assistantErr error
+	// What Reopen answers.
+	reopened  reopen.Reopened
+	reopenErr error
 }
 
 func newConn(t *testing.T, name string, live *herdr.Live, tasks ...*task.Task) *fakeConn {
@@ -183,6 +187,13 @@ func (c *fakeConn) Assistant(about string) (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.assistantTab, c.assistantErr
+}
+
+func (c *fakeConn) Reopen(id string) (reopen.Reopened, error) {
+	c.ask("reopen " + id)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.reopened, c.reopenErr
 }
 
 func (c *fakeConn) ask(what string) {

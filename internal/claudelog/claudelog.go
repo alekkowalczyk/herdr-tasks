@@ -97,6 +97,41 @@ func Path(configDir, id string) (string, error) {
 	return path, nil
 }
 
+// cwdBytes is how much of a log's start Cwd reads.
+const cwdBytes = 1 << 20
+
+// Cwd is the folder the session at path ran in, as its first lines that
+// name one say, or "" when they don't. claude --resume finds a session
+// only in that folder.
+func Cwd(path string) (string, error) {
+	f, err := openFile(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	b := make([]byte, cwdBytes)
+	n, err := f.ReadAt(b, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	lines := bytes.Split(b[:n], []byte("\n"))
+	if n == len(b) {
+		lines = lines[:len(lines)-1] // cut short
+	}
+	for _, line := range lines {
+		if !bytes.Contains(line, []byte(`"cwd"`)) {
+			continue
+		}
+		var e struct {
+			Cwd string `json:"cwd"`
+		}
+		if json.Unmarshal(line, &e) == nil && e.Cwd != "" {
+			return e.Cwd, nil
+		}
+	}
+	return "", nil
+}
+
 // Read reads the Summary of the log at path. Logs can run to hundreds of MB,
 // so it reads back from the end in 256 KiB chunks and stops once it has every
 // field, or after maxBack bytes. A last line without its newline is still
