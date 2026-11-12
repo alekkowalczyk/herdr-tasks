@@ -352,8 +352,8 @@ func TestBuildSessionsInNameOrderEvenWhenUnread(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `{"version":"","linearKey":false,"sessions":[` +
-		`{"name":"home","spaces":[{"id":"w1","label":"acme"}],"cards":[]},` +
-		`{"name":"work","stale":true,"spaces":[],"cards":[]}],"slackSession":""}`
+		`{"name":"home","spaces":[{"id":"w1","label":"acme"}],"cards":[],"closed":[]},` +
+		`{"name":"work","stale":true,"spaces":[],"cards":[],"closed":[]}],"slackSession":""}`
 	if string(j) != want {
 		t.Fatalf("json =\n%s\nwant\n%s", j, want)
 	}
@@ -412,7 +412,7 @@ func TestBuildJSONFieldNames(t *testing.T) {
 		want string
 	}{
 		{"board", v, "linearKey sessions slackSession version"},
-		{"session", session, "cards name spaces stale"},
+		{"session", session, "cards closed name spaces stale"},
 		{"space", session.(map[string]any)["spaces"].([]any)[0], "id label"},
 		{"card", card, "active agentStatus agents column links log note panes priority reason session since space spaceLabel stage tab title"},
 		{"link", link, "by kind label linear url"},

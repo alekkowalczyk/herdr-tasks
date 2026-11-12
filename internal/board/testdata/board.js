@@ -241,6 +241,25 @@ function card(more) {
 
 const board = c => ({version: '0.8.0', linearKey: false, sessions: [{name: 'work', stale: false, spaces: [{id: 's1', label: 'acme'}], cards: [c]}]});
 
+// closedCard is a task whose tab closed, as the server sends it.
+function closedCard(more) {
+  return Object.assign(
+    {
+      session: 'work',
+      id: 'c1',
+      title: 'Login retries',
+      spaceLabel: 'acme',
+      closed: '2026-10-31T08:00:00Z',
+      stage: 'done',
+      since: '2026-10-30T09:00:00Z',
+      priority: false,
+      links: [],
+      claude: false,
+    },
+    more,
+  );
+}
+
 // slacked is a board with a card and the Slack line.
 const slacked = line => Object.assign(board(card()), {slack: line});
 
@@ -858,6 +877,155 @@ const tests = {
     again.$('latest').click();
     assert.equal(again.$('board').hidden, false);
     assert.equal(again.$('results').hidden, true);
+  },
+
+  // Closed lists the tasks whose tabs closed, newest first, in the columns'
+  // place, as Latest does: each with its space, how long ago its tab
+  // closed, and its note's first line. It keeps to the space and to
+  // Priority only, and the browser remembers it. Latest and Closed take
+  // turns.
+  async 'closed lists the tasks whose tabs closed'() {
+    const ago = m => new Date(Date.now() - m * 60e3).toISOString();
+    const b = spaced([card({space: 'w1', spaceLabel: 'billing'})], SPACES);
+    b.sessions[0].closed = [
+      closedCard({id: 'c1', title: 'Login retries', spaceLabel: 'billing', closed: ago(60), note: 'retry after the deploy\nthen check the logs'}),
+      closedCard({id: 'c2', title: 'Old docs', spaceLabel: 'infra', closed: ago(24 * 60), stage: 'paused', reason: 'the wiki', priority: true}),
+      closedCard({id: 'c3', title: '', spaceLabel: 'billing', closed: ago(3 * 24 * 60), stage: 'active'}),
+    ];
+    const pg = page('k1');
+    await settle();
+    pg.send(b);
+    await settle();
+    const button = pg.$('closed-view');
+    assert.equal(button.hidden, false);
+    assert.equal(button.getAttribute('aria-pressed'), 'false');
+    assert.equal(pg.$('results').hidden, true);
+
+    button.click();
+    assert.equal(button.getAttribute('aria-pressed'), 'true');
+    assert.equal(pg.storage.get('herdr-tasks-board-closed'), '1');
+    assert.equal(pg.$('board').hidden, true, 'the columns still show');
+    assert.equal(pg.$('results').hidden, false);
+    assert.deepEqual(found(pg), ['Closed', 'Login retries · retry after the deploy', 'Old docs', 'Untitled task']);
+    const row = title => pg.$('results-groups').querySelectorAll('.result').find(r => r.querySelector('.result-title').textContent === title);
+    assert.equal(row('Login retries').querySelector('time').textContent, '1h');
+    assert.equal(row('Untitled task').querySelector('time').textContent, '3d');
+    assert.equal(row('Old docs').getAttribute('data-column'), 'paused');
+    assert.equal(row('Untitled task').getAttribute('data-column'), 'yourturn');
+
+    sideSpace(pg, 'infra').click();
+    assert.deepEqual(found(pg), ['Closed', 'Old docs']);
+    pg.$('side-all').click();
+    pg.$('prio-only').click();
+    assert.deepEqual(found(pg), ['Closed', 'Old docs']);
+    pg.$('prio-only').click();
+
+    pg.$('latest').click();
+    assert.equal(button.getAttribute('aria-pressed'), 'false');
+    assert.equal(pg.storage.get('herdr-tasks-board-closed'), '');
+    assert.deepEqual(found(pg)[0], 'No reply');
+    button.click();
+    assert.equal(pg.$('latest').getAttribute('aria-pressed'), 'false');
+    assert.equal(found(pg)[0], 'Closed');
+
+    b.sessions[0].closed = [];
+    pg.send(b);
+    await settle();
+    assert.deepEqual(found(pg), []);
+    assert.match(pg.$('results-count').textContent, /^No closed tasks/);
+
+    seeded = {'herdr-tasks-board-closed': '1'};
+    const again = page('k1');
+    await settle();
+    again.send(b);
+    await settle();
+    assert.equal(again.$('closed-view').getAttribute('aria-pressed'), 'true', 'the page forgot Closed');
+    again.$('closed-view').click();
+    assert.equal(again.$('board').hidden, false);
+    assert.equal(again.$('results').hidden, true);
+  },
+
+  // A search finds the closed tasks too, below the others, by where it
+  // found them.
+  async 'a search finds closed tasks below the others'() {
+    const b = board(card({title: 'Fix the login page'}));
+    b.sessions[0].closed = [closedCard({id: 'c1', title: 'Docs', note: 'the login flow'}), closedCard({id: 'c2', title: 'Login retries'})];
+    const pg = page('k1');
+    await settle();
+    pg.send(b);
+    await settle();
+    type(pg, 'login');
+    assert.deepEqual(found(pg), ['Name', 'Fix the [login] page', 'Closed', '[Login] retries', 'Docs · the [login] flow']);
+    assert.equal(pg.$('results-count').textContent, '1 of 1 tasks match · 2 closed');
+    type(pg, 'retries');
+    assert.deepEqual(found(pg), ['Closed', 'Login [retries]']);
+    assert.equal(pg.$('results-count').textContent, '0 of 1 tasks match · 1 closed');
+    type(pg, 'zzz');
+    assert.equal(pg.$('results-count').textContent, 'No task matches “zzz”.');
+  },
+
+  // A closed task opens to show what reopening it brings back. Reopen
+  // reopens it, and its tab's view opens once the board has it. What went
+  // wrong says why.
+  async 'a closed task opens to be reopened'() {
+    const b = board(card());
+    b.sessions[0].closed = [
+      closedCard({
+        id: 'c1',
+        title: 'Login retries',
+        note: 'retry after the deploy',
+        log: [{who: 'claude', at: '2026-10-31T08:00:00Z', text: 'fixed the retry'}],
+        cwd: '/home/dev/acme',
+        claude: true,
+        links: [{url: 'https://linear.app/acme/issue/ACM-12', label: 'ACM-12', kind: 'linear'}],
+      }),
+      closedCard({id: 'c2', title: 'Old docs'}),
+    ];
+    seeded = {'herdr-tasks-board-closed': '1'};
+    const pg = page('k1');
+    await settle();
+    pg.send(b);
+    await settle();
+    const row = title => pg.$('results-groups').querySelectorAll('.result').find(r => r.querySelector('.result-title').textContent === title);
+    row('Login retries').click();
+    const sheet = pg.$('closed-task');
+    assert.ok(sheet.hasAttribute('open'), 'the closed task didn’t open');
+    assert.equal(pg.location.hash, '', 'it opened a view');
+    assert.equal(pg.$('closed-title').textContent, 'Login retries');
+    const text = pg.$('closed-body').textContent;
+    for (const s of ['retry after the deploy', 'fixed the retry', 'ACM-12', '/home/dev/acme', 'Claude resumes its session']) {
+      assert.ok(text.includes(s), 'it doesn’t show ' + s + ': ' + text);
+    }
+    const reopen = pg.$('closed-reopen');
+    reopen.click();
+    reopen.click();
+    await settle();
+    assert.deepEqual(
+      pg.posts.map(p => [p.url, p.body]),
+      [['/api/reopen', {session: 'work', id: 'c1'}]],
+    );
+    assert.equal(reopen.textContent, 'Reopening…');
+    pg.posts[0].answer(200, {tab: 'w1:t9', said: 'Reopened Login retries and resumed its Claude session'});
+    await settle();
+    assert.equal(sheet.hasAttribute('open'), false);
+    assert.deepEqual(pg.toasts(), ['Reopened Login retries and resumed its Claude session']);
+    assert.equal(pg.location.hash, '', 'the view opened before the board had its tab');
+    b.sessions[0].cards.push(card({tab: 'w1:t9', title: 'Login retries'}));
+    b.sessions[0].closed = b.sessions[0].closed.slice(1);
+    pg.send(b);
+    await settle();
+    assert.equal(pg.location.hash, '#tab=w1%3At9');
+
+    pg.back();
+    await settle();
+    row('Old docs').click();
+    assert.equal(reopen.textContent, 'Reopen');
+    reopen.click();
+    await settle();
+    pg.posts[1].answer(404, {error: 'That closed task isn’t kept any more: it was reopened, or closed too long ago'});
+    await settle();
+    assert.equal(sheet.hasAttribute('open'), false);
+    assert.equal(pg.toasts().at(-1), 'That closed task isn’t kept any more: it was reopened, or closed too long ago');
   },
 
   // Beside a task's view, Esc closes the view, and the assistant only from

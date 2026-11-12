@@ -488,15 +488,28 @@ func TestCreateCallsDontFocus(t *testing.T) {
 	if want := (Created{WorkspaceID: "w2", TabID: "w2:t2", PaneID: "w2:p4"}); tab != want {
 		t.Errorf("tab = %+v, want %+v", tab, want)
 	}
+	// Without a name or a folder, herdr picks them, as for a tab you make.
+	if _, err := f.client.CreateTab("w2", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.client.CreateWorkspace("", ""); err != nil {
+		t.Fatal(err)
+	}
 	reqs := f.requests()
-	if len(reqs) != 2 {
-		t.Fatalf("requests = %d, want 2", len(reqs))
+	if len(reqs) != 4 {
+		t.Fatalf("requests = %d, want 4", len(reqs))
+	}
+	if got, want := string(reqs[3].Params), `{"focus":false}`; got != want {
+		t.Errorf("unnamed workspace.create params = %s, want %s", got, want)
 	}
 	if got, want := string(reqs[0].Params), `{"cwd":"/home/u/acme-harness","focus":false,"label":"Slack"}`; got != want {
 		t.Errorf("workspace.create params = %s, want %s", got, want)
 	}
 	if got, want := string(reqs[1].Params), `{"cwd":"/home/u/acme-harness","focus":false,"label":"Dana","workspace_id":"w2"}`; got != want {
 		t.Errorf("tab.create params = %s, want %s", got, want)
+	}
+	if got, want := string(reqs[2].Params), `{"focus":false,"workspace_id":"w2"}`; got != want {
+		t.Errorf("unnamed tab.create params = %s, want %s", got, want)
 	}
 }
 

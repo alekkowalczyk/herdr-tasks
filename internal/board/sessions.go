@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/alekkowalczyk/herdr-tasks/internal/assistant"
+	"github.com/alekkowalczyk/herdr-tasks/internal/claudelog"
 	"github.com/alekkowalczyk/herdr-tasks/internal/herdr"
 	"github.com/alekkowalczyk/herdr-tasks/internal/move"
 	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
+	"github.com/alekkowalczyk/herdr-tasks/internal/reopen"
 	"github.com/alekkowalczyk/herdr-tasks/internal/slack"
 	"github.com/alekkowalczyk/herdr-tasks/internal/store"
 	"github.com/alekkowalczyk/herdr-tasks/internal/strip"
@@ -59,6 +61,10 @@ type SessionConn interface {
 	// what it showed. When something went wrong in the assistant's tab, it
 	// returns the tab and the error.
 	Assistant(about string) (string, error)
+	// Reopen reopens the closed task id in a new tab, and resumes its
+	// Claude session there. When the tab is there but Claude didn't start,
+	// it returns the tab with the error.
+	Reopen(id string) (reopen.Reopened, error)
 	// Subscribe calls fn for herdr events that can change the board, until
 	// ctx ends or herdr closes the connection.
 	Subscribe(ctx context.Context, fn func(herdr.Event)) error
@@ -215,6 +221,14 @@ func (s herdrSession) Assistant(about string) (string, error) {
 		o, err = assistant.Ask(h, s.st, opts, cfg, about, time.Now())
 	}
 	return o.Tab, err
+}
+
+func (s herdrSession) Reopen(id string) (reopen.Reopened, error) {
+	opts, err := reconcile.LoadOptions()
+	if err != nil {
+		return reopen.Reopened{}, fmt.Errorf("reading config: %w", err)
+	}
+	return reopen.Task(strip.Host{Client: s.c}, s.st, opts, claudelog.ConfigDir(), id, time.Now())
 }
 
 func (s herdrSession) Subscribe(ctx context.Context, fn func(herdr.Event)) error {

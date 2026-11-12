@@ -82,11 +82,15 @@ func (m *model) lookAgain() tea.Cmd {
 	return func() tea.Msg { return searchLooked{look()} }
 }
 
-// endSearch goes back to the list, keeping the task you chose.
+// endSearch goes back to the list, keeping the task you chose: the closed
+// tasks' list, when it's closed.
 func (m *model) endSearch() {
 	m.mode = modeList
 	m.find.Blur()
 	m.find.SetValue("")
+	if r := m.selected(); r != nil {
+		m.showClosed = r.closed != nil
+	}
 	m.search()
 }
 
@@ -139,13 +143,18 @@ func (m *model) search() {
 	}
 	words := view.Words(m.find.Value())
 	m.hits = map[string]view.Hit{}
-	for _, r := range m.rows {
-		if h := view.Search(words, fieldsOf(r, m.data)); h.Match != view.NoMatch {
-			m.hits[r.tab.ID] = h
-			m.found = append(m.found, r)
+	// The closed tasks come after the others.
+	for _, rows := range [][]row{m.rows, m.closed} {
+		var found []row
+		for _, r := range rows {
+			if h := view.Search(words, fieldsOf(r, m.data)); h.Match != view.NoMatch {
+				m.hits[r.tab.ID] = h
+				found = append(found, r)
+			}
 		}
+		slices.SortStableFunc(found, func(a, b row) int { return int(m.hits[a.tab.ID].Match - m.hits[b.tab.ID].Match) })
+		m.found = append(m.found, found...)
 	}
-	slices.SortStableFunc(m.found, func(a, b row) int { return int(m.hits[a.tab.ID].Match - m.hits[b.tab.ID].Match) })
 	if _, ok := m.hits[m.sel]; !ok && len(m.found) > 0 {
 		m.sel = m.found[0].tab.ID
 	}
@@ -202,20 +211,35 @@ func fieldsOf(r row, d searchData) view.Fields {
 	return f
 }
 
-// foundSections are the rows found, by where they were found, leaving out
-// the places with none.
+// foundSections are the rows found, by where they were found, and then the
+// closed tasks found, leaving out the places with none.
 func (m *model) foundSections() []section {
 	all := []section{
 		{title: "NAME", color: cFg},
 		{title: "PANE", hint: "pane names and agent titles", color: cRun},
 		{title: "RECAP", hint: "Claude's recaps", color: cReview},
 		{title: "CONTENT", hint: "note, log, links, prompts and replies", color: cDim},
+		{title: "CLOSED", hint: "tabs closed; ↵ reopens one", color: cDim},
 	}
 	for _, r := range m.found {
-		i := int(m.hits[r.tab.ID].Match - view.InName)
+		i := len(all) - 1
+		if r.closed == nil {
+			i = int(m.hits[r.tab.ID].Match - view.InName)
+		}
 		all[i].rows = append(all[i].rows, r)
 	}
 	return slices.DeleteFunc(all, func(s section) bool { return len(s.rows) == 0 })
+}
+
+// foundClosed is how many closed tasks a search found.
+func (m *model) foundClosed() int {
+	n := 0
+	for _, r := range m.found {
+		if r.closed != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // foundCell is where h was found, w columns wide on bg, with the word that

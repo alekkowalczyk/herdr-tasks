@@ -80,6 +80,8 @@ type row struct {
 	ws    herdr.Workspace
 	pos   int
 	group task.Group
+	// Set on a closed task, whose tab is gone; see closed.go.
+	closed *store.Closed
 }
 
 type hit struct {
@@ -118,6 +120,11 @@ type model struct {
 	quitMoved bool
 	// Whether a question for the assistant is on its way.
 	asking bool
+	// The closed tasks, whether the list shows them rather than the tasks,
+	// and whether a reopen is on its way; see closed.go.
+	closed     []row
+	showClosed bool
+	reopening  bool
 
 	// Hit areas from the last render, for the mouse.
 	rowAt      map[int]string
@@ -217,16 +224,21 @@ func (m *model) rebuild() {
 	for _, r := range view.Rows(m.state, m.live) {
 		m.rows = append(m.rows, row{tab: r.Tab, task: r.Task, ws: r.Workspace, pos: r.Pos, group: r.Group})
 	}
-	if m.selected() == nil && len(m.rows) > 0 {
-		m.sel = m.rows[0].tab.ID
+	m.closed = closedRows(m.state)
+	if m.selected() == nil {
+		if rows := m.listed(); len(rows) > 0 {
+			m.sel = rows[0].tab.ID
+		}
 	}
 	m.search()
 }
 
 func (m *model) selected() *row {
-	for i := range m.rows {
-		if m.rows[i].tab.ID == m.sel {
-			return &m.rows[i]
+	for _, rows := range [][]row{m.rows, m.closed} {
+		for i := range rows {
+			if rows[i].tab.ID == m.sel {
+				return &rows[i]
+			}
 		}
 	}
 	return nil
@@ -251,6 +263,9 @@ func (m *model) move(delta int) {
 func (m *model) listed() []row {
 	if m.searching() {
 		return m.found
+	}
+	if m.showClosed {
+		return m.closed
 	}
 	if m.latest() {
 		var rows []row
@@ -523,6 +538,9 @@ func (m *model) jump() tea.Cmd {
 	if r == nil {
 		return nil
 	}
+	if r.closed != nil {
+		return m.reopenSelected()
+	}
 	if err := m.env.Client.FocusTab(r.tab.ID); err != nil {
 		m.msg = "Couldn't open the tab: " + err.Error()
 		return nil
@@ -601,6 +619,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.msg = msg.say
 		return m, nil
+	case reopenedMsg:
+		return m, m.reopened(msg)
 	case assistantAsked:
 		m.asking = false
 		if msg.err == nil {
@@ -716,6 +736,10 @@ func (m *model) key(k string) tea.Cmd {
 		}
 		return nil
 	}
+	if r := m.selected(); r != nil && r.closed != nil && changesTask[k] {
+		m.msg = closedName(r.task) + "'s tab is closed. ↵ reopens it."
+		return nil
+	}
 	switch k {
 	case "ctrl+c", "esc", "q", "t":
 		return m.quit(k)
@@ -737,6 +761,8 @@ func (m *model) key(k string) tea.Cmd {
 		return m.startSearch()
 	case "s":
 		return m.toggleLatest()
+	case "c":
+		m.toggleClosed()
 	case "b":
 		return m.openBoard()
 	case "A":
@@ -898,8 +924,14 @@ func (m *model) View() string {
 	}
 	// herdr's popup frame already says "Tasks".
 	tabs := fmt.Sprintf("%d tabs", len(m.rows))
-	if m.searching() {
-		tabs = fmt.Sprintf("%d of %d tabs match", len(m.found), len(m.rows))
+	switch closed := m.foundClosed(); {
+	case m.searching():
+		tabs = fmt.Sprintf("%d of %d tabs match", len(m.found)-closed, len(m.rows))
+		if closed > 0 {
+			tabs += fmt.Sprintf(" · %d closed", closed)
+		}
+	case m.showClosed:
+		tabs = plural(len(m.closed), "closed task", "closed tasks")
 	}
 	count = fmt.Sprintf(" %s · %s", count, tabs)
 	keys := "? keys · esc hide "
@@ -1020,7 +1052,7 @@ func (m *model) listLines(w, h int) []string {
 		}
 	}
 	alertLine := -1
-	if asking+waiting > 0 && !m.searching() {
+	if asking+waiting > 0 && !m.searching() && !m.showClosed {
 		var ns []string
 		for n := range names {
 			ns = append(ns, n)
@@ -1043,7 +1075,7 @@ func (m *model) listLines(w, h int) []string {
 	}
 
 	spaceW := 4
-	for _, r := range m.rows {
+	for _, r := range slices.Concat(m.rows, m.closed) {
 		spaceW = max(spaceW, ansi.StringWidth(r.ws.Label))
 	}
 	spaceW = min(spaceW, 14)
@@ -1059,6 +1091,10 @@ func (m *model) listLines(w, h int) []string {
 	selLine := 0
 	if m.searching() && len(m.found) == 0 {
 		lines = append(lines, sDim.Render(" No task matches "+task.CleanLabel(m.find.Value())+"."))
+		ids = append(ids, "")
+	}
+	if m.showClosed && !m.searching() && len(m.closed) == 0 {
+		lines = append(lines, sDim.Render(" No closed tasks. When a task's tab closes, the task is kept here, to reopen."))
 		ids = append(ids, "")
 	}
 	for _, sec := range m.sections() {
@@ -1115,6 +1151,12 @@ func (m *model) sections() []section {
 	if m.searching() {
 		return m.foundSections()
 	}
+	if m.showClosed {
+		if len(m.closed) == 0 {
+			return nil
+		}
+		return []section{{title: "CLOSED", hint: "newest first · ↵ reopens one in a new tab", color: cDim, rows: m.closed}}
+	}
 	if m.latest() {
 		return m.latestSections()
 	}
@@ -1141,10 +1183,13 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 		return bg.Foreground(fg).Render(fit(text, width))
 	}
 	agent, agentColor := agentLabel(r.tab.AgentStatus)
-	if r.group == task.GTool {
-		agent = "" // a tool tab's agent doesn't need you
+	if r.group == task.GTool || r.closed != nil {
+		agent = "" // a tool tab's agent doesn't need you, and a closed tab has none
 	}
 	name := r.task.Name(r.pos)
+	if r.closed != nil {
+		name = closedName(r.task)
+	}
 	nameColor := lipgloss.TerminalColor(cFg)
 	if r.task.Title == "" {
 		nameColor = cDim
@@ -1161,6 +1206,9 @@ func (m *model) rowLine(r row, sel bool, w, spaceW, nameW, agentW, ageW, infoW i
 		}
 	}
 	age := task.Age(time.Since(r.task.LastActive()))
+	if r.closed != nil {
+		age = task.Age(time.Since(r.closed.At))
+	}
 	// In the order of Claude's replies, its latest reply, and when it came.
 	if a := m.acts[r.tab.ID]; m.latest() {
 		age = ""
@@ -1200,6 +1248,9 @@ func (m *model) detailLines(w, h int) []string {
 	if r == nil {
 		return []string{sDim.Render("No task selected.")}
 	}
+	if r.closed != nil {
+		return m.closedDetailLines(r, w, h)
+	}
 	t := r.task
 	var lines []string
 	add := func(s ...string) { lines = append(lines, s...) }
@@ -1228,26 +1279,7 @@ func (m *model) detailLines(w, h int) []string {
 		add(strings.Split(m.note.View(), "\n")...)
 		add(sDim.Render("ctrl+s save · esc cancel"))
 	} else {
-		if t.Note == "" && len(t.Log) == 0 {
-			add(sDim.Render("No note yet."))
-		}
-		if t.Note != "" {
-			add(wrap(t.Note, w)...)
-		}
-		for _, e := range t.Log {
-			who := task.CleanLabel(e.Who) + " " + e.At.Local().Format("15:04")
-			if time.Since(e.At) > 20*time.Hour {
-				who = task.CleanLabel(e.Who) + " " + e.At.Local().Format("Mon 15:04")
-			}
-			body := wrap(e.Text, max(10, w-ansi.StringWidth(who)-1))
-			for i, l := range body {
-				prefix := strings.Repeat(" ", ansi.StringWidth(who))
-				if i == 0 {
-					prefix = sRun.Render(who)
-				}
-				add(prefix + " " + l)
-			}
-		}
+		add(noteLines(t, w)...)
 	}
 	add("")
 
@@ -1318,7 +1350,10 @@ func (m *model) footer() string {
 		order = "s by stage"
 	}
 	keys := [][2]string{{"enter", "↵ open"}, {"/", "/ search"}, {"s", order}, {"a", "a active"}, {"v", "v review"}, {"p", "p pause"}, {"z", "z park"}, {"d", "d done"}, {"o", "o tool"},
-		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"?", "? more"}, {"esc", "esc hide"}}
+		{"f", "f priority"}, {"n", "n note"}, {"l", "l link"}, {"r", "r rename"}, {"x", "x close tab"}, {"c", "c closed"}, {"?", "? more"}, {"esc", "esc hide"}}
+	if m.showClosed {
+		keys = [][2]string{{"enter", "↵ reopen"}, {"/", "/ search"}, {"c", "c tasks"}, {"?", "? more"}, {"esc", "esc hide"}}
+	}
 	if m.help {
 		keys = [][2]string{{"b", "b open on the board"}, {"A", "A assistant"}, {"", "1–9 toggle space"}, {"", "shift+1–9 only that space"}, {"0", "0 all spaces"},
 			{"L", "L unlink"}, {"w", "w move to workspace"}, {"m", "m mute channel"}, {"", "j/k move"}, {"?", "? back"}, {"esc", "esc hide"}}

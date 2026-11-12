@@ -679,9 +679,14 @@ func (a *app) hook() error {
 		}
 	}
 	if ev != nil && ev.Name == "pane.agent_status_changed" {
-		// An agent's turn is activity in its task, and only the sidebar
-		// list depends on what agents are doing.
-		return errors.Join(reconcile.AgentActive(a.host(), a.store, ev, time.Now()), reconcile.RefreshTokens(a.host(), a.store))
+		// An agent's turn is activity in its task, where it runs is where its
+		// task reopens once its tab closes, and only the sidebar list depends
+		// on what agents are doing.
+		return errors.Join(
+			reconcile.AgentActive(a.host(), a.store, ev, time.Now()),
+			reconcile.NoteWhere(a.host(), a.store),
+			reconcile.RefreshTokens(a.host(), a.store),
+		)
 	}
 	if ev != nil && ev.Name == "startup" {
 		a.opts.Startup = true

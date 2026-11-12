@@ -426,3 +426,21 @@ func TestCacheWithoutALog(t *testing.T) {
 		t.Errorf("Get(*) = %v, %v, want an error", ok, err)
 	}
 }
+
+func TestCwdIsWhereTheSessionRan(t *testing.T) {
+	_, path := newLog(t)
+	write(t, path, logText(
+		entry(map[string]any{"type": "file-history-snapshot"}),
+		"not json",
+		entry(map[string]any{"type": "user", "cwd": "/Users/acme/app", "sessionId": sid}),
+		entry(map[string]any{"type": "user", "cwd": "/Users/acme/app/web", "sessionId": sid}),
+	))
+	if got, err := Cwd(path); err != nil || got != "/Users/acme/app" {
+		t.Errorf("Cwd = %q, %v", got, err)
+	}
+	// One that has none, or only past the first lines Cwd reads, says "".
+	write(t, path, padding(2<<20)+logText(entry(map[string]any{"type": "user", "cwd": "/Users/acme/app"})))
+	if got, err := Cwd(path); err != nil || got != "" {
+		t.Errorf("past what it reads, Cwd = %q, %v", got, err)
+	}
+}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -203,6 +204,7 @@ func Run(h Herdr, st *store.Store, opt Options, now time.Time, mutate Mutate) (*
 			// Before your change, which can change which tabs want a strip.
 			if panes, err := sh.Panes(); err == nil {
 				noticeGoneStrips(s, live, panes)
+				noteWhere(s, panes)
 			}
 		}
 		if mutate != nil {
@@ -318,8 +320,8 @@ func Enable(st *store.Store) error {
 	})
 }
 
-// Track adds new tabs as active tasks, notices tabs you renamed, and drops
-// tasks whose tabs are gone.
+// Track adds new tabs as active tasks, notices tabs you renamed, and keeps
+// the tasks whose tabs are gone as closed, to reopen.
 func Track(s *store.State, live *herdr.Live, now time.Time) {
 	wsLabel := map[string]string{}
 	for _, w := range live.Workspaces {
@@ -354,14 +356,19 @@ func Track(s *store.State, live *herdr.Live, now time.Time) {
 		delete(s.Tasks, id)
 		// herdr may hand a tab a new ID; keep the task if a new tab in the same
 		// space carries the same name.
+		moved := false
 		for i, tab := range untracked {
 			if t.Title != "" && wsLabel[tab.WorkspaceID] == t.Workspace &&
 				task.TitleFromLabel(tab.Label, live.Position(tab.ID)) == t.Title {
 				t.TabID, t.Applied = tab.ID, ""
 				s.Tasks[tab.ID] = t
 				untracked = append(untracked[:i], untracked[i+1:]...)
+				moved = true
 				break
 			}
+		}
+		if !moved && worthKeeping(t) {
+			s.Close(t, now)
 		}
 	}
 
@@ -695,6 +702,92 @@ func AgentActive(h Herdr, st *store.Store, ev *Event, now time.Time) error {
 
 // errUnchanged ends an Update that leaves the state as it was.
 var errUnchanged = errors.New("unchanged")
+
+// worthKeeping reports whether a task whose tab closed is kept, to reopen:
+// a task, not a tool, with more to it than its stage.
+func worthKeeping(t *task.Task) bool {
+	if t.Stage == task.Tool || t.Assistant != nil {
+		return false
+	}
+	return t.Title != "" || t.Note != "" || len(t.Log) > 0 || len(t.Links) > 0 || t.Claude != "" || t.Slack != nil
+}
+
+// claudeSession is what a Claude session ID looks like. Reopening a task
+// puts its session on claude's command line, so nothing else is kept.
+var claudeSession = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+// noteWhere keeps where each task's tab works: the Claude session herdr
+// last saw in it, a running one first, and the folder of that pane, or
+// else of its first pane but the strip. It reports whether that changed.
+func noteWhere(s *store.State, panes []herdr.Pane) bool {
+	type where struct {
+		cwd     string
+		claude  *herdr.Pane
+		running bool
+	}
+	tabs := map[string]*where{}
+	for i, p := range panes {
+		t, ok := s.Tasks[p.TabID]
+		if !ok || p.ID == t.StripPane || p.Label == StripLabel {
+			continue
+		}
+		w := tabs[p.TabID]
+		if w == nil {
+			w = &where{}
+			tabs[p.TabID] = w
+		}
+		if w.cwd == "" {
+			w.cwd = p.Cwd
+		}
+		ses := p.Session
+		if ses == nil || ses.Agent != "claude" || ses.Kind != "id" || !claudeSession.MatchString(ses.Value) {
+			continue
+		}
+		if running := p.Agent == "claude"; w.claude == nil || running && !w.running {
+			w.claude, w.running = &panes[i], running
+		}
+	}
+	changed := false
+	for id, w := range tabs {
+		t := s.Tasks[id]
+		cwd, claude := w.cwd, ""
+		if w.claude != nil {
+			claude = w.claude.Session.Value
+			if w.claude.Cwd != "" {
+				cwd = w.claude.Cwd
+			}
+		}
+		if cwd != "" && cwd != t.Cwd {
+			t.Cwd, changed = cwd, true
+		}
+		if claude != "" && claude != t.Claude {
+			t.Claude, changed = claude, true
+		}
+	}
+	return changed
+}
+
+// NoteWhere keeps where each task's tab works, as Run does, without the
+// rest of a run, for the hook that runs when an agent's status changes. It
+// saves only what changed.
+func NoteWhere(h Herdr, st *store.Store) error {
+	sh, ok := h.(Strips)
+	if !ok {
+		return nil
+	}
+	panes, err := sh.Panes()
+	if err != nil {
+		return err
+	}
+	s, err := st.Load()
+	if err != nil || s.Removed || !noteWhere(s, panes) {
+		return err
+	}
+	return st.Update(func(s *store.State) error {
+		noteWhere(s, panes)
+		return nil
+	})
+}
 
 // noticeGoneStrips handles strips that went away since the last run. If the
 // tab still wanted one, you closed it, which hides the strip for that tab.
