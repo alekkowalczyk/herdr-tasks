@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/alekkowalczyk/herdr-tasks/internal/reconcile"
 )
 
 const (
@@ -201,7 +203,7 @@ const countsRow = `[{ token = "$tasks_active", fg = "#62d39d" }, { token = "$tas
 // reconcile.ListTokens.
 func listRows() []string {
 	var rows []string
-	for i := 1; i <= 7; i++ {
+	for i := 1; i <= reconcile.ListRows; i++ {
 		rows = append(rows, fmt.Sprintf(`  [{ token = "$t%[1]d_pri", fg = "#ff5f6d" }, { token = "$t%[1]d_ask", fg = "#ff5f6d", bold = true }, { token = "$t%[1]d_you", fg = "#ff8d6e" }, { token = "$t%[1]d_run", fg = "#5ec9e8" }, "$t%[1]d"],`, i))
 	}
 	return rows

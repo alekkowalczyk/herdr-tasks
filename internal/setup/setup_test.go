@@ -342,8 +342,8 @@ func TestTaskRowsStartWithARedPriorityRow(t *testing.T) {
 			t.Fatalf("row %d starts with %v", found, first)
 		}
 	}
-	if found != 7 {
-		t.Fatalf("%d task rows start with a priority mark, want 7", found)
+	if found != 11 {
+		t.Fatalf("%d task rows start with a priority mark, want 11", found)
 	}
 }
 
@@ -366,8 +366,8 @@ func TestWorkingRowsAreBlue(t *testing.T) {
 			}
 		}
 	}
-	if found != 7 {
-		t.Fatalf("%d rows have a working token, want 7", found)
+	if found != 11 {
+		t.Fatalf("%d rows have a working token, want 11", found)
 	}
 }
 

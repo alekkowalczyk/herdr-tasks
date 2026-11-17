@@ -621,11 +621,16 @@ func TestSidebarListsPriorityTasksFirstWhateverTheirStage(t *testing.T) {
 
 func TestSidebarListOverflow(t *testing.T) {
 	f, st := newFake(), newStore(t)
-	for i := 4; i <= 12; i++ {
+	for i := 4; i <= 16; i++ {
 		f.tabs = append(f.tabs, herdr.Tab{ID: fmt.Sprintf("w1:t%d", i), WorkspaceID: "w1", Label: fmt.Sprintf("task %d", i)})
 	}
 	Run(f, st, on, time.Now(), nil)
-	if got := val(f.tokens["w1"], "t7"); got != "+6 more" {
+	// Ten tasks, then a row for the other six.
+	tok := f.tokens["w1"]
+	if got := val(tok, "t10_you"); got != "● task 10" {
+		t.Fatalf("row 10 = %q", got)
+	}
+	if got := val(tok, "t11"); got != "+6 more" {
 		t.Fatalf("last row = %q", got)
 	}
 }
