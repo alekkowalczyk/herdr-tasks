@@ -571,8 +571,10 @@ func reportInChunks(h Herdr, workspaceID string, tokens map[string]*string) erro
 	return nil
 }
 
-// ListRows is how many task rows a space shows in the sidebar.
-const ListRows = 7
+// ListRows is how many task rows a space shows in the sidebar: ten tasks and
+// a "+N more" row when there are more. With the rows above and below them,
+// that's 14 of the 16 rows herdr allows.
+const ListRows = 11
 
 // listHidden are the stages the sidebar list leaves out.
 var listHidden = map[task.Group]bool{task.GPaused: true, task.GParked: true, task.GDone: true, task.GTool: true}
